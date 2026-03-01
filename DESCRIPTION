@@ -1,0 +1,17 @@
+Package: metaregBase
+Type: Package
+Title: Run metaregBase 
+Version: 0.1.0
+Authors@R: c(
+    person(
+      "Sebastian", "Kranz",
+      email = "sebastian.kranz@uni-ulm.de",
+      role = c("aut", "cre")
+    )
+  )
+Description: Uses repboxDRF structure to rerun 
+  all regressions in Stata and R and store results.
+License: GPL >= 2.0
+Encoding: UTF-8
+LazyData: true
+Depends: repboxDB, repboxUtils, repboxDRF, repboxStata, metaregTools
