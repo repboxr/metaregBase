@@ -16,9 +16,6 @@ ct_to_regcoef = function(ct, lang="stata", variant=NULL, artid=NULL, regvar=NULL
   if (!is.null(variant) & !has.col(ct, "variant")) {
     ct$variant = variant
   }
-  if (!is.null(artid) & !has.col(ct, "artid")) {
-    ct$artid = artid
-  }
 
   # Better overwrite cterm since sometimes it has NA values
   if (lang=="stata" & all(has.col(ct, c("var","label")))) {
@@ -108,7 +105,7 @@ coef_diff_summary = function(diff_tab, compare_what=c("all","coef"), problem="")
 
   if (compare_what=="all") {
     sum = diff_tab %>%
-      group_by(artid, step) %>%
+      group_by(artid, runid) %>%
       summarize(
         variant1 = first(na.omit(variant_1)),
         variant2 = first(na.omit(variant_2)),
@@ -124,7 +121,7 @@ coef_diff_summary = function(diff_tab, compare_what=c("all","coef"), problem="")
       ungroup()
   } else if (compare_what=="coef") {
     sum = diff_tab %>%
-      group_by(artid, step) %>%
+      group_by(artid, runid) %>%
       summarize(
         variant1 = first(na.omit(variant_1)),
         variant2 = first(na.omit(variant_2)),
@@ -154,7 +151,7 @@ coef_diff_table = function(co1, co2, check.ref.levels = TRUE) {
   if (is.null(co1) | is.null(co2)) return(NULL)
 
   # Match results
-  cod = full_join(co1, co2, by=c("cterm","step","artid"), suffix=c("_1","_2"))
+  cod = full_join(co1, co2, by=c("cterm","runid","artid"), suffix=c("_1","_2"))
 
   # Ignore coefficients that are missing in both co1 and co2
   cod = cod %>%
@@ -170,7 +167,7 @@ coef_diff_table = function(co1, co2, check.ref.levels = TRUE) {
         is_factor = has.substr(cterm, "="),
         factor_group = stringi::stri_replace_all_regex(paste0(cterm,":"), "=([^\\:]*):",":") %>% str.remove.ends(right=1)
       ) %>%
-      group_by(step, factor_group) %>%
+      group_by(runid, factor_group) %>%
       mutate(
         # We will normalize reference levels to those of coef_1
         # Note that rows where both coef_1 and coef_2
@@ -198,7 +195,7 @@ coef_diff_table = function(co1, co2, check.ref.levels = TRUE) {
 
     # Adapt (Intercept) if there are different reference levels
     cod = cod %>%
-      group_by(step) %>%
+      group_by(runid) %>%
       mutate(
         ref_level_differs = ifelse(cterm=="(Intercept)" & any(ref_level_differs), any(ref_level_differs, na.rm=TRUE), ref_level_differs),
         offset.2.intercept =  ifelse(cterm=="(Intercept)" & any(ref_level_differs), -sum(unique(offset.2), na.rm=TRUE), offset.2),
@@ -227,7 +224,7 @@ coef_diff_table = function(co1, co2, check.ref.levels = TRUE) {
   # we cannot repair different dummy dropping between Stata and R
   # we just add an indicator
   cod = cod %>%
-    group_by(step) %>%
+    group_by(runid) %>%
     mutate(
       step_refs_differ =
         any(ref_level_differs) |
@@ -236,7 +233,7 @@ coef_diff_table = function(co1, co2, check.ref.levels = TRUE) {
     ungroup()
 
   cod = cod %>%
-    select(artid, step, cterm, identical, identical_coef, everything())
+    select(artid, runid, cterm, identical, identical_coef, everything())
 
   cod
 }

@@ -14,4 +14,4 @@ Description: Uses repboxDRF structure to rerun
 License: GPL >= 2.0
 Encoding: UTF-8
 LazyData: true
-Depends: repboxDB, repboxUtils, repboxDRF, repboxStata, metaregTools
+Depends: repboxDB, repboxUtils, repboxDRF, repboxStataReg

@@ -1,3 +1,7 @@
+parcel_for_runid = function(parcel, runid) {
+  parcel[parcel$runid==runid, ]
+}
+
 touchFile = function (pathname, ...) {
   if (!exists("Sys.setFileTime", mode = "function")) {
     Sys.setFileTime <- function(path, ...) {

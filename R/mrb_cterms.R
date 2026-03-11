@@ -55,18 +55,6 @@ stata_expr_to_cterm = function(stata_expr) {
   cterm
 }
 
-#
-# cterm_to_cvar = function(cterm) {
-#   rx1 = "=[a-zA-Z_0-9.]*:"
-#   str = stringi::stri_replace_all_regex(cterm,rx1,"#")
-#   rx2 = "=[a-zA-Z_0-9.]*$"
-#   str = stringi::stri_replace_all_regex(str,rx2,"")
-#   str
-#
-# }
-
-
-
 canonical.stata.output.terms = function(terms,labels, cmd=NULL) {
   restore.point("canonical.stata.output.terms")
 
@@ -467,87 +455,3 @@ cterm_extract_level = function(cterm) {
   str.right.of(cterm, "=")
 }
 
-
-
-#
-# example = function() {
-#   # Test example 1: Create lag variables for x1 using L(0/2).x1
-#   # This generates columns L0.x1, L1.x1, and L2.x1
-#   dat1 <- data.frame(time = 1:10, x1 = 101:110)
-#   dat1 <- create_time_series_range(dat1, "L(0/2)", "x1", timevar = "time")
-#   cat("Test example 1 (lags):\n")
-#   print(head(dat1))
-#
-#   # Test example 2: Create lead variables for x1 using F(0/3).x1
-#   # This generates columns F0.x1, F1.x1, F2.x1, and F3.x1
-#   dat2 <- data.frame(time = 1:10, x1 = 101:110)
-#   dat2 <- create_time_series_range(dat2, "F(0/3)", "x1", timevar = "time")
-#   cat("\nTest example 2 (leads):\n")
-#   print(head(dat2))
-#
-#   # Test example 3: Create difference variables for x1 using D(1/2).x1
-#   # This generates columns D1.x1 and D2.x1
-#   dat3 <- data.frame(time = 1:10, x1 = 101:110)
-#   dat3 <- create_time_series_range(dat3, "D(1/2)", "x1", timevar = "time")
-#   cat("\nTest example 3 (differences):\n")
-#   print(head(dat3))
-#
-# }
-# # Helper function to check if a value is empty
-# #is_empty <- function(x) {
-# #  return(is.null(x) || length(x) == 0 || (is.character(x) && x == ""))
-# #}
-#
-# # Subfunction to handle time series range expressions like L(0/4).x1
-# create_time_series_range <- function(dat, prefix, basevar, panelvar = NA, timevar = NA, tdelta = 1) {
-#   # Expect prefix in the form "L(0/4)" (or F, D, S, etc)
-#   # Get the operator letter (e.g., "L")
-#   op <- toupper(substr(prefix, 1, 1))
-#
-#   # Extract the range string between the parentheses (e.g., "0/4")
-#   range_str <- sub("^[A-Za-z]\\(([^)]+)\\).*", "\\1", prefix)
-#
-#   # Split the range into start and end values
-#   parts <- strsplit(range_str, "/")[[1]]
-#   if (length(parts) != 2) stop("Invalid time series range format in prefix: ", prefix)
-#   start <- as_integer(trimws(parts[1]))
-#   end   <- as_integer(trimws(parts[2]))
-#
-#   if (is.na(tdelta)) tdelta <- 1
-#
-#   # Loop over the sequence and, for each value, create a new column
-#   for(n in seq(start, end)) {
-#     # Construct the new variable name, e.g., "L0.x1", "L1.x1", etc.
-#     new_cterm <- paste0(op, n, ".", basevar)
-#
-#     # Build the argument list (using timevar and panelvar if available)
-#     args <- list(x = dat[[basevar]])
-#     if (!is_empty(timevar))  args$t <- dat[[timevar]]
-#     if (!is_empty(panelvar)) args$g <- dat[[panelvar]]
-#
-#     # For lags and leads we use collapse::flag; for differences we use collapse::fdiff.
-#     # For leads (F) we use a negative shift.
-#     if (op == "L") {
-#       fun <- collapse::flag
-#       args$n <- n * tdelta
-#     } else if (op == "F") {
-#       fun <- collapse::flag
-#       args$n <- -n * tdelta
-#     } else if (op == "D") {
-#       fun <- collapse::fdiff
-#       args$diff <- n
-#     } else if (op == "S") {
-#       fun <- collapse::fdiff
-#       args$n <- n
-#     } else {
-#       stop("Operator ", op, " not supported in time series range expressions")
-#     }
-#     # Generate the new column by calling the appropriate function
-#     dat[[new_cterm]] <- do.call(fun, args)
-#   }
-#   return(dat)
-# }
-#
-#
-#
-#

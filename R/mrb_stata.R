@@ -23,7 +23,7 @@ mrb_run_stata_script = function(mrb, do_file = mrb$stata_do_file) {
   }
   library(repboxStata)
   run_stata_do(do_file, nostop = FALSE)
-
+  mrb
 }
 
 mrb_check_stata_reg_out_complete = function(mrb) {
@@ -69,9 +69,6 @@ mrb_code_reg_stata = function(code_df, run_df=NULL, outdir=NULL,runid = code_df$
   restore.point("mrb_code_reg_stata")
   library(repboxStata)
   stata_code = code_df$code
-
-
-
 
   if (!dir.exists(outdir))
     dir.create(outdir, recursive = TRUE)

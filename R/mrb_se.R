@@ -1,5 +1,5 @@
 # Parses SE information from a Stata regression and
-# returns the relevenat SE info stored in the repdb reg table
+# returns the relevant SE info stored in the repdb reg table
 
 get_se_parser_version = function() {
   return(0)

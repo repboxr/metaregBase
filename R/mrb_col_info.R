@@ -1,4 +1,5 @@
-# Store information about all columns in data set (not only those used in the regression)
+# Store information about all columns in data set
+# (not only those used in the regression)
 
 get_var_labels = function(dat) {
   #var.labels <- attr(org_dat,"var.labels")
@@ -33,10 +34,8 @@ repbox_col_class = function(v, distinct_num = n_distinct(v,na.rm = TRUE)) {
 }
 
 
-
-
-repbox_compute_step_col_info = function(step, project_dir,dat, org_dat, reg) {
-  restore.point("repbox_store_all_col_info")
+repbox_compute_col_info = function(runid, project_dir,dat, org_dat, reg) {
+  restore.point("repbox_compute_col_info")
   #stop()
   cols = names(org_dat)
   # Only use rows used in regression
@@ -56,7 +55,7 @@ repbox_compute_step_col_info = function(step, project_dir,dat, org_dat, reg) {
 
 
     res = list(
-      step = step,
+      runid = runid,
       var = col,
       label = var_labels[col], # TO DO: DEAL WITH LABELS
       col_type_org = atomic_class(org_val),

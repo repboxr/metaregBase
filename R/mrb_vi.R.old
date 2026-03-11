@@ -1,6 +1,6 @@
 # Create variable information as mainly stored in regvar table
 
-vi.from.stata.reg = function(reg, dat) {
+mrb_vi_from_stata_reg = function(reg, dat) {
   # TO DO:
   # 1. * is possible used as abbreviation
   #          and as interaction expansion.

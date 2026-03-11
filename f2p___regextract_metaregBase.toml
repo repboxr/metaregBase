@@ -1,0 +1,129 @@
+opt_prompt_file = "my_prompt.Rmd"
+
+include_files = '''
+pipeline.md
+'''
+exclude_files = '''
+*.toml
+'''
+
+template = '''
+
+Below is code from selected R projects from my repbox / metareg toolbox.
+
+Main role of the packages below:
+
+regtranslate: translate regressions from Stata to R
+
+repboxDRF: convert Stata code in a reproduction package into a
+  "direct replication format" that allows to generate both Stata and R
+  scripts that load data sets, perform data modifications and then
+  can run original regression code or a modification of it.
+
+metaregBase: A run of all regression based on the direct replication format. Goal
+
+1. Stata run that stores all sort of relevant information for the regression, like
+ coefficients, scalars etc.
+
+2. An R run that first stores parsed representation of regression as regdb parcels,
+e.g. cmdpart, then runs translated version of that regression and stores R output
+as parcels.
+
+repboxStataReg: Tools features to extract regression information from Stata reproduction run,
+  These functions will be called before the metaregBase analysis.
+  Also contains utility functions to extract cmdpart format for regressions
+
+repboxUtils: Utility functions. In particular using cmdpart approach.
+
+
+# Package repboxStataReg
+
+{{repboxStataReg}}
+
+
+# Package repboxUtils
+
+{{repboxUtils}}
+
+# Package repboxDRF
+
+{{repboxDRF}}
+
+# Package regtranslate
+
+{{regtranslate}}
+
+# Package metaregTools
+
+omitted
+
+# Package metaregBase
+
+{{metaregBase}}
+
+
+##################################
+# Your Task
+##################################
+
+
+
+'''
+
+
+
+file_template = '''
+
+# FILE: {{filename}}
+```
+{{filetext}}
+```
+# END OF FILE: {{filename}}
+
+-----------------------------------------------------------
+'''
+
+
+[[metaregBase]]
+
+include_files = '''
+/home/rstudio/repbox/metaregBase/DESCRIPTION
+/home/rstudio/repbox/metaregBase/R/*.R
+'''
+
+[[repboxUtils]]
+
+include_files = '''
+/home/rstudio/repbox/repboxUtils/DESCRIPTION
+/home/rstudio/repbox/repboxUtils/R/*.R
+'''
+
+[[repboxStataReg]]
+
+include_files = '''
+/home/rstudio/repbox/repboxStataReg/DESCRIPTION
+/home/rstudio/repbox/repboxStataReg/R/*.R
+'''
+
+[[metaregTools]]
+
+include_files = '''
+/home/rstudio/repbox/metaregTools/DESCRIPTION
+/home/rstudio/repbox/metaregTools/R/*.R
+'''
+
+
+[[repboxDRF]]
+
+include_files = '''
+/home/rstudio/repbox/repboxDRF/DESCRIPTION
+/home/rstudio/repbox/repboxDRF/R/*.R
+'''
+
+[[regtranslate]]
+
+include_files = '''
+/home/rstudio/repbox/regtranslate/DESCRIPTION
+/home/rstudio/repbox/regtranslate/R/*.R
+'''
+

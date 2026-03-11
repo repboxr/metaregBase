@@ -4,27 +4,10 @@
 
 
 example = function() {
-  library(repboxReg)
-  project_dir = "/home/rstudio/repbox/projects_reg/aer_105_5_55"
-  step = 5
-
-  dat=haven::read_dta("/home/rstudio/repbox/projects_reg/aer_105_5_55/metareg/dap/stata/cache/step_1.dta")
-
-  dap = get.project.dap(project_dir)
-  mr = dap
-  internal_reg = mr_get_reg_info(mr, step,dat)
-  org_dat = dat
-  dat = mr_adapt_data_for_reg(project_dir, step, internal_reg, dat)
-
-  regvar = load_parcel(project_dir, "base","regvar")$regvar %>% filter(step==5)
-  regcoef = load_parcel(project_dir, "base","regcoef")$regcoef %>% filter(step==5)
-
-  regxvar = make_regxvar(regvar, dat, regcoef)
-  regxvar
 }
 
 
-make_regxvar = function(regvar,dat,  regcoef=NULL) {
+make_regxvar = function(regvar, dat,  regcoef=NULL) {
   restore.point("make_regxvar")
   regvar = regvar[regvar$role %in% c("exo","endo","instr") & !regvar$absorbed_fe,]
 
@@ -55,13 +38,13 @@ make_regxvar = function(regvar,dat,  regcoef=NULL) {
 
   regcoef = filter(regcoef, !is.na(coef))
   # For some commands like mlogit we have duplicated entries
-  regcoef = regcoef[!duplicated(regcoef[,c("step","cterm")]), ]
+  regcoef = regcoef[!duplicated(regcoef[,c("runid","cterm")]), ]
 
-  regxvar = tibble(artid=first(regvar$artid), step=first(regvar$step), ia_cterm=ia_cterms, cterm = res_li) %>%
+  regxvar = tibble(runid=first(regvar$runid), ia_cterm=ia_cterms, cterm = res_li) %>%
     unnest(cterm) %>%
     left_join(regvar %>% select(ia_cterm, role), by="ia_cterm") %>%
     unique() %>%
-    left_join(select(regcoef,step, cterm, org_coef=coef), by=c("cterm","step")) %>%
+    left_join(select(regcoef,runid, cterm, org_coef=coef), by=c("cterm","runid")) %>%
     mutate(in_regcoef = !is.na(org_coef))
 
   regxvar

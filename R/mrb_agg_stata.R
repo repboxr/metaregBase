@@ -1,13 +1,13 @@
 
 # TO DO: Transform to parcels
-mrb_agg_stata_reg_out = function(mrb) {
-  restore.point("mrb_agg_stata_reg_out")
-  mrb$stata_ct = stata_ct = mrb_agg_stata_regcoef(mrb)
-  mrb$stata_ct = mrb_agg_add_dprobit_coef(mrb,mrb$stata_ct)
-  mrb$stata_reg_scalars = mrb_agg_stata_reg_scalars(mrb)
-  mrb$stata_reg_macros = mrb_agg_stata_reg_macros(mrb)
-
-  unique(mrb$stata_ct$runid)
+mrb_agg_stata = function(mrb, skip_if_has = TRUE) {
+  restore.point("mrb_agg_stata")
+  if (skip_if_has & !is.null(mrb[["stata_ct_sb"]]))
+    return(mrb)
+  mrb$stata_ct_sb = mrb_agg_stata_regcoef(mrb)
+  mrb$stata_scalars = mrb_agg_stata_reg_scalars(mrb)
+  mrb$stata_macros = mrb_agg_stata_reg_macros(mrb)
+  mrb
 }
 
 mrb_agg_stata_regcoef = function(mrb, file_prefix="reg_", dir = file.path(mrb$mrb_dir, "stata_reg_out")) {
@@ -15,7 +15,7 @@ mrb_agg_stata_regcoef = function(mrb, file_prefix="reg_", dir = file.path(mrb$mr
   glob = paste0(file_prefix, "*",".dta")
   run_df = mrb$drf$run_df
   files = list.files(dir, glob2rx(glob), full.names=TRUE)
-  if (length(files)==0) return(mrb)
+  if (length(files)==0) return(NULL)
 
   file = files[1]
   old.cols = c("parm","label","estimate","stderr","dof", "z","p","min95","max95")

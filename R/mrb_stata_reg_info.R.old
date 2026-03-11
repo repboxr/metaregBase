@@ -1,8 +1,4 @@
-# 1. Run parse.stata.regs
-# 2. Load reg data set and call stata reg.var.info
-
-
-# Characterize stata regression variables given a data set
+# Still old code that does not use modern cmdpart structure...
 
 example.vi.from.stata.reg = function() {
   library(repboxMain)
@@ -57,8 +53,7 @@ stata.reg.se.info = function(reg) {
       stata_se = "newey",
       clustervar = list(NULL),
       sandwich_fun = "NeweyWest",
-      sandwich_opts = list(list(lag=lag, prewhite=FALSE, adjust=TRUE)),
-      #sandwich_opts = list(list(lag=lag, prewhite=FALSE, adjust=TRUE, order.by = as.formula(paste0("~", reg$timevar))))
+      sandwich_opts = list(list(lag=lag, prewhite=FALSE, adjust=TRUE))
     )
     return(se.info)
 
