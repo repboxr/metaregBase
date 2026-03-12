@@ -42,11 +42,16 @@ mrb_run_r_base = function(mrb, just_pids=NULL, make_parcels=TRUE) {
 
   all_step_parcels = list()
 
+
+
+  cat("\nmrb_r_base processing runids: ")
   for (pid in pids) {
-    cat(sprintf("\nProcessing pid: %s", pid))
+    cat(paste0(pid," "))
     step_parcels = mrb_run_r_base_step(mrb, pid)
     all_step_parcels[[as.character(pid)]] = step_parcels
   }
+  cat("\n")
+
   mrb$all_step_parcels = all_step_parcels
   if (make_parcels) {
     mrb_make_r_base_parcels(mrb)
@@ -228,7 +233,7 @@ mrb_make_r_base_parcels = function(mrb, save=TRUE) {
   }
 
 
-  # Core & Regsource
+  # reg
   parcels$reg = combine_steps("reg")
 
   # Coefs & Variables
@@ -257,7 +262,8 @@ mrb_make_r_base_parcels = function(mrb, save=TRUE) {
     left_join(run_df %>% select(runid, file_path, line), by="runid") %>%
     left_join(mrb$parcels$stata_cmd %>% select(file_path, line, code_line_start=orgline_start, code_line_end = orgline_end), by = c("file_path", "line")) %>%
     left_join(mrb$parcels$stata_file, by="file_path") %>%
-    rename(script_path = file_path, script_name = file_name,script_type = file_type)
+    rename(script_path = file_path, script_name = file_name,script_type = file_type) %>%
+    mutate(script_file = basename(script_path))
 
   parcels$regsource = regsource
 

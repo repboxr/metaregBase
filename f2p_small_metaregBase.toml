@@ -1,0 +1,76 @@
+opt_prompt_file = "my_prompt.Rmd"
+
+include_files = '''
+pipeline.md
+'''
+exclude_files = '''
+*.toml
+'''
+
+template = '''
+
+Below is code from my package metaregBase
+
+{{metaregBase}}
+# Further packages of repbox project that are partialyl loaded
+
+https://github.com/repboxr
+
+https://github.com/repboxr/repboxDRF
+https://github.com/repboxr/repboxStata
+https://github.com/repboxr/repboxUtils
+https://github.com/repboxr/repboxDB
+https://github.com/repboxr/regtranslate
+
+##################################
+# Your Task
+##################################
+
+
+
+'''
+
+
+
+file_template = '''
+
+# FILE: {{filename}}
+```
+{{filetext}}
+```
+# END OF FILE: {{filename}}
+
+-----------------------------------------------------------
+'''
+
+
+[[metaregBase]]
+
+include_files = '''
+/home/rstudio/repbox/metaregBase/DESCRIPTION
+/home/rstudio/repbox/metaregBase/R/*.R
+'''
+
+
+[[metaregTools]]
+
+include_files = '''
+/home/rstudio/repbox/metaregTools/DESCRIPTION
+/home/rstudio/repbox/metaregTools/R/*.R
+'''
+
+
+[[repboxDRF]]
+
+include_files = '''
+/home/rstudio/repbox/repboxDRF/DESCRIPTION
+/home/rstudio/repbox/repboxDRF/R/*.R
+'''
+
+[[regtranslate]]
+
+include_files = '''
+/home/rstudio/repbox/regtranslate/DESCRIPTION
+/home/rstudio/repbox/regtranslate/R/*.R
+'''
+

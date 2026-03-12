@@ -105,7 +105,7 @@ coef_diff_summary = function(diff_tab, compare_what=c("all","coef"), problem="")
 
   if (compare_what=="all") {
     sum = diff_tab %>%
-      group_by(artid, runid) %>%
+      group_by(runid) %>%
       summarize(
         variant1 = first(na.omit(variant_1)),
         variant2 = first(na.omit(variant_2)),
@@ -121,7 +121,7 @@ coef_diff_summary = function(diff_tab, compare_what=c("all","coef"), problem="")
       ungroup()
   } else if (compare_what=="coef") {
     sum = diff_tab %>%
-      group_by(artid, runid) %>%
+      group_by(runid) %>%
       summarize(
         variant1 = first(na.omit(variant_1)),
         variant2 = first(na.omit(variant_2)),
@@ -151,7 +151,7 @@ coef_diff_table = function(co1, co2, check.ref.levels = TRUE) {
   if (is.null(co1) | is.null(co2)) return(NULL)
 
   # Match results
-  cod = full_join(co1, co2, by=c("cterm","runid","artid"), suffix=c("_1","_2"))
+  cod = full_join(co1, co2, by=c("cterm","runid"), suffix=c("_1","_2"))
 
   # Ignore coefficients that are missing in both co1 and co2
   cod = cod %>%
@@ -233,7 +233,7 @@ coef_diff_table = function(co1, co2, check.ref.levels = TRUE) {
     ungroup()
 
   cod = cod %>%
-    select(artid, runid, cterm, identical, identical_coef, everything())
+    select(runid, cterm, identical, identical_coef, everything())
 
   cod
 }

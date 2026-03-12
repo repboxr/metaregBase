@@ -1,0 +1,3404 @@
+
+Below is code from my package metaregBase
+
+
+# FILE: DESCRIPTION
+```
+Package: metaregBase
+Type: Package
+Title: Run metaregBase 
+Version: 0.1.0
+Authors@R: c(
+    person(
+      "Sebastian", "Kranz",
+      email = "sebastian.kranz@uni-ulm.de",
+      role = c("aut", "cre")
+    )
+  )
+Description: Uses repboxDRF structure to rerun 
+  all regressions in Stata and R and store results.
+License: GPL >= 2.0
+Encoding: UTF-8
+LazyData: true
+Depends: repboxDB, repboxUtils, repboxDRF, repboxStataReg, regtranslate
+```
+# END OF FILE: DESCRIPTION
+
+-----------------------------------------------------------
+
+
+# FILE: colstat.R
+```
+make_cols_small_info = function(df, cols = colnames(df)) {
+  restore.point("make_cols_small_info")
+  distinct_num = sapply(cols, function(col) n_distinct(df[[col]]))
+  class = sapply(seq_along(cols), function(j) {
+    #restore.point("shkjfhkdhfkkd")
+    v = df[[ cols[j] ]]
+    if (is.numeric(v)) {
+      if (length(distinct_num[j])>0 & length(distinct_num[j])<=2) {
+        uni = unique(v)
+        if (all(uni %in% c(0,1))) {
+          return("dummy")
+        }
+      }
+      # need to add try since integer conversion sometimes fails
+      # with error
+      if (isTRUE(try(all(v==suppressWarnings(as_integer(v)),na.rm=TRUE), silent=TRUE))) return("integer")
+      return("numeric")
+    }
+    return(class(v)[[1]])
+  })
+
+  tibble(col = cols, class=class, distinct_num = distinct_num)
+
+}
+
+# Make column statistics as mainly stored later in colstat_num and colstat_factor
+make_cols_info = function(df, cols=colnames(df)) {
+  restore.point("make_cols_info")
+  df = df[,cols]
+  distinct_num = sapply(df, n_distinct, na.rm=TRUE)
+  distinct_vals = vector("list", NCOL(df))
+  use = distinct_num <= 5
+  distinct_vals[use] = lapply(df[use], function(v) unique(na.omit(v)))
+
+  na_num = sapply(df, function(v) sum(is.na(v)))
+  na_share = na_num / NROW(df)
+
+  class = sapply(seq_along(cols), function(j) {
+    v = df[[j]]
+    if (is.numeric(v)) {
+      if (distinct_num[[j]] == 2 | distinct_num[[j]]==1) {
+        if (length(setdiff(distinct_vals[[j]], 0:1))==0)
+          return("dummy")
+      }
+      if (isTRUE(all(v==as_integer(v),na.rm=TRUE))) return("integer")
+      return("numeric")
+    }
+    return(class(v))[1]
+  })
+  is_numeric = class %in% c("numeric","dummy","integer","Date","POSIXct")
+
+  mean = sd = min = max = rep(NA, NCOL(df))
+
+  min.na.fun = function(vals) {
+    if (all(is.na(vals))) return(NA)
+    min(vals, na.rm=TRUE)
+  }
+
+  max.na.fun = function(vals) {
+    if (all(is.na(vals))) return(NA)
+    max(vals, na.rm=TRUE)
+  }
+
+  mean[is_numeric] = sapply(df[is_numeric], mean, na.rm=TRUE)
+  sd[is_numeric] = sapply(df[is_numeric], sd, na.rm=TRUE)
+  min[is_numeric] = sapply(df[is_numeric], min.na.fun)
+  max[is_numeric] = sapply(df[is_numeric], max.na.fun)
+
+  quantiles = matrix(NA, nrow=length(cols), ncol=5)
+  colnames(quantiles) = c("q10","q25","median","q75","q90")
+
+  # Quantiles don't work on data or datetime objects
+  rows = which(class %in% c("numeric","dummy","integer"))
+  for (i in rows) {
+    qu = quantile(df[[i]],c(0.1,0.25,0.5,0.75,0.9),na.rm = TRUE)
+    quantiles[i,] = qu
+  }
+
+  bind_cols(tibble(col = cols, class, distinct_num, distinct_vals, obs = NROW(df)-na_num, na_num, na_share, min, max, mean, sd), as_tibble(quantiles))
+
+}
+
+get_natural_reg_type = function(v) {
+  if (is.numeric(v)) {
+    uni = unique(v)
+    if (length(uni)>0 & length(uni)<=2) {
+      if (all(uni %in% c(0,1))) {
+        return("dummy")
+      }
+    }
+    return("numeric")
+  } else if (is.logical(v)) {
+    return("dummy")
+  } else {
+    return("factor")
+  }
+}
+
+# Make column statistics as mainly stored later in colstat_numeric,
+# colstat_factor and colstat_dummy
+make_colstats = function(cols,df, reg_df=df, reg_types = NULL) {
+  restore.point("make_colstats")
+
+  numeric_li = dummy_li = factor_li = vector("list", length(cols))
+  numeric_count = dummy_count = factor_count = 0
+
+  for (col in cols) {
+    rt = reg_types[[2]][reg_types[[1]] == col]
+    #reg_types[names(reg_types)==col]
+    if (length(rt)==0) {
+      rt = get_natural_reg_type(df[[col]])
+    }
+    if ("numeric" %in% rt) {
+      numeric_count = numeric_count + 1
+      numeric_li[[numeric_count]] = colstat_numeric(col, df, reg_df)
+    }
+    if ("dummy" %in% rt) {
+      dummy_count = dummy_count + 1
+      dummy_li[[dummy_count]] = colstat_dummy(col, df, reg_df)
+    }
+    if ("factor" %in% rt) {
+      factor_count = factor_count + 1
+      factor_li[[factor_count]] = colstat_factor(col, df, reg_df)
+    }
+  }
+  list(
+    colstat_numeric = bind_rows(numeric_li[seq_len(numeric_count)]),
+    colstat_dummy = bind_rows(dummy_li[seq_len(dummy_count)]),
+    colstat_factor = bind_rows(factor_li[seq_len(factor_count)])
+  )
+}
+
+
+
+# Make column statistics as mainly stored later in colstat_num and colstat_factor
+colstat_numeric = function(col,df, reg_df=df, val = df[[col]], reg_val = reg_df[[col]]) {
+  restore.point("colstat_numeric")
+
+  v = reg_val
+  qu = quantile(v,c(0.1,0.25,0.75,0.9),na.rm = TRUE)
+  tibble(
+    col=col,
+    class = class(val)[1],
+    na_num = sum(is.na(val)),
+    na_share = na_num / length(val),
+
+    mean_org = mean(val, na.rm=TRUE),
+    sd_org = sd(val, na.rm=TRUE),
+
+    mean = mean(v, na.rm=TRUE),
+    sd = sd(v, na.rm=TRUE),
+    min = suppressWarnings(min(v, na.rm=TRUE)),
+    max = suppressWarnings(max(v, na.rm=TRUE)),
+    median = median(v, na.rm=TRUE),
+
+    q10 = qu[1],
+    q25 = qu[2],
+    q75 = qu[3],
+    q90 = qu[4]
+  )
+}
+
+
+colstat_factor = function(col,df, reg_df=df, val = df[[col]], reg_val = reg_df[[col]]) {
+  restore.point("colstat_factor")
+
+  val_tab = sort(table(val), decreasing = TRUE)
+  reg_val_tab = sort(table(reg_val), decreasing = TRUE)[1:3]
+  top = names(reg_val_tab)[1:3]
+  tibble(
+    col=col,
+    class = class(val)[1],
+    na_num = sum(is.na(val)),
+    na_share = na_num / length(val),
+
+    distinct_num = n_distinct(reg_val),
+    distinct_num_org = n_distinct(val, na.rm=TRUE),
+
+    top1_val = top[1],
+    top1_num = reg_val_tab[top[1]],
+    top1_num_org = val_tab[top[1]],
+
+    top2_val = top[2],
+    top2_num = reg_val_tab[top[2]],
+    top2_num_org = val_tab[top[2]],
+
+    top3_val = top[3],
+    top3_num = reg_val_tab[top[3]],
+    top3_num_org = val_tab[top[3]]
+  )
+
+}
+
+# Make column statistics as mainly stored later in colstat_num and colstat_factor
+colstat_dummy = function(col,df, reg_df=df, val = as_integer(df[[col]]), reg_val = as_integer(reg_df[[col]])) {
+  restore.point("colstat_numeric")
+
+  v = reg_val
+  tibble(
+    col=col,
+    class = class(val)[1],
+    na_num = sum(is.na(val)),
+    na_share = na_num / length(val),
+
+    ones_num = sum(v == 1, na.rm=TRUE),
+    ones_num_org = sum(val == 1, na.rm=TRUE),
+
+    mean_org = mean(val, na.rm=TRUE),
+    mean = mean(v, na.rm=TRUE),
+    sd = sd(v, na.rm=TRUE),
+  )
+}
+```
+# END OF FILE: colstat.R
+
+-----------------------------------------------------------
+
+
+# FILE: debug_tools.R
+```
+set_debug_mode = function(debug_mode=TRUE) {
+  options(repbox.debug_mode = debug_mode)
+}
+
+is_debug_mode = function() {
+  isTRUE(getOption("repbox.debug_mode"))
+}
+
+
+source_with_log = function(
+  file,
+  log_file=NULL,
+  append = TRUE,
+  split = TRUE,
+  chdir = FALSE,
+  envir = parent.frame(),
+  echo = TRUE,
+  print.eval = TRUE,
+  prompt.echo = getOption("prompt"),
+  max.deparse.length = Inf,
+  keep.source = getOption("keep.source"),
+  log_con = NULL, close_con=is.null(log_con)
+) {
+  stopifnot(is.character(file), length(file) == 1L)
+
+  if (is.null(log_con)) {
+    stopifnot(is.character(log_file), length(log_file) == 1L)
+    log_con = file(log_file, open = if (append) "at" else "wt")
+  }
+
+  output_sink_before = sink.number(type = "output")
+  message_sink_before = sink.number(type = "message")
+
+  warnings_seen = character()
+  error_obj = NULL
+  value = NULL
+
+  on.exit({
+    while (sink.number(type = "message") > message_sink_before) {
+      sink(type = "message")
+    }
+    while (sink.number(type = "output") > output_sink_before) {
+      sink()
+    }
+    if (close_con) {
+      try(close(log_con), silent=TRUE)
+    }
+  }, add = TRUE)
+
+  sink(log_con, split = split)
+  sink(log_con, type = "message")
+
+  cat("\n")
+  cat("### source_with_log start:", format(Sys.time(), "%Y-%m-%d %H:%M:%S"), "\n")
+  cat("### file:", normalizePath(file, winslash = "/", mustWork = FALSE), "\n\n")
+
+  value = withCallingHandlers(
+    tryCatch(
+      source(
+        file = file,
+        local = envir,
+        echo = echo,
+        print.eval = print.eval,
+        prompt.echo = prompt.echo,
+        max.deparse.length = max.deparse.length,
+        chdir = chdir,
+        keep.source = keep.source
+      ),
+      error = function(e) {
+        error_obj <<- e
+        msg = conditionMessage(e)
+        cat("\nError in source_with_log:\n", file = stderr(), sep = "")
+        cat(msg, "\n", file = stderr(), sep = "")
+        NULL
+      }
+    ),
+    warning = function(w) {
+      warnings_seen <<- c(warnings_seen, conditionMessage(w))
+      invokeRestart("muffleWarning")
+    }
+  )
+
+  cat("\n### source_with_log end:", format(Sys.time(), "%Y-%m-%d %H:%M:%S"), "\n")
+
+  invisible(list(
+    ok = is.null(error_obj),
+    value = value,
+    error = error_obj,
+    warnings = warnings_seen
+  ))
+}
+```
+# END OF FILE: debug_tools.R
+
+-----------------------------------------------------------
+
+
+# FILE: mrb_agg_stata.R
+```
+
+# TO DO: Transform to parcels
+mrb_agg_stata = function(mrb, skip_if_has = TRUE) {
+  restore.point("mrb_agg_stata")
+  if (skip_if_has & !is.null(mrb[["stata_ct_sb"]]))
+    return(mrb)
+  mrb$stata_ct_sb = mrb_agg_stata_regcoef(mrb)
+  mrb$stata_scalars = mrb_agg_stata_reg_scalars(mrb)
+  mrb$stata_macros = mrb_agg_stata_reg_macros(mrb)
+  mrb$stata_ct_dprobit = mrb_agg_add_dprobit_coef(mrb,mrb$stata_ct_sb)
+  mrb
+}
+
+mrb_agg_stata_regcoef = function(mrb, file_prefix="reg_", dir = file.path(mrb$mrb_dir, "stata_reg_out")) {
+  restore.point("mrb_agg_stata_regcoef")
+  glob = paste0(file_prefix, "*",".dta")
+  run_df = mrb$drf$run_df
+  files = list.files(dir, glob2rx(glob), full.names=TRUE)
+  if (length(files)==0) return(NULL)
+
+  file = files[1]
+  old.cols = c("parm","label","estimate","stderr","dof", "z","p","min95","max95")
+  new.cols = c("var","label", "coef","se","dof", "t","p","ci_low","ci_up")
+
+  li = lapply(files, function(file) {
+    restore.point("kahkdhskdhk")
+    df = haven::read_dta(file)
+    df = rename.cols(df, old.cols, new.cols)
+    df = df[,intersect(new.cols, colnames(df))]
+    base = basename(file)
+    if (!is.null(df)) {
+      has.variant = has.substr(base,"__")
+      if (has.variant) {
+        runid = as_integer(str.between(base, file_prefix, "__"))
+        variant = str.between(base, "__", ".dta")
+      } else {
+        runid = as_integer(str.between(base, file_prefix, ".dta"))
+        variant = ""
+      }
+      df$runid = rep(runid, NROW(runid))
+      df$variant = rep(variant, NROW(runid))
+      df$cmd = run_df$cmd[runid]
+    }
+    return(df)
+  })
+  res = bind_rows(li)
+  res
+}
+
+
+# Aggregates regression statistics stored with svret
+mrb_agg_stata_reg_scalars = function(mrb, file_prefix="regscalar_", dir = file.path(mrb$mrb_dir, "stata_reg_out")) {
+  restore.point("mr_agg_stata_reg_scalars")
+  glob = paste0(file_prefix, "*",".txt")
+  files = list.files(dir, glob2rx(glob), full.names=TRUE)
+  file = first(files)
+  li = lapply(files, function(file) {
+
+    df = read_var_equal_val_file(file,as.numeric = TRUE)
+    base = basename(file)
+    if (!is.null(df)) {
+      runid = as_integer(str.between(base, file_prefix, "__"))
+      variant = str.between(base, "__", ".txt")
+      df$runid = rep(runid, NROW(runid))
+      df$variant = rep(variant, NROW(runid))
+    }
+    return(df)
+  })
+  res = bind_rows(li)
+  res
+}
+
+# Aggregates regression statistics stored with svret
+mrb_agg_stata_reg_macros = function(mrb, file_prefix="regmacro_", dir = file.path(mrb$mrb_dir, "stata_reg_out")) {
+  restore.point("mr_agg_stata_reg_macros")
+  glob = paste0(file_prefix, "*",".txt")
+  files = list.files(dir, glob2rx(glob), full.names=TRUE)
+  file = first(files)
+  li = lapply(files, function(file) {
+    df = read_var_equal_val_file(file,as.numeric = FALSE)
+    base = basename(file)
+    if (!is.null(df)) {
+      runid = as_integer(str.between(base, file_prefix, "__"))
+      variant = str.between(base, "__", ".txt")
+      df$runid = rep(runid, NROW(runid))
+      df$variant = rep(variant, NROW(runid))
+
+    }
+    return(df)
+  })
+  res = bind_rows(li)
+  res
+}
+
+
+
+# Extract marginal effects for dprobit commands
+# Unlike margins, dprobit (and mfx) treats dummy variables automatically as
+# discrete, i.e. we have special code.
+mrb_agg_add_dprobit_coef = function(mrb, stata_ct, dir = file.path(mrb$mrb_dir, "stata_reg_out")) {
+  restore.point("mr_agg_add_dprobit_coef")
+  glob = paste0("dprobit_", "*",".csv")
+  files = list.files(dir, glob2rx(glob), full.names=TRUE)
+  if (length(files)==0) return(stata_ct)
+
+  #runid.df = mr$runid.df
+  #new.cols = c("var","label", "coef","se","dof", "t","p","ci_low","ci_up")
+
+  df = lapply(files, function(file) {
+    df = read.csv(file)
+    base = basename(file)
+    if (!is.null(df)) {
+      runid = as_integer(str.between(base, "dprobit_", ".csv"))
+      df$runid = rep(runid, NROW(runid))
+    }
+    return(df)
+  }) %>% bind_rows()
+  df$t = df$coef / df$se
+  df$ci_low = df$ci_up = NA_real_
+  df$variant = rep("sb_mfx", NROW(runid))
+  df$cmd = "dprobit"
+
+  # p-value is the same as for the original coefficient
+  df = left_join(df, stata_ct %>% filter(variant=="sb") %>% select(runid, var,p,label), by=c("runid","var"))
+
+
+
+  return(df)
+}
+
+
+read_var_equal_val_file = function(file, as.numeric=FALSE, wide = FALSE) {
+  restore.point("read_var_equal_file")
+  txt = readLines(file)
+  pos = stringi::stri_locate_first_fixed(txt,"=")[,1]
+
+  var = stringi::stri_sub(txt,1,pos-1)
+  val = stringi::stri_sub(txt,pos+1)
+  if (as.numeric) {
+    val = suppressWarnings(as.numeric(val))
+  }
+
+  if (wide) {
+    li = as.list(val)
+    names(li) = var
+    res = as_tibble(li)
+  } else {
+    res = tibble(
+      var = var,
+      val = val
+    )
+  }
+
+  res
+}
+```
+# END OF FILE: mrb_agg_stata.R
+
+-----------------------------------------------------------
+
+
+# FILE: mrb_cmd_types.R
+```
+stata_cmds_with_margin = function() {
+  #cmds = readLines("~/repbox/repboxReg/inst/misc/reg_margin_cmds.txt")
+  #cat(paste0('"',sort(cmds),'"', collapse=", "))
+
+
+  c("asclogit", "asmprobit", "asroprobit", "binreg", "biprobit", "blogit", "bprobit", "clogit",  "etregress", "exlogistic", "glogit", "gprobit", "heckman", "heckoprobit", "heckprobit", "hetprobit", "ivpoisson", "ivprobit", "ivtobit", "logistic", "logit", "mlogit", "mprobit", "nlogit", "obprobit", "ologit", "probit", "rologit", "scobit", "slogit",
+    #"tobit","dprobit"
+    "xtlogit", "xtprobit")
+}
+
+stata_cmds_with_exp_coef = function() {
+  c("nbreg", "poisson", "gnbreg","etpoisson", "tnbreg","tpoisson", "zinb", "zip", "expoisson")
+}
+```
+# END OF FILE: mrb_cmd_types.R
+
+-----------------------------------------------------------
+
+
+# FILE: mrb_col_info.R
+```
+# Store information about all columns in data set
+# (not only those used in the regression)
+
+get_var_labels = function(dat) {
+  #var.labels <- attr(org_dat,"var.labels")
+  #if (!is.null(var.labels)) {
+  #  stop("Need to deal with variable labels!")
+  #}
+  labs= rep("", NCOL(dat))
+  names(labs) = names(dat)
+
+  labels = unlist(lapply(dat, function(v) attr(v, "label")))
+  labs[names(labels)] = labels
+  labs
+
+}
+
+repbox_col_class = function(v, distinct_num = n_distinct(v,na.rm = TRUE)) {
+  restore.point("repbox_col_class")
+  if (is.numeric(v)) {
+
+    if (length(distinct_num)>0 & length(distinct_num)<=2) {
+      uni = unique(v)
+      if (isTRUE(all(uni %in% c(0,1), na.rm=TRUE))) {
+        return("dummy")
+      }
+    }
+    # need to add try since integer conversion sometimes fails
+    # with error
+    if (isTRUE((try(all(v==suppressWarnings(as_integer(v)),na.rm=TRUE), silent=TRUE)))) return("integer")
+    return("numeric")
+  }
+  atomic_class(v)
+}
+
+
+repbox_compute_col_info = function(runid, project_dir,dat, org_dat, reg) {
+  restore.point("repbox_compute_col_info")
+  #stop()
+  cols = names(org_dat)
+  # Only use rows used in regression
+  dat = dat[cols]
+
+  var_labels <-get_var_labels(org_dat)
+
+  colinfo_li = lapply(cols, function(col) {
+    restore.point("jhsjkfhkshdfjh")
+    val = dat[[col]]
+    org_val = org_dat[[col]]
+
+    val_tab = c(sort(table(val), decreasing = TRUE),NA,NA)[1:2]
+    top = c(names(val_tab),NA_character_,NA_character_)
+    distinct_num_org = n_distinct(org_val, na.rm = TRUE)
+    distinct_num = n_distinct(val, na.rm = TRUE)
+
+
+    res = list(
+      runid = runid,
+      var = col,
+      label = var_labels[col], # TO DO: DEAL WITH LABELS
+      col_type_org = atomic_class(org_val),
+      col_type = repbox_col_class(val,distinct_num),
+      var_group = "",
+      dummy_set = "", # TO DO
+      md5_org = digest::digest(org_val),
+      nobs_org = NROW(org_dat),
+      nobs = NROW(dat),
+      na_num_org = sum(is.na(org_val)),
+      na_num = sum(is.na(val)),
+      distinct_num_org = distinct_num_org,
+      distinct_num = distinct_num,
+      mean = NA_real_, sd = NA_real_, min = NA_real_, max=NA_real_,
+
+      top1_val = top[1],
+      top1_num = val_tab[top[1]],
+
+      top2_val = top[2],
+      top2_num = val_tab[top[2]]
+    )
+
+    if (is.numeric(val) & distinct_num >0) {
+      res$mean = mean(val, na.rm=TRUE)
+      res$sd = sd(val, na.rm=TRUE)
+      res$min = min(val, na.rm=TRUE)
+      res$max = max(val, na.rm=TRUE)
+    }
+    #as_tibble(res)
+    res
+  })
+  df = bind_rows(colinfo_li)
+
+
+  # Col groups
+  col_group = stri_match_first_regex(cols, "^[a-zA-Z][a-zA-Z_]*(?=[0-9]+$)")[,1] %>% na.val("")
+  # Also consider xi generated variables like _Iyear_2009
+  col_group = stri_match_first_regex(cols, "^[a-zA-Z_]+(?=[0-9]+$)")[,1] %>% na.val("")
+  dupl_col_group = unique(col_group[duplicated(col_group)])
+  col_group[!col_group %in% dupl_col_group] = ""
+  df$var_group = col_group
+
+  dummy_var_groups = df %>%
+    filter(var_group != "") %>%
+    group_by(var_group) %>%
+    summarize(keep = all(col_type=="dummy")) %>%
+    filter(keep)
+
+  for (group in dummy_var_groups$var_group) {
+    gcols = which(df$var_group==group)
+    mat = as.matrix(org_dat[gcols])
+    rsum = rowSums(mat)
+    if (all(rsum==1, na.rm=TRUE) & !all(is.na(rsum))) {
+      df$dummy_set[gcols] = group
+    }
+  }
+  df
+
+}
+
+# Update for vargroup and dummy_set definitions that can be applied on
+# given colinfo
+recompute_colinfo_groups = function(colinfo) {
+  restore.point("recompute_colinfo_groups")
+  df = colinfo
+  cols = colinfo$var
+  # Col groups
+  #col_group = stri_match_first_regex(cols, "^[a-zA-Z][a-zA-Z_]*(?=[0-9]+$)")[,1] %>% na.val("")
+  # Also consider xi generated variables like _Iyear_2009
+  col_group = stri_match_first_regex(cols, "^[a-zA-Z_]+(?=[0-9]+$)")[,1] %>% na.val("")
+  dupl_col_group = unique(col_group[duplicated(col_group)])
+  col_group[!col_group %in% dupl_col_group] = ""
+  df$var_group = col_group
+
+  df$dummy_set = case_when(
+    df$dummy_set != "" ~ df$dummy_set,
+    startsWith(df$var_group, "_I") ~ df$var_group,
+    TRUE ~ ""
+  )
+  df
+}
+```
+# END OF FILE: mrb_col_info.R
+
+-----------------------------------------------------------
+
+
+# FILE: mrb_cterms.R
+```
+# Parse and map the shown coefficient names (terms) in regression
+# ouputs of different stata and r functions.
+#
+# The canonical terms will be refered to as cterm
+#
+# a=5:L2@b (the cterm assuming that a and c are factors)
+#
+
+
+# Take an expr from a Stata regression command and convert it to
+# cterm representation
+
+# Example:
+#
+# i.i1##c.d1 -> i1:d1
+#
+# L2.x -> L2@x
+#
+#
+#
+# cterm will not contain info on whether the variable is used
+# as factor or not.
+stata_expr_to_cterm = function(stata_expr) {
+  restore.point("stata_expr_to_cterm")
+  cterm = stringi::stri_replace_all_regex(stata_expr,"(#+)|(\\|)|(\\*)","#")
+  cterm = gsub(" ","", cterm)
+
+  # i2000.year => year=2000
+  # generates a full dummy set. Not only numeric values allowed.
+  #cterm = "b1990.x##I2000.year"
+  cterm = stringi::stri_replace_all_regex(cterm, "(#|^)[iI]([0-9]+)\\.([a-zA-Z_0-9]+)","$1$3=$2" )
+
+  # i.year => year
+  # c.year => year
+  cterm = gsub("#[ic]\\.","#", cterm, ignore.case=TRUE)
+  cterm = gsub("^[ic]\\.","", cterm, ignore.case=TRUE)
+
+  # ib2000.year => year
+  # b2000.year => year
+  # will generate full dummy set with reference level 2000
+  cterm = stringi::stri_replace_all_regex(cterm, "#[iI]?[bB]([0-9]+)\\.","#" )
+  cterm = stringi::stri_replace_all_regex(cterm, "^[iI]?[bB]([0-9]+)\\.","" )
+
+  # L1.year => L1@year
+
+  # remove i. in the beginning of a variable name
+  cterm = gsub(".","@", cterm, fixed=TRUE)
+
+  # Update: Replace stuff like
+  #      1.disab#0.vid_late
+  # with disab=1#vid_late=0
+  cterm = stri_replace_all_regex(cterm, "(^|#)([0-9]+)@([a-zA-Z_][a-zA-Z_0-9]*)", "$1$3=$2")
+
+
+  cterm
+}
+
+canonical.stata.output.terms = function(terms,labels, cmd=NULL) {
+  restore.point("canonical.stata.output.terms")
+
+  terms = canonical.output.terms.stata.default(terms)
+  terms = canonical.output.terms.stata.xi(terms, labels)
+  return(terms)
+
+
+  cmd = rep(cmd, length.out = length(terms))
+  canonical = rep(NA, NROW(terms))
+
+  rows = which(is.na(canonical))
+  canonical[rows] = canonical.output.terms.stata.default(terms[rows])
+
+  na.rows = which(is.na(canonical))
+  if (length(na.rows)>0) {
+    stop(paste0("Cannot yet parse stata output terms for ", paste0(unique(cmd[na.rows]), collapse = ", "), ". Update canonical.stata.output.terms"))
+  }
+  canonical
+}
+
+adapt.stata.prefix.notation = function(cterm) {
+  cterm = gsub(".","@", cterm,fixed = TRUE)
+  cterm
+}
+
+canonical.output.terms.stata.default = function(terms, ...) {
+  restore.point("canonical.output.stata.default")
+  cons = which(terms %in% c("_cons","o._cons"))
+  terms[cons] = "(Intercept)"
+
+  # Default interaction term with #
+
+  #terms = c("4.x#2.b","1.c#2.dg#3b.l","c")
+  # Note that before the . there is a number for factors
+  # if we have L2.x1 then we keep L2.x1 as it indicates a time lag
+
+  rows = which(has.substr(terms,"#"))
+  if (length(rows)>0) {
+    lhs = str.left.of(terms[rows], "#")
+    rhs = str.right.of(terms[rows], "#")
+    terms[rows] = paste0(
+      canonical.output.terms.stata.default(lhs, labels[rows]),"#",
+      canonical.output.terms.stata.default(rhs, labels[rows]))
+  }
+
+  # Remove a o. before a variable name: (means ommited for xi)
+  #before.dot = str.left.of(terms, ".", not.found = rep("", NROW(terms)))
+  #rows = has.s(terms,"o.")
+  #terms[rows] = substring(terms[rows], 3)
+
+  # Factor variable (no string only integer before .)
+  rows = dot.rows = has.substr(terms,".") & !is.na(suppressWarnings(as_integer(substring(terms,1,1))))
+  base = str.right.of(terms[rows], ".")
+  level = str.left.of(terms[rows], ".")
+
+  # remove b at end of level: this means that the variable is dropped
+  brows = endsWith(level,"b")  | endsWith(level, "o")
+  level[brows] = str.remove.ends(level[brows],right = 1)
+
+  terms[rows] = paste0(base, "=", level)
+
+  # Remove certain prefixes like o. or co.
+
+  rows = has.substr(terms,".") & !is.na(suppressWarnings(as_integer(substring(terms,1,1))))
+
+  terms = remove.unused.stata.prefixes(terms)
+  terms = adapt.stata.prefix.notation(terms)
+  terms
+}
+
+remove.unused.stata.prefixes = function(terms) {
+  terms = gsub("(^o\\.|^co\\.|^c\\.)","", terms)
+  terms
+}
+
+canonical.output.terms.stata.xi = function(terms, labels, do.subst=TRUE, xi.rows=NULL) {
+  restore.point("canonical.output.stata.xi")
+  #stop()
+  # A term for fator using xi e.g. i.farmass
+  # _Ifarmass_2
+  if (is.null(xi.rows)) {
+    xi.rows = which(startsWith(terms, "_I") & has.substr(labels,"=="))
+    if (length(xi.rows)==0) return(terms)
+  }
+
+
+  # To do: work with interaction terms
+  res = rep("", length(xi.rows))
+  str = labels[xi.rows]
+  if (do.subst) {
+    str = gsub("(","", str, fixed=TRUE)
+    str = gsub(")","", str, fixed=TRUE)
+    str = gsub("*","&", str, fixed=TRUE)
+  }
+
+  ia.rows = which(has.substr(str,"&"))
+  if (length(ia.rows)>0) {
+    lhs = str.left.of(str[ia.rows], "&")
+    rhs = str.right.of(str[ia.rows], "&")
+    terms[xi.rows[ia.rows]] = paste0(
+      canonical.output.terms.stata.xi(lhs,lhs,  do.subst=FALSE, xi.rows = seq_along(ia.rows)),"#",
+      canonical.output.terms.stata.xi(rhs,rhs,  do.subst=FALSE, xi.rows = seq_along(ia.rows)))
+  }
+
+  rows = setdiff(which(has.substr(str,"==")), ia.rows)
+  if (length(rows)>0) {
+    loc = stringi::stri_locate_first_fixed(str[rows],"==")
+    base = substring(str[rows], 1, loc[,1]-1)
+    level = substring(str[rows], loc[,2]+1)
+    terms[xi.rows[rows]] = paste0(base, "=", level)
+  }
+
+  terms = trimws(terms)
+  terms = remove.unused.stata.prefixes(terms)
+  terms = adapt.stata.prefix.notation(terms)
+  terms
+}
+
+canonical.r.output.terms = function(terms, vi=NULL, rcmd=NULL, from.stata=TRUE) {
+  restore.point("canonical.r.output.terms")
+
+  rcmd = rep(rcmd, length.out = length(terms))
+
+  rows = which(rcmd %in% c("fixest","feols","mr_fixest"))
+  terms[rows] = canonical.output.terms.fixest(terms[rows], vi, from.stata=from.stata)
+
+  rows = setdiff(seq_along(terms), rows)
+  terms[rows] = canonical.output.terms.fixest(terms[rows], from.stata=from.stata)
+
+  terms
+}
+
+
+canonical.output.terms.r.default = function(terms, from.stata=TRUE) {
+  restore.point("canonical.output.terms.fixest")
+
+  # factor in form
+  # factor(i1)4:factor(d1)1
+  # to i4=4°°d1=1
+  factor.rx = "factor\\(([a-zA-Z0-9_.]*)\\)"
+  terms = gsub(factor.rx,"\\1=",terms,fixed=FALSE)
+
+  # Replace . by @ if . was a Stata prefix
+  if (from.stata) {
+    terms = gsub(".","@", terms, fixed=TRUE)
+  }
+
+
+  terms
+}
+
+
+
+canonical.output.terms.fixest = function(terms, vi, from.stata=TRUE) {
+  restore.point("canonical.output.terms.fixest")
+
+  # factor in form: farmass_q::2
+  # to farmass_q=2
+  terms = gsub("`","", terms, fixed=TRUE)
+  terms = gsub("::","=", terms, fixed=TRUE)
+  #terms = gsub(" ","", terms, fixed=TRUE)
+
+  # factor in form
+  # factor(i1)4:factor(d1)1
+  # to i1=4:d1=1
+  factor.rx = "factor\\(([a-zA-Z0-9_.]*)\\)"
+  terms = gsub(factor.rx,"\\1=",terms,fixed=FALSE)
+
+  # Replace . by @ if . was a Stata prefix
+  if (from.stata) {
+    terms = gsub(".","@", terms, fixed=TRUE)
+  }
+
+
+
+  # In an IV regression feols adds "fit_" to the result
+  # variable. We want to remove that
+  rows = which(startsWith(terms,"fit_"))
+  if (length(rows)>0) {
+    terms.no.fit = substring(terms[rows], 5)
+    change = (!terms[rows] %in% vi$ia_cterm) & (terms.no.fit %in% vi$ia_cterm)
+    terms[rows[change]] = terms.no.fit[change]
+  }
+
+
+  # We currently specify the fixest representation
+  # as the canonical representation. So we can directly
+  # return them.
+
+  terms
+}
+
+
+create_cterm_cols = function(dat, cterms, timevar=NA, panelvar=NA, tdelta=NA) {
+  restore.point("create_cterm_cols")
+  new.cterms = cterms[!cterms %in% c("(Intercept)",colnames(dat))]
+  for (cterm in new.cterms) {
+    #cat(cterm,"\n")
+    dat = create_cterm_col(dat, cterm, timevar=NA, panelvar=NA, tdelta=NA)
+  }
+  dat
+}
+
+create_cterm_col = function(dat, cterm, timevar=NA, panelvar=NA, tdelta=NA, check.abbreviation=TRUE) {
+  restore.point("create_cterm_col")
+  is_ia = cterm_is_ia(cterm)
+  has_level = cterm_has_level(cterm)
+  has_prefix = cterm_has_prefix(cterm)
+
+
+  if (!is_ia & !has_level & !has_prefix) {
+    if (cterm %in% colnames(dat)) return(dat)
+
+    # Unfortunately Stata also allows variable name abbreviations in formulas
+    # E.g. regress gdp_ger infl_germany
+    # would work if there is a column gdp_germany which will be used for gdp_ger
+    if (check.abbreviation) {
+      abbr.ind = which(startsWith(colnames(dat),cterm))
+      if (length(abbr.ind)>0) {
+        col = colnames(dat)[abbr.ind[1]]
+        dat[[cterm]] = dat[[col]]
+        return(dat)
+      }
+    }
+
+    dat[[cterm]] = NA
+    # lnalpha is just shown in nbreg output but not a variable in the data set
+    if (!isTRUE(cterm=="lnalpha")) {
+      msg = paste0("Column ", cterm, " does not exist in data set and thus I cannot generate the cterm ", cterm)
+      repbox_problem(type="regvar_no_match", msg=msg,fail_action = "error")
+
+    }
+    return(dat)
+
+  } else if (!is_ia & has_level & !has_prefix) {
+    var = str.left.of(cterm, "=")
+    val = str.right.of(cterm, "=")
+    # Convert to correct class
+    cval = as(val,  last(class(dat[[var]])))
+
+    # Create dummy variable
+    dat[[cterm]] = 1L*(dat[[var]]==cval)
+    return(dat)
+  } else if (!is_ia & !has_level & has_prefix) {
+    dat = create_prefix_nolevel_cterm_col(dat, cterm,panelvar=panelvar, timevar=timevar, tdelta=tdelta)
+    return(dat)
+  } else if (!is_ia & has_level & has_prefix) {
+    repbox_problem(type = "parse_reg_formula", msg=paste0("Cannot yet generate columns for cterm ", cterm, " that contains a prefix and a factor level."), fail_action = "error")
+    dat[[cterm]] = NA
+    return(dat)
+  }
+
+  # Interaction effects
+  cterms = cterm_split_ia(cterm)[[1]]
+
+  # Create all main effects
+  for (cte in cterms) {
+    dat = create_cterm_col(dat, cte)
+  }
+
+  # If any of the cterms is a factor just paste them
+  if (any(sapply(dat[cterms], is.character))) {
+    dat[[cterm]] = as.character(dat[[cterms[[1]]]])
+    for (i in 2:length(cterms)) {
+      dat[[cterm]] = paste0(dat[[cterm]],"#",dat[[ cterms[i] ]])
+    }
+    return(dat)
+  }
+
+  # Multiply the main effects
+  dat[[cterm]] = dat[[ cterms[1] ]]
+  for (i in 2:length(cterms)) {
+    dat[[cterm]] = dat[[cterm]]*dat[[ cterms[i] ]]
+  }
+  dat
+}
+
+
+# Variables with time series operators. See
+# See https://www.stata.com/manuals/u11.pdf#u11.4.4
+# We will deal with operators like:
+
+# L2.x1
+# but we currently ignore things like
+# L(0/4).x1
+create_prefix_nolevel_cterm_col = function(dat,cterm, panelvar=NA, timevar=NA, tdelta=NA) {
+  restore.point("create_numeric_cterm_col")
+
+  prefix  = cterm_extract_prefix(cterm)
+  basevar = cterm_extract_base(cterm)
+
+  dat[[cterm]] = NA
+
+  if (!has.col(dat, cterm)) {
+    msg = paste0("Column ", basevar, " does not exist in data set and thus I cannot generate the cterm ", cterm)
+    repbox_problem(type="missing_var",msg=msg, fail_action="msg", fail_action = "error")
+    return(dat)
+  }
+  if (prefix == "") {
+    return(dat)
+  }
+
+  baseval = dat[[basevar]]
+  if (prefix=="log") {
+    dat[[cterm]] = log(baseval)
+  }
+
+  prefix.type = toupper(substring(prefix,1,1))
+  prefix.num = substring(prefix,2)
+
+
+  tdelta = as.numeric(tdelta)
+  if (is.na(tdelta)) tdelta = 1
+
+
+  if (any(has.substr(prefix.num,"("))) {
+    repbox_problem(type="parse_reg_formula", "\nCannot yet deal with time series prefixes like L(0/2).", fail_action = "error")
+    return(dat)
+  }
+
+  args = list(x=dat[[basevar]])
+  if (!is_empty(timevar)) {
+    args$t = dat[[timevar]]
+  }
+  if (!is_empty(panelvar)) {
+    args$g = dat[[panelvar]]
+  }
+
+
+  prefix.num = ifelse(prefix.num=="", 1, as_integer(trimws(prefix.num)))
+
+  if (prefix.type == "L") {
+    fun = collapse::flag
+    args$n = prefix.num
+  } else if (prefix.type == "F") {
+    fun = collapse::flag
+    args$n = -prefix.num
+  } else if (prefix.type == "D") {
+    fun = collapse::fdiff
+    args$diff = prefix.num
+  } else if (prefix.type == "S") {
+    fun = collapse::fdiff
+    args$n = prefix.num
+
+  } else if (prefix.type == "O") {
+    # o. means that the variable shall be omitted in
+    # the regression. The variables will be just
+    # the original variables.
+    fun = identity
+  } else {
+    stop(paste0("No code yet to create variables for cterm prefix ", prefix.type))
+  }
+
+
+  if (tdelta > 1 & prefix.type %in% c("L","F","D","S")) {
+    # Note this code requires a sufficiently new
+    # collapse version like 1.9.6
+    args$t = dat[[timevar]]
+    args$n = args$n * tdelta
+  }
+
+
+  dat[[cterm]] = do.call(fun, args)
+  dat
+}
+
+
+cterm_has_level = function(cterm) {
+  has.substr(cterm, "=")
+}
+
+cterm_has_prefix = function(cterm) {
+  has.substr(cterm, "@")
+}
+
+cterm_is_ia = function(cterm) {
+  has.substr(cterm, "#")
+}
+
+cterm_split_ia = function(cterm) {
+  strsplit(cterm, "#", fixed=TRUE)
+}
+
+cterm_extract_prefix = function(cterm) {
+  str.left.of(cterm, "@", not.found=rep("",length(cterm)))
+}
+
+cterm_extract_base = function(cterm, keep.level = FALSE) {
+  base = str.right.of(cterm, "@")
+  if (!keep.level) {
+    base = str.left.of(base, "=")
+  }
+  base
+}
+
+cterm_extract_level = function(cterm) {
+  str.right.of(cterm, "=")
+}
+
+```
+# END OF FILE: mrb_cterms.R
+
+-----------------------------------------------------------
+
+
+# FILE: mrb.R
+```
+# runs a complete metaregBase analysis
+
+example = function() {
+  # Should point to this project dir
+  project_dir = "~/repbox/projects/aejapp_11_2_10"
+
+  if (FALSE)
+    rstudioapi::filesPaneNavigate(project_dir)
+
+
+  drf = drf_load(project_dir)
+}
+
+mrb_run_all = function(project_dir, drf=drf_load(project_dir)) {
+  restore.point("mrb_run_all")
+  mrb = mrb_init(project_dir, drf=drf)
+  mrb = mrb_full_stata_script(mrb)
+  mrb = mrb_run_stata_script(mrb)
+
+
+  #mrb = mrb_to_repdb(mrb)
+}
+
+mrb_init = function(project_dir=drf$project_dir, drf=NULL) {
+  project_dir = normalizePath(project_dir)
+  if (is.null(drf)) {
+    drf = drf_load(project_dir)
+  }
+
+
+  mrb = list(drf=drf, project_dir=project_dir, repdb_dir = file.path(project_dir, "repdb"), mrb_dir = file.path(project_dir, "metareg","base"), parcels=drf$parcels, reg_runids = unique(drf$path_df$pid))
+  mrb
+}
+
+
+```
+# END OF FILE: mrb.R
+
+-----------------------------------------------------------
+
+
+# FILE: mrb_r_base.R
+```
+# metaregBase R run that
+# aggregates all information from Stata base run
+# and creates corresponding parcels
+# regvar, regxvar, reg, colinfo, colstat_???, etc.
+#
+# The functions here do not yet run the regressions in R.
+# that will be done in mrb_r_reg.R
+example = function() {
+  library(metaregBase)
+  # Should point to this project dir
+  project_dir = "~/repbox/projects/aejapp_11_2_10"
+  project_dir = "~/repbox/projects/test"
+
+  if (FALSE)
+    rstudioapi::filesPaneNavigate(project_dir)
+
+  drf = drf_load(project_dir)
+  mrb = mrb_init(project_dir, drf=drf)
+  #mrb = mrb_full_stata_script(mrb)
+  #mrb = mrb_run_stata_script(mrb)
+  mrb = mrb_agg_stata(mrb)
+  mrb = mrb_run_r_base(mrb, just_pid = drf$pids[1])
+}
+
+
+#' Extract Stata metaregBase results and create corresponding metaregBase parcels
+mrb_run_r_base = function(mrb, just_pids=NULL, make_parcels=TRUE) {
+  restore.point("mrb_run_r")
+
+  mrb$artid = basename(mrb$project_dir)
+  mrb$parcels = repboxDB::repdb_load_parcels(mrb$project_dir, c("reg_cmdpart", "xtvar"))
+
+  pids = mrb$drf$pids
+  if (length(pids) == 0) {
+    cat("\nNo pids to process.\n")
+    return(mrb)
+  }
+  if (!is.null(just_pids)) {
+    pids = just_pids
+  }
+  mrb = mrb_agg_stata(mrb, skip_if_has = TRUE)
+
+  all_step_parcels = list()
+
+  for (pid in pids) {
+    cat(sprintf("\nProcessing pid: %s", pid))
+    step_parcels = mrb_run_r_base_step(mrb, pid)
+    all_step_parcels[[as.character(pid)]] = step_parcels
+  }
+  mrb$all_step_parcels = all_step_parcels
+  if (make_parcels) {
+    mrb_make_r_base_parcels(mrb)
+  }
+
+  mrb
+}
+
+
+# ==============================================================================
+# PER-STEP ORCHESTRATOR (`mrb_run_r_step`)
+# ==============================================================================
+
+#' Process a single regression, expand syntax, and format standard parcels
+mrb_run_r_base_step = function(mrb, pid) {
+  restore.point("mrb_run_r_base_step")
+
+  project_dir = mrb$project_dir
+  runid = pid
+
+  # 1. Base Components
+  run_obj = mrb$drf$run_df %>% filter(runid == pid)
+  cmd = run_obj$cmd[1]
+
+  all_cmdpart = mrb$parcels$reg_cmdpart
+  cmdpart = all_cmdpart %>% filter(runid == pid)
+  if (NROW(cmdpart) == 0) stop(paste0("No cmdpart stored for runid = ", pid))
+
+  # 2. Extract specific Stata outcomes for this step
+  stata_ct = if (!is.null(mrb$stata_ct_sb)) mrb$stata_ct_sb %>% filter(runid == pid) else NULL
+  stata_scalars = if (!is.null(mrb$stata_scalars)) mrb$stata_scalars %>% filter(runid == pid) else NULL
+  stata_macros = if (!is.null(mrb$stata_macros)) mrb$stata_macros %>% filter(runid == pid) else NULL
+
+  # 3. Load Data & Expand Syntax
+  dat = repboxDRF::drf_get_data(pid, drf = mrb$drf)
+  org_dat = dat
+  cmdpart = cmdpart_expand_vars(cmdpart, colnames(dat)) # From previous refactor
+
+  # 4. Extract Options, SE, and build initial regvar
+  opts_df = cmdpart_to_opts_df(cmdpart)
+  se_info = se_stata_to_repdb(cmd, opts_df)
+  regvar = cmdpart_to_regvar(cmdpart, dat, opts_df, se_info)
+
+  depvar = regvar$cterm[regvar$role == "dep"]
+
+  # 5. Data Mutations & Stats
+  ct_cterms = unique(c(depvar, regvar$var, regvar$cterm, regvar$ia_cterm)) %>% setdiff(c("(Intercept)",""))
+  wide_dat = create_cterm_cols(dat, ct_cterms)[, ct_cterms, drop=FALSE]
+
+  reg_types = bind_rows(
+    regvar %>% select(term = cterm, reg_type = var_reg_type),
+    regvar %>% select(term = ia_cterm, reg_type = ia_reg_type)
+  ) %>% unique()
+
+  colstats = make_colstats(ct_cterms, wide_dat, wide_dat, reg_types)
+
+  #####################
+  # Create step parcels
+  #####################
+
+  step_parcels = list()
+
+  # A. REGCOEF (Parsed Stata Coefficients)
+  if (!is.null(stata_ct) && nrow(stata_ct) > 0) {
+    step_parcels$regcoef = ct_to_regcoef(stata_ct, variant = "sb", artid = mrb$artid)
+  } else {
+    step_parcels$regcoef = tibble()
+  }
+
+  # B. REGVAR (Variables with prefixes and dropping info)
+  dropped_cterms = if (nrow(step_parcels$regcoef) > 0) {
+    step_parcels$regcoef %>% filter(is.na(coef)) %>% pull(cterm)
+  } else { character(0) }
+
+  step_parcels$regvar = regvar %>%
+    mutate(
+      artid = mrb$artid,
+      runid = runid,
+      variant = "sb",
+      basevar = basevar,
+      ia_source_expr = ia_expr,
+      var_source_expr = var_expr,
+      prefix_type = tolower(substring(prefix, 1, 1)),
+      prefix_num = trimws(substring(prefix, 2)),
+      prefix_num = ifelse(prefix_num == "", 1, as_integer(prefix_num)),
+      transform = prefix_type,
+      transform_par = ifelse(transform %in% c("", "log"), "", change_val(prefix_num, "", "1")),
+      is_dropped = (cterm %in% dropped_cterms) & (role %in% c("exo", "endo"))
+    )
+
+  # C. REGXVAR
+  step_parcels$regxvar = make_regxvar(step_parcels$regvar, dat, step_parcels$regcoef)
+
+  # D. REGSCALAR & REGSTRING
+  if (!is.null(stata_scalars) && nrow(stata_scalars) > 0) {
+    step_parcels$regscalar = stata_scalars %>%
+      rename(scalar_name = var, scalar_val = val) %>%
+      mutate(variant = "sb", runid = runid)
+
+    stats_wide = stata_scalars %>% pivot_wider(names_from = var, values_from = val)
+  } else {
+    step_parcels$regscalar = tibble()
+    stats_wide = tibble()
+  }
+
+  if (!is.null(stata_macros) && nrow(stata_macros) > 0) {
+    step_parcels$regstring = stata_macros %>%
+      rename(string_name = var, string_val = val) %>%
+      mutate(variant = "sb", runid = runid)
+  } else {
+    step_parcels$regstring = tibble()
+  }
+
+  # E. COLSTAT
+  step_parcels$colstat_numeric = if (nrow(colstats$colstat_numeric) > 0) {
+    colstats$colstat_numeric %>% mutate(artid = mrb$artid, variant = "sb", runid = runid, cterm = col)
+  } else { tibble() }
+
+  step_parcels$colstat_dummy = if (nrow(colstats$colstat_dummy) > 0) {
+    colstats$colstat_dummy %>% mutate(artid = mrb$artid, variant = "sb", runid = runid, cterm = col)
+  } else { tibble() }
+
+  step_parcels$colstat_factor = if (nrow(colstats$colstat_factor) > 0) {
+    colstats$colstat_factor %>% mutate(artid = mrb$artid, variant = "sb", runid = runid, cterm = col)
+  } else { tibble() }
+
+  # F. REG & REGSOURCE
+  nobs_val = if ("N" %in% names(stats_wide)) as.numeric(stats_wide$N) else NA_real_
+  r2_val = if ("r2" %in% names(stats_wide)) as.numeric(stats_wide$r2) else if ("r2_p" %in% names(stats_wide)) as.numeric(stats_wide$r2_p) else NA_real_
+
+  xtvar = mrb$parcels$xtvar
+  xtvar = xtvar[xtvar$runid==pid,]
+  if (NROW(xtvar)==0) {
+    xtvar = list(timevar="", panelvar="", tdelta=NA_integer_)
+  }
+
+  reg_dat = tibble(
+    runid = pid,
+    variant = "sb",
+    base_variant = "sb",
+    lang = "stata",
+    source_lang = "stata",
+    cmd = cmd,
+    cmdline = run_obj$cmdline[1],
+    timevar = xtvar$timevar,
+    panelvar = xtvar$panelvar,
+    tdelta = as_integer(xtvar$tdelta[1]),
+    se_category = se_info$se_category,
+    se_type = se_info$se_type,
+    se_args = se_info$se_args,
+    ncoef = if (nrow(step_parcels$regcoef) > 0) nrow(step_parcels$regcoef) else NA_integer_,
+    iv_code = any(step_parcels$regvar$role == "instr"),
+    nobs = nobs_val,
+    nobs_org = NROW(org_dat),
+    r2 = r2_val,
+    error_in_r = FALSE
+  )
+
+  step_parcels$reg = reg_dat
+  step_parcels$colinfo = repbox_compute_col_info(runid, project_dir, dat, org_dat, reg_dat)
+
+  return(step_parcels)
+}
+
+
+# The step parcels are generated in mrb_r
+mrb_make_r_base_parcels = function(mrb, save=TRUE) {
+  restore.point("mrb_make_r_base_parcels")
+
+  parcels = list()
+  all_step_parcels = mrb$all_step_parcels
+  if (is.null(all_step_parcels)) {
+    cat("\nmrb_save_step_parcels: mrb$all_step_parcels were not yet generated. Make sure mrb_run_r_base is called beforehand.\n")
+    return(mrb)
+  }
+
+  combine_steps = function(field) {
+    bind_rows(lapply(all_step_parcels, function(x) x[[field]]))
+  }
+
+
+  # Core & Regsource
+  parcels$reg = combine_steps("reg")
+
+  # Coefs & Variables
+  parcels$regcoef = combine_steps("regcoef")
+  parcels$regvar = combine_steps("regvar")
+  parcels$regxvar = combine_steps("regxvar")
+
+  # Column Stats
+  parcels$colstat_numeric = combine_steps("colstat_numeric")
+  parcels$colstat_dummy = combine_steps("colstat_dummy")
+  parcels$colstat_factor = combine_steps("colstat_factor")
+
+  parcels$colinfo = combine_steps("colinfo")
+
+
+  # Scalars & Macros
+  parcels$regscalar = combine_steps("regscalar")
+  parcels$regstring = combine_steps("regstring")
+
+  # regsource parcel is just a combination of existing parcels
+  mrb$parcels = repdb_load_parcels(mrb$project_dir, c("stata_file", "stata_cmd"),parcels = mrb$parcels)
+  run_df = mrb$drf$run_df
+
+  regsource = parcels$reg %>%
+    select(runid) %>%
+    left_join(run_df %>% select(runid, file_path, line), by="runid") %>%
+    left_join(mrb$parcels$stata_cmd %>% select(file_path, line, code_line_start=orgline_start, code_line_end = orgline_end), by = c("file_path", "line")) %>%
+    left_join(mrb$parcels$stata_file, by="file_path") %>%
+    rename(script_path = file_path, script_name = file_name,script_type = file_type)
+
+  parcels$regsource = regsource
+
+
+  # TO DO:
+  # regcoef_diff
+  # regcoef_so
+  # regcoef_rb
+  # regcheck
+
+  # Save everything directly into the repdb directory
+  if (save) {
+    repdb_dir = file.path(mrb$project_dir, "repdb")
+    repboxDB::repdb_save_parcels(parcels, repdb_dir, check = TRUE)
+  }
+
+  mrb$parcels[names(parcels)] = parcels
+  return(mrb)
+}
+```
+# END OF FILE: mrb_r_base.R
+
+-----------------------------------------------------------
+
+
+# FILE: mrb_regcoef.R
+```
+# Helper function for regcoef (repdb table)
+
+parmest_output_to_regcoef = function(mr, variant=NULL,  prefix, artid = basename(mr$project_dir),missing.step = c("stop","ignore")[1]) {
+  restore.point("parmest_output_to_regcoef")
+  co = mr_agg_stata_parmest(mr,file_prefix = prefix, missing.step=missing.step)
+  if (!is.null(variant)) co$variant = rep(variant, NROW(co))
+  co = ct_to_regcoef(co, "stata", variant=variant, artid=artid)
+  co
+}
+
+#' regvar is only needed if cterm shall be generated in R
+ct_to_regcoef = function(ct, lang="stata", variant=NULL, artid=NULL, regvar=NULL) {
+  restore.point("ct_to_regcoef")
+  if (NROW(ct)==0) return(NULL)
+
+  if (!is.null(variant) & !has.col(ct, "variant")) {
+    ct$variant = variant
+  }
+
+  # Better overwrite cterm since sometimes it has NA values
+  if (lang=="stata" & all(has.col(ct, c("var","label")))) {
+    ct$cterm = canonical.stata.output.terms(ct$var,ct$label)
+  }
+  if (lang=="r" & !has.col(ct, "cterm")) {
+    if (is.null(regvar)) {
+      stop("Computation of cterm for R requires passing regvar.")
+    }
+    ct$cterm = canonical.r.output.terms(ct$term,regvar,rcmd = "")
+  }
+
+
+  if (!has.col(ct,"shown_term")) {
+    if (lang=="stata") {
+      ct$shown_term = ct$var
+    } else if (lang=="r") {
+      ct$shown_term = ct$term
+    }
+  }
+
+  # Possibly needs some update if non-broom output is used...
+  if (lang=="r") {
+    new.cols = c("coef","se","t","p","ci_low","ci_up")
+    old.cols = c("estimate","std.error","statistic","p.value","conf.low","conf.high")
+    use = which(!new.cols %in% colnames(ct))
+    if (length(use)>0) {
+      ct = rename.col(ct, old.cols[use], new.cols[use])
+    }
+  }
+
+  if (!"label" %in% colnames(ct)) {
+    ct$label = rep("", NROW(ct))
+  }
+
+  if (!"p" %in% colnames(ct)) {
+    if ("p_val" %in% colnames(ct)) {
+      ct = rename.col(ct, "p_val","p")
+    } else if ("p.value" %in% colnames(ct)) {
+      ct = rename.col(ct, "p.value","p")
+    }
+  }
+  if (!"t" %in% colnames(ct)) {
+    if ("t_val" %in% colnames(ct)) {
+      ct = rename.col(ct, "t_val","t")
+    } else if ("z" %in% colnames(ct)) {
+      ct = rename.col(ct, "z","t")
+    }
+  }
+
+  if (lang == "stata") {
+    ct = regcoef_normalize_dropped_coef(ct, lang)
+  }
+  ct
+}
+
+
+regcoef_normalize_dropped_coef = function(co, lang="stata") {
+  restore.point("regcoef_normalize_dropped_coef")
+  if (lang=="r") {
+    return(co)
+  }
+  lhs = str.left.of(co$shown_term,".", not.found="")
+  co$is_dropped =
+    (is.na(co$coef)) |
+    (is.na(co$se) & is.true(co$coef==0)) |
+    (co$se==0 & co$coef==0 & (is.na(co$t) | has.substr(lhs,"b")))
+
+  co$coef[co$is_dropped] = NA_real_
+  co$se[co$is_dropped] = NA_real_
+  co
+}
+
+
+coef_diff_summary = function(diff_tab, compare_what=c("all","coef"), problem="") {
+  if (NROW(diff_tab)==0) return(NULL)
+
+  if (length(compare_what)>1) {
+    res = lapply(compare_what, function(cw) {
+      coef_diff_summary(diff_tab, cw, problem=problem)
+    }) %>% bind_rows()
+    return(res)
+  }
+
+  restore.point("coef_diff_summary")
+
+
+  if (compare_what=="all") {
+    sum = diff_tab %>%
+      group_by(runid) %>%
+      summarize(
+        variant1 = first(na.omit(variant_1)),
+        variant2 = first(na.omit(variant_2)),
+        compare_what = "all",
+        identical = all(abs_err_coef == 0 & abs_err_se == 0),
+        identical_share = mean(is.true(abs_err_coef == 0 & abs_err_se == 0)),
+        within_1pc_share = mean(rel_err_coef <=0.01 & rel_err_se <=0.01, na.rm = TRUE),
+        within_1pm_share = mean(rel_err_coef <=0.001 & rel_err_se <=0.001, na.rm = TRUE),
+        max_rel_diff = max_empty_na(c(rel_err_coef, rel_err_se)),
+        max_deviation = max_empty_na(pmin(c(rel_err_coef, rel_err_se),c(abs_err_coef, abs_err_se))),
+        ref_level_differ = any(ref_level_differs)
+      ) %>%
+      ungroup()
+  } else if (compare_what=="coef") {
+    sum = diff_tab %>%
+      group_by(runid) %>%
+      summarize(
+        variant1 = first(na.omit(variant_1)),
+        variant2 = first(na.omit(variant_2)),
+        compare_what = "coef",
+        identical = all(abs_err_coef == 0),
+        identical_share = mean(is.true(abs_err_coef == 0)),
+        within_1pc_share = mean(rel_err_coef <=0.01, na.rm = TRUE),
+        within_1pm_share = mean(rel_err_coef <=0.001, na.rm = TRUE),
+        max_rel_diff = max_empty_na(c(rel_err_coef), na.rm=TRUE),
+        max_deviation = max_empty_na(pmin(c(rel_err_coef),c(abs_err_coef)) , na.rm=TRUE),
+        ref_level_differ = any(ref_level_differs)
+      ) %>%
+      ungroup()
+
+  } else {
+    stop(paste0("compare_what = '", compare_what,"' is not implemented."))
+  }
+
+  sum$problem = rep(problem, length.out = NROW(sum))
+
+  sum
+}
+
+coef_diff_table = function(co1, co2, check.ref.levels = TRUE) {
+  restore.point("regcoef_check_same")
+
+  if (is.null(co1) | is.null(co2)) return(NULL)
+
+  # Match results
+  cod = full_join(co1, co2, by=c("cterm","runid"), suffix=c("_1","_2"))
+
+  # Ignore coefficients that are missing in both co1 and co2
+  cod = cod %>%
+    filter(! (is.na(coef_1) & is.na(coef_2)))
+
+  # Should be TRUE whenever co1 and co2 come from different regression commands
+  # We try to correct for the fact that they may pick different reference levels
+  # when creating the dummy variables
+  if (check.ref.levels) {
+    cod = cod %>%
+      mutate(
+        is_ia = has.substr(cterm ,":"),
+        is_factor = has.substr(cterm, "="),
+        factor_group = stringi::stri_replace_all_regex(paste0(cterm,":"), "=([^\\:]*):",":") %>% str.remove.ends(right=1)
+      ) %>%
+      group_by(runid, factor_group) %>%
+      mutate(
+        # We will normalize reference levels to those of coef_1
+        # Note that rows where both coef_1 and coef_2
+        # is NA are removed
+
+        # Reference levels differ if some coef_2 is NA
+        ref_level_differs = is_factor & any(is.na(coef_2)),
+
+        # We codute the offset for coef_2
+        offset.2 = ifelse(ref_level_differs, -coef_1[first(which(is.na(coef_2)))],0),
+        num_diff_ref_coef_2 = sum(is.na(coef_2))
+      ) %>%
+      ungroup() %>%
+      mutate(
+        # Replace NA by 0 for coef_2 if ref_level_differs
+        coef_2 = ifelse(is.na(coef_2) & ref_level_differs, 0, coef_2),
+
+        # We keep the SE currently as NA as I don't know how
+        # to adapt them
+        # se.2 = ???
+
+        # Now adapt all coef_2 by offset.2 if ref level differs
+        coef_2 = ifelse(ref_level_differs, coef_2 + offset.2, coef_2)
+      )
+
+    # Adapt (Intercept) if there are different reference levels
+    cod = cod %>%
+      group_by(runid) %>%
+      mutate(
+        ref_level_differs = ifelse(cterm=="(Intercept)" & any(ref_level_differs), any(ref_level_differs, na.rm=TRUE), ref_level_differs),
+        offset.2.intercept =  ifelse(cterm=="(Intercept)" & any(ref_level_differs), -sum(unique(offset.2), na.rm=TRUE), offset.2),
+        coef_2 = ifelse(cterm=="(Intercept)" & any(ref_level_differs), coef_2 + offset.2.intercept, coef_2)
+      )
+  } else {
+    cod$ref_level_differs = rep(FALSE, NROW(cod))
+  }
+
+  # Compute absolute and relative differences between coeficients and se
+  cod = cod %>%
+    mutate(
+      abs_err_coef = abs(coef_1-coef_2),
+      abs_err_se = abs(se_1-se_2),
+      rel_err_coef = abs_err_coef / (0.5*(abs(coef_1)+abs(coef_2))),
+      rel_err_se = abs_err_se / (0.5*(abs(se_1)+abs(se_2))),
+
+      rel_within_1pc_coef = rel_err_coef < 0.01,
+      rel_within_1pc = rel_err_coef < 0.01 & rel_err_se < 0.01,
+      identical_coef = coef_1 == coef_2,
+      identical = identical_coef & se_1 == se_2
+    )
+
+
+  # If Stata uses a dummy set like month1 month2 month3 ...
+  # we cannot repair different dummy dropping between Stata and R
+  # we just add an indicator
+  cod = cod %>%
+    group_by(runid) %>%
+    mutate(
+      step_refs_differ =
+        any(ref_level_differs) |
+        any( !is.na(coef_1) & is.na(coef_2) )
+    ) %>%
+    ungroup()
+
+  cod = cod %>%
+    select(runid, cterm, identical, identical_coef, everything())
+
+  cod
+}
+
+max_empty_na = function(x, na.rm=TRUE) {
+  if (na.rm) {
+    x = x[!is.na(x)]
+  }
+  if (length(x)==0) return(NA_real_)
+  max(x)
+}
+
+```
+# END OF FILE: mrb_regcoef.R
+
+-----------------------------------------------------------
+
+
+# FILE: mrb_reg_tools.R
+```
+# ==============================================================================
+# PART 1: Rescued & Adapted Variable Expansion (Globbing, Ranges, Abbreviations)
+# ==============================================================================
+
+#' Expand Stata patterns (*, -, abbreviations) into actual column names
+#' @param pattern Character vector of variable patterns (e.g., "x1-x5", "i.year*")
+#' @param cols Character vector of available columns in the dataset
+#' @param unlist Logical, whether to unlist the result
+#' @param uses_xi Logical, whether the command is prefixed with `xi:`
+expand_stata_var_patterns = function(pattern, cols, unlist=TRUE, uses_xi=FALSE) {
+  restore.point("expand_stata_var_patterns")
+
+  if (uses_xi) {
+    if (!is.null(pattern)) {
+      pattern = stringi::stri_replace_all_fixed(pattern, "|","#")
+      pattern = stringi::stri_replace_all_regex(pattern, "(([\\.][a-zA-Z0-9_]+))(\\*)","$1##")
+    }
+  }
+
+  # Split interaction terms
+  ia_rows = which(has.substr(pattern,"#"))
+  if (length(ia_rows)>0) {
+    has_double = has.substr(pattern[ia_rows],"##")
+    sep = ifelse(has_double,"##","#")
+    for (i in seq_along(ia_rows)) {
+      row = ia_rows[i]
+      parts = strsplit(pattern[row],sep[i],fixed=TRUE)[[1]]
+      parts = expand_stata_var_patterns(parts,cols=cols, unlist=TRUE, uses_xi=uses_xi)
+      pattern[row] = paste0(parts, collapse=sep)
+    }
+    not_ia_rows = setdiff(seq_along(pattern),ia_rows)
+    if (length(not_ia_rows)>0) {
+      pattern[not_ia_rows] = expand_stata_var_patterns(pattern[not_ia_rows], cols=cols, uses_xi=uses_xi,unlist=FALSE)
+    }
+    if (unlist) return(unlist(pattern))
+    return(pattern)
+  }
+
+  star_rows = which(has.substr(pattern,"*") | has.substr(pattern, "?"))
+  minus_rows = which(has.substr(pattern,"-"))
+  normal_rows = setdiff(seq_along(pattern), c(star_rows, minus_rows))
+
+  pattern_rhs = str.right.of(pattern,".")
+  pattern_lhs = str.left.of(pattern,".",not.found = rep("", length(pattern)))
+  pattern_lhs = ifelse(pattern_lhs == "","", paste0(pattern_lhs, "."))
+
+  # Abbreviation Matching
+  no_match_rows = normal_rows[which(!(pattern_rhs[normal_rows] %in% cols))]
+  if (length(no_match_rows)>0) {
+    for (row in no_match_rows) {
+      mcols = which(startsWith(cols, pattern_rhs[row]))
+      if (length(mcols)>1) {
+        cat("\nThe regression variable ", pattern_rhs[row], " matches multiple variables.\n")
+        pattern[row] = paste0(pattern_lhs[row] ,cols[mcols[1]])
+      } else if (length(mcols)==0) {
+        msg = paste0("The regression variable ", pattern_rhs[row], " could not be matched with any variable in the data set.")
+        repbox_problem(msg, "regvar_no_match", fail_action = "msg")
+      } else {
+        pattern[row] = paste0(pattern_lhs[row],cols[mcols[1]])
+      }
+    }
+  }
+
+  if (length(star_rows)+length(minus_rows)==0) return(pattern)
+  vars = as.list(pattern)
+
+  # Replace var* patterns
+  rows = star_rows
+  if (uses_xi) {
+    has_dot_star = pattern_lhs[rows]!="" & has.substr(pattern[rows],"*")
+  }
+  rx = glob2rx(pattern_rhs[rows])
+  for (i in seq_along(rows)) {
+    r = rows[i]
+    mvars = cols[grepl(rx[i],cols)]
+    vars[[r]] = paste0(pattern_lhs[r],mvars)
+    if (uses_xi && has_dot_star[i]) {
+      vars[[r]] = pattern[rows[i]]
+    }
+  }
+
+  # Replace var1-var5 patterns
+  rows = minus_rows
+  for (i in seq_along(rows)) {
+    r = rows[i]
+    pat = pattern_rhs[r]
+    from_var = str.left.of(pat,"-") %>% trimws()
+    to_var = str.right.of(pat,"-") %>% trimws()
+    range = sort(which(cols %in% c(from_var, to_var)))
+    if (length(range) >= 2) {
+      vars[[r]] = paste0(pattern_lhs[r],cols[range[1]:range[2]])
+    } else {
+      vars[[r]] = pattern[r] # Fallback
+    }
+  }
+
+  if (unlist) return(unlist(vars))
+  vars
+}
+
+
+# ==============================================================================
+# PART 2: Semantic Data-Driven Expansion of `cmdpart`
+# ==============================================================================
+
+#' Expand variable parts in cmdpart using the dataset columns
+#' @param cmdpart The parsed command part dataframe
+#' @param data_cols Character vector of column names in the dataset
+cmdpart_expand_vars = function(cmdpart, data_cols) {
+  restore.point("cmdpart_expand_vars")
+
+  # Check if `xi:` prefix is used
+  uses_xi = any(cmdpart$part == "pre" & cmdpart$tag == "xi")
+
+  # Separate variable parts and non-variable parts
+  v_rows = which(cmdpart$part == "v")
+  if (length(v_rows) == 0) return(cmdpart)
+
+  v_df = cmdpart[v_rows, ]
+  non_v_df = cmdpart[-v_rows, ]
+
+  expanded_list = lapply(seq_len(nrow(v_df)), function(i) {
+    row_data = v_df[i, ]
+    expanded_content = expand_stata_var_patterns(row_data$content, data_cols, unlist=TRUE, uses_xi=uses_xi)
+
+    # If the pattern expanded into multiple columns, replicate the row
+    if (length(expanded_content) > 1) {
+      new_rows = row_data[rep(1, length(expanded_content)), ]
+      new_rows$content = expanded_content
+      return(new_rows)
+    } else {
+      row_data$content = expanded_content
+      return(row_data)
+    }
+  })
+
+  expanded_v_df = bind_rows(expanded_list)
+
+  # Re-calculate the counter correctly for each tag within the variable part
+  expanded_v_df = expanded_v_df %>%
+    group_by(runid, parent, part, tag) %>%
+    mutate(counter = seq_len(n())) %>%
+    ungroup()
+
+  # Rebind and sort safely
+  res = bind_rows(non_v_df, expanded_v_df) %>%
+    arrange(runid, parent, part, counter)
+
+  return(res)
+}
+
+
+# ==============================================================================
+# PART 3: Bridging `cmdpart` to `regvar` (Replacing `mrb_vi_from_stata_reg`)
+# ==============================================================================
+
+#' Create the regvar (vi) table strictly from the expanded cmdpart, opts_df, and se_info
+cmdpart_to_regvar = function(cmdpart, dat, opts_df, se_info) {
+  restore.point("cmdpart_to_regvar")
+
+  # 1. Collect all terms mapped by role
+  term_list = list()
+
+  # Standard variables (dep, exo, endo, instr)
+  v_df = cmdpart %>% filter(part == "v")
+  if (nrow(v_df) > 0) {
+    # Replace tag names with role names (depvar -> dep, others stay same)
+    v_df$role = ifelse(v_df$tag == "depvar", "dep", v_df$tag)
+    term_list[[1]] = tibble(ia_expr = v_df$content, role = v_df$role, option = "")
+  }
+
+  # Weights
+  w_df = cmdpart %>% filter(part == "weight_var")
+  if (nrow(w_df) > 0) {
+    term_list[[2]] = tibble(ia_expr = w_df$content, role = "weight", option = "")
+  }
+
+  # Absorb (from reghdfe / areg)
+  absorb_opts = opts_df %>% filter(opt %in% c("absorb", "a", "ab", "abs", "abso", "absor"))
+  if (nrow(absorb_opts) > 0) {
+    abs_vars = strsplit(shorten.spaces(absorb_opts$opt_arg[1]), " ", fixed = TRUE)[[1]]
+    term_list[[3]] = tibble(ia_expr = abs_vars, role = "exo", option = "absorb")
+  }
+
+  # FE (from xtreg)
+  if (any(opts_df$opt == "fe")) {
+    # xtreg assumes panelvar is already set via xtset, we'll append it later if needed,
+    # or rely on the drf run_obj panelvar injection.
+  }
+
+  # Cluster / SE
+  if (!is.null(se_info$se_args) && se_info$se_args != "") {
+    se_args_parsed = repdb_parse_se_args(se_info$se_args, as_df=TRUE)
+    cluster_vars = se_args_parsed$arg_val[startsWith(se_args_parsed$arg_name, "cluster")]
+    if (length(cluster_vars) > 0) {
+      term_list[[4]] = tibble(ia_expr = cluster_vars, role = "cluster", option = "se")
+    }
+  }
+
+  vi = bind_rows(term_list) %>% mutate(main_pos = seq_len(n()))
+
+  # 2. Process Interaction Effects and Prefixes
+  vi$is_ia = grepl("(\\|)|(#)|(\\*)", vi$ia_expr)
+  vi$var_expr = as.list(vi$ia_expr)
+
+  # Unnest interactions
+  rows = which(vi$is_ia)
+  vi$var_expr[rows] = strsplit(vi$ia_expr[rows], "(##)|(#)|(\\|)|(\\*)")
+
+  vi = vi %>%
+    unnest(var_expr) %>%
+    group_by(ia_expr) %>%
+    mutate(ia_num = n(), ia_pos = seq_len(n())) %>%
+    ungroup()
+
+  # Extract Prefix (L1., F., i., c., etc.) - split at LAST dot
+  prefix_start = stringi::stri_locate_last_fixed(vi$var_expr, ".")[, 1]
+  vi$prefix = ifelse(is.na(prefix_start), "", stringi::stri_sub(vi$var_expr, 1, prefix_start - 1) %>% stringi::stri_replace_all_fixed(".", ""))
+  vi$var = ifelse(is.na(prefix_start), vi$var_expr, stringi::stri_sub(vi$var_expr, prefix_start + 1))
+
+  # Normalize specific prefixes
+  vi = vi %>%
+    mutate(prefix = case_when(
+      startsWith(tolower(prefix), "ib") ~ paste0("b", substring(prefix, 3)),
+      TRUE ~ prefix
+    ))
+
+  # 3. Incorporate column stats info
+  cols_info = make_cols_small_info(dat)
+  vi = vi %>% left_join(cols_info, by = c("var" = "col"))
+
+  # 4. Determine Types and Classes
+  vi = vi %>%
+    mutate(
+      is_factor = class %in% c("character", "factor"),
+      fe_type = case_when(
+        prefix %in% c("i", "I") ~ "i",
+        startsWith(prefix, "b") ~ "b",
+        has.substr(ia_expr, "#") & !startsWith(prefix, "c") ~ "#",
+        option %in% c("absorb", "fe") ~ option,
+        is_factor ~ class,
+        TRUE ~ ""
+      ),
+      absorbed_fe = fe_type %in% c("absorb", "fe"),
+      is_fe = fe_type != "",
+      varclass = class,
+      class = ifelse(is_fe & !is_factor, "fe", class),
+      add_main_effects = is_ia & (has.substr(ia_expr, "##") | has.substr(ia_expr, "*"))
+    )
+
+  # 5. Build Canonical Terms
+  vi$ia_cterm = stata_expr_to_cterm(vi$ia_expr)
+  vi$cterm = stata_expr_to_cterm(vi$var_expr)
+  vi$basevar = stata_expr_to_cterm(vi$var)
+
+  vi$class = ifelse(has.substr(vi$cterm, "="), "dummy", vi$class)
+
+  # 6. Apply interaction types & Reg Types
+  vi = vi_add_ia_type(vi)
+
+  vi = vi %>% mutate(
+    var_org_type = varclass %>% change_val(c("fe", "character"), "factor"),
+    var_reg_type = class %>% change_val(c("fe", "character"), "factor") %>% change_val("logical", "dummy"),
+    ia_reg_type = ia_type %>%
+      change_val("fe", "factor") %>%
+      change_val("fe_numeric", "factor_numeric") %>%
+      change_val("fe_logical", "factor_dummy")
+  ) %>% mutate(
+    var_reg_type = ifelse(role == "cluster", "factor", var_reg_type),
+    ia_reg_type = ifelse(role == "cluster", "factor", ia_reg_type)
+  )
+
+  # Ensure column order is clean
+  vi = vi %>% select(ia_expr, var_expr, var, role, prefix, option, class, fe_type, is_fe, distinct_num, ia_num, ia_pos, main_pos, ia_cterm, cterm, basevar, everything())
+
+  return(vi)
+}
+
+
+vi_add_ia_type = function(vi) {
+  vi %>%
+    group_by(is_ia, ia_cterm, role, ia_num, main_pos) %>%
+    arrange(desc(is_fe), desc(class=="dummy")) %>%
+    mutate(
+      ia_distinct_num = prod(distinct_num, na.rm=TRUE),
+      ia_type = case_when(
+        all(!is_fe & class=="dummy") ~ "dummies",
+        all(!is_fe) ~ "numeric",
+        all(is_fe | class=="dummy") ~ "fe",
+        ia_num == 2 & class[1] == "dummy" & (!is_fe[2] & class[2] != "dummy") ~ "dummy_numeric",
+        ia_num == 2 & is_fe[1] & !is_fe[2] ~ "fe_numeric",
+        TRUE ~ "unknown"
+      )
+    ) %>%
+    ungroup()
+}
+
+```
+# END OF FILE: mrb_reg_tools.R
+
+-----------------------------------------------------------
+
+
+# FILE: mrb_regxvar.R
+```
+# Store information about expanded interaction terms and factors
+# This will allow to rebuild regressions in a way that drops exactly
+# the same factor levels than the original regression run
+
+
+example = function() {
+}
+
+
+make_regxvar = function(regvar, dat,  regcoef=NULL) {
+  restore.point("make_regxvar")
+  regvar = regvar[regvar$role %in% c("exo","endo","instr") & !regvar$absorbed_fe,]
+
+  rows = regvar$var_reg_type == "factor"
+  factor_vars = unique(regvar$cterm[rows])
+
+  factor_levels = lapply(factor_vars, function(var) {
+    unique(dat[[var]]) %>% as.character()
+  })
+  names(factor_levels) = factor_vars
+
+  ia_cterms = unique(regvar$ia_cterm)
+
+
+  res_li = lapply(ia_cterms, function(ia_term) {
+    rows = which(regvar$ia_cterm == ia_term)
+    if (length(rows)==1) {
+      res = make_regxvar_ia1(regvar[rows,],factor_levels)
+    } else if (length(rows)==2) {
+      res = make_regxvar_ia2(regvar[rows,],factor_levels)
+    } else if (length(rows)==3) {
+      res = make_regxvar_ia3(regvar[rows,],factor_levels)
+    } else {
+      stop(paste0("We can currently deal with at most tripple interaction terms, but the regression uses ", length(rows),"-fold interaction terms. Who specifies such regressions?"))
+    }
+    res
+  })
+
+  regcoef = filter(regcoef, !is.na(coef))
+  # For some commands like mlogit we have duplicated entries
+  regcoef = regcoef[!duplicated(regcoef[,c("runid","cterm")]), ]
+
+  regxvar = tibble(runid=first(regvar$runid), ia_cterm=ia_cterms, cterm = res_li) %>%
+    unnest(cterm) %>%
+    left_join(regvar %>% select(ia_cterm, role), by="ia_cterm") %>%
+    unique() %>%
+    left_join(select(regcoef,runid, cterm, org_coef=coef), by=c("cterm","runid")) %>%
+    mutate(in_regcoef = !is.na(org_coef))
+
+  regxvar
+
+}
+
+make_regxvar_ia1 = function(regvar,level_li) {
+  restore.point("make_regxvar_ia1")
+  if (regvar$var_reg_type != "factor") return(regvar$cterm)
+
+  levels = level_li[[regvar$cterm]]
+  cterms = paste0(regvar$cterm, "=", levels)
+  cterms
+}
+
+
+make_regxvar_ia2 = function(rv, level_li) {
+  restore.point("make_regxvar_ia2")
+
+  vars1 = make_regxvar_ia1(rv[1,], level_li)
+  vars2 = make_regxvar_ia1(rv[2,], level_li)
+
+  grid = expand.grid(var1=vars1, var2=vars2,stringsAsFactors = FALSE) %>%
+    mutate(var12 = paste0(var1,"#", var2))
+
+  unique(c(vars1,vars2, grid$var12))
+}
+
+make_regxvar_ia3 = function(rv, level_li) {
+  restore.point("make_regxvar_ia3")
+
+  vars12 = make_regxvar_ia2(rv[1:2,], level_li)
+  #vars13 = make_regxvar_ia2(rv[c(1,3),], level_li)
+  #vars23 = make_regxvar_ia2(rv[2:3,], level_li)
+  vars3 = make_regxvar_ia1(rv[3,], level_li)
+
+  grid = expand.grid(var12=vars12, var3=vars3,stringsAsFactors = FALSE) %>%
+    mutate(var123 = paste0(var12,"#", var3))
+
+  unique(c(vars12,vars3, grid$var123))
+}
+
+# Add the expanded columns specified in regxvar to dat
+# if a column already exists, we won't overwrite it.
+make_regxvar_cols = function(dat, regxvar) {
+  restore.point("make_regxvar_cols")
+  # Don't overwrite existing columns
+  # This also should guarantee that every element of all_cterm
+  # is either a factor or an interaction term
+  all_cterms = setdiff(regxvar$cterm, names(dat))
+
+  num_ia = stringi::stri_count_fixed(all_cterms,"#")+1
+
+  # Cols without interaction effect
+  cterms = all_cterms[num_ia==1]
+  vars = str.left.of(cterms, "=")
+  vals = str.right.of(cterms, "=")
+  for (i in seq_along(cterms)) {
+    # E.g. cols with o@ prefix can be missings
+    if (!has.col(dat,vars[i])) next
+    col_val = as.vector(dat[[ vars[i] ]])
+    dat[[ cterms[i] ]] = 1L*(col_val == as(vals[i], atomic_class(col_val)))
+  }
+
+  # Cols with pair interaction effect
+  # We assume that the single terms are in dat (e.g. from previous loop)
+  cterms = all_cterms[num_ia==2]
+  if (length(cterms)>0) {
+    vars1 = str.left.of(cterms, "#")
+    vars2 = str.right.of(cterms, "#")
+    for (i in seq_along(cterms)) {
+      dat[[ cterms[i] ]] = dat[[vars1[i] ]]*dat[[vars2[i]]]
+    }
+  }
+
+  # Cols with tripple interaction effect
+  cterms = all_cterms[num_ia==3]
+  if (length(cterms)>0) {
+    vars1 = str.left.of(cterms, "#")
+    str = str.right.of(cterms, "#")
+
+    vars2 = str.left.of(str, "#")
+    vars3 = str.right.of(str, "#")
+    for (i in seq_along(cterms)) {
+      dat[[ cterms[i] ]] = dat[[vars1[i]]]*dat[[vars2[i]]]*dat[[vars3[i]]]
+    }
+  }
+  dat
+}
+
+```
+# END OF FILE: mrb_regxvar.R
+
+-----------------------------------------------------------
+
+
+# FILE: mrb_r_reg.R
+```
+# metaregBase R run that
+# runs regressions in R
+# assume the base_r was already conducted and the
+# corresponding parcels like regvar exist.
+
+example = function() {
+  library(metaregBase)
+  # Should point to this project dir
+  project_dir = "~/repbox/projects/aejapp_11_2_10"
+  project_dir = "~/repbox/projects/test"
+
+  if (FALSE)
+    rstudioapi::filesPaneNavigate(project_dir)
+
+  drf = drf_load(project_dir)
+  mrb = mrb_init(project_dir, drf=drf)
+
+  if (FALSE) {
+    mrb = mrb_full_stata_script(mrb)
+    mrb = mrb_run_stata_script(mrb)
+    mrb = mrb_agg_stata(mrb)
+    mrb = mrb_run_r_base(mrb)
+  }
+  mrb = mrb_run_r_reg(mrb)
+}
+
+#' Run translated r regressions, store results and compare with Stata results
+#' uses the parcels already generated by mrb_run_r_base and regtranslate for
+#' regression translation
+mrb_run_r_reg = function(mrb, just_pids=NULL) {
+  restore.point("mrb_run_r_reg")
+
+  mrb$artid = basename(mrb$project_dir)
+  mrb$parcels = repboxDB::repdb_load_parcels(mrb$project_dir, c("reg_cmdpart", "reg","regvar","regxvar","regcoef"))
+
+  pids = mrb$drf$pids
+  if (length(pids) == 0) {
+    cat("\nNo pids to process.\n")
+    return(mrb)
+  }
+  if (!is.null(just_pids)) {
+    pids = just_pids
+  }
+
+  all_step_parcels = list()
+
+  for (pid in pids) {
+    cat(sprintf("\nProcessing pid: %s", pid))
+    step_parcels = mrb_run_r_reg_step(mrb, pid)
+    all_step_parcels[[as.character(pid)]] = step_parcels
+  }
+  mrb$all_step_parcels = all_step_parcels
+
+  mrb = mrb_make_r_reg_parcels(mrb)
+
+  mrb
+}
+
+
+#' Process a single regression, expand syntax, and format standard parcels
+mrb_run_r_reg_step = function(mrb, pid) {
+  restore.point("mrb_run_r_reg_step")
+
+  project_dir = mrb$project_dir
+  parcels = mrb$parcels
+  artid = mrb$artid
+  runid = pid
+
+  reg = parcel_for_runid(parcels$reg, runid)
+  regvar = parcel_for_runid(parcels$regvar, runid)
+  regxvar = parcel_for_runid(parcels$regxvar, runid)
+  cmdpart = parcel_for_runid(parcels$reg_cmdpart, runid)
+  stata_co = parcel_for_runid(parcels$regcoef, runid)
+
+  step_parcels = list()
+
+
+
+  library(regtranslate)
+  opts = code_options(add_function = TRUE, add_broom = TRUE)
+  code_df = reg_stata_to_r_code(reg, regvar, regxvar, cmdpart, prefer="fixest", opts=opts)
+  code = paste0(code_df$code, collapse="\n")
+  reg_fun_code = paste0("reg_fun = ", code)
+  if (is_debug_mode()) {
+
+  }
+
+  reg_fun = eval(parse(text=reg_fun_code))
+  dat = repboxDRF::drf_get_data(runid, drf = mrb$drf)
+  dat = create_cterm_cols(dat, unique(regvar$cterm))
+  if (nrow(regxvar) > 0) {
+    dat = make_regxvar_cols(dat, regxvar)
+  }
+  results = try(reg_fun(dat), silent = TRUE)
+
+  # Process R results
+  ct = results$ct
+
+  if (!is.null(ct) && nrow(ct) > 0) {
+    ct$cterm = cterm_of_r_coefs(ct$term, regvar, dot_to_at = TRUE)
+    co_df = ct_to_regcoef(ct, lang="r", variant="rb", artid=artid)
+    co_df$runid = runid
+    step_parcels$regcoef_rb = co_df
+
+    # Comparison
+    if (!is.null(stata_co) && nrow(stata_co) > 0) {
+      diff_tab = coef_diff_table(co_df, stata_co)
+      if (!is.null(diff_tab)) {
+        diff_sum = coef_diff_summary(diff_tab, compare_what=c("all","coef"))
+        step_parcels$regcoef_diff = diff_sum
+      }
+    }
+  }
+
+  glance = results$glance
+  reg_rb = reg %>% mutate(variant = "rb", error_in_r = FALSE, error_msg = "")
+
+  if (!is.null(glance)) {
+    glance$runid = runid
+    glance$variant = "r"
+    glance$artid = artid
+
+    res_scalars = mrb_stats_to_regscalar_regstring(glance, variant="rb")
+    if (!is.null(res_scalars$regscalar)) {
+      step_parcels$regscalar_rb = res_scalars$regscalar
+    }
+    if (!is.null(res_scalars$regstring)) {
+      step_parcels$regstring_rb = res_scalars$regstring
+    }
+
+    # Manual extraction of stats for reg table update
+    stats = glance
+    if ("r.squared" %in% names(stats)) stats$r2 = as.numeric(stats$r.squared)
+    if ("adj.r.squared" %in% names(stats)) stats$adj_r2 = as.numeric(stats$adj.r.squared)
+    if ("df.residual" %in% names(stats)) stats$df_r = as.numeric(stats$df.residual)
+    if ("statistic" %in% names(stats)) stats$F = as.numeric(stats$statistic)
+
+    stat_cols = intersect(c("r2", "adj_r2", "df_r", "F"), names(stats))
+    for(col in stat_cols) {
+      reg[[col]] = stats[[col]]
+    }
+  }
+  reg_rb$cmd = results$rcmd
+  reg_rb$lang = "r"
+
+  step_parcels$reg_rb = reg_rb
+
+  return(step_parcels)
+}
+
+# The step parcels are generated in mrb_r
+mrb_make_r_reg_parcels = function(mrb, save=TRUE) {
+  restore.point("mrb_make_r_reg_parcels")
+
+  parcels = list()
+  all_step_parcels = mrb$all_step_parcels
+  if (is.null(all_step_parcels)) {
+    cat("\nAll step parcels were not generated in mrb.\n")
+    return(mrb)
+  }
+
+  combine_steps = function(field) {
+    res_list = lapply(all_step_parcels, function(x) x[[field]])
+    res_list = res_list[!sapply(res_list, is.null)]
+    if (length(res_list) == 0) return(tibble())
+    parcel = bind_rows(res_list)
+    repdb_check_data(parcel, table=field)
+    parcel
+  }
+
+  parcels$reg_rb = combine_steps("reg_rb")
+  parcels$regcoef_rb = combine_steps("regcoef_rb")
+  parcels$regcoef_diff = combine_steps("regcoef_diff")
+  parcels$regscalar_rb = combine_steps("regscalar_rb")
+  parcels$regstring_rb = combine_steps("regstring_rb")
+
+  # Save everything directly into the repdb directory
+  if (save) {
+    repdb_dir = file.path(mrb$project_dir, "repdb")
+    repboxDB::repdb_save_parcels(parcels, repdb_dir, check = TRUE)
+  }
+
+  mrb$parcels[names(parcels)] = parcels
+  return(mrb)
+}
+
+
+
+mrb_stats_to_regscalar_regstring = function(stats, runid=NULL, variant = NULL, omit_strings = c("cmdline","cmd","depvar","variant","artid"), omit_scalars = NULL) {
+  restore.point("mrb_split_regscalar_regstring")
+  stats = as_tibble(stats)
+
+  cols = names(stats)
+  char_cols = cols[sapply(stats, is.character)]
+  num_cols = setdiff(cols, c(char_cols,"runid", omit_scalars))
+  char_cols = setdiff(char_cols, omit_strings)
+
+  if (length(char_cols)>0) {
+    regstring = stats[,c("runid", char_cols)] %>%
+      tidyr::pivot_longer(all_of(char_cols), names_to="string_name", values_to="string_val")
+  } else {
+    regstring = NULL
+  }
+
+
+  if (length(num_cols)>0) {
+    stats[num_cols] = lapply(stats[num_cols], as.numeric)
+    regscalar = stats[,c("runid", num_cols)] %>%
+      tidyr::pivot_longer(all_of(num_cols), names_to="scalar_name", values_to="scalar_val")
+  } else {
+    regscalar = NULL
+  }
+
+
+  if (!"runid" %in% colnames(stats) & !is.null(runid)) {
+    if (NROW(regstring)>0) regstring$step = runid
+    if (NROW(regscalar)>0) regscalar$step = runid
+  }
+
+  if (!is.null(variant)) {
+    if (!has_col(regstring, "variant") & NROW(regstring)>0) regstring$variant = variant
+    if (!has_col(regscalar, "variant") & NROW(regscalar)>0) regscalar$variant = variant
+  }
+
+  if (NROW(regstring)==0) regstring = NULL
+  if (NROW(regscalar)==0) regscalar = NULL
+
+  list(regstring=regstring, regscalar=regscalar)
+
+}
+
+repdb_glance_to_reg_stats = function(glance) {
+  stats = glance %>%
+    add_coalesce("r2",c("r.squared")) %>%
+    add_coalesce("adj_r2",c("adj.r.squared")) %>%
+    add_coalesce("df_r",c("df.residual")) %>%
+    add_coalesce("F",c("F","statistic"))
+  stats[,intersect(c("artid","variant", "step", "r2","adj_r2","df_r","F"), colnames(stats))]
+}
+
+extract_reg_stats_from_regscalar = function(regscalar) {
+  restore.point("extract_reg_stats_from_regscalar")
+
+  stats = regscalar[, intersect(c("step","artid","variant"), colnames(regscalar))] %>%
+    unique()
+
+  stats
+}
+
+
+
+
+
+
+
+
+
+```
+# END OF FILE: mrb_r_reg.R
+
+-----------------------------------------------------------
+
+
+# FILE: mrb_se.R
+```
+# Parses SE information from a Stata regression and
+# returns the relevant SE info stored in the repdb reg table
+
+get_se_parser_version = function() {
+  return(0)
+}
+
+se_stata_to_repdb = function(cmd, opts_df = cmdpart_to_opts_df(cmdpart), cmdpart=NULL) {
+  restore.point("se_stata_to_repdb")
+
+  if (cmd == "newey") {
+    row = opts_df$opt == "lag"
+    lag = as_integer(opts_df$opt_arg[row])
+    se = tibble(
+      se_category = "robust",
+      se_type = "nw",
+      se_args = paste0("lag=",lag)
+    )
+    return(se)
+  }
+
+  # There are different ways how standard errors can be
+  # specified in Stata. All the following 4 versions
+  # specify the same robust standard errors:
+
+  # reg y x, vce(robust)
+  # reg y x, vce(r)
+  # reg y x, robust
+  # reg y x, rob
+
+  # Our code deals with the different version
+
+  abbr.li = list(
+    robust = c("robust","robus","robu","rob","ro","r"),
+    cluster = c("cluster","cluste","clust","clus","clu","cl"),
+    boot = c("bootstrap","bootstra","bootstr","bootst","boots","boot"),
+    jack = c("jackknife","jackknif","jack")
+  )
+
+  se_type = ""; se_args=NULL
+  vce_row = which(opts_df$opt=="vce")
+
+  if (length(vce_row)>0) {
+    # using tolower causes errors if variable name for
+    # clustered standard errors is not in lower case
+    # se_str = tolower(opts_df$opt_arg[vce_row])
+    se_str = opts_df$opt_arg[vce_row]
+    se_type = str.left.of(se_str, " ")
+    se_type = expand_stata_abbr_one_val(se_type, abbr.li)
+    if (is.na(se_str)) se_str = ""
+    se_args = str.right.of(se_str, " ",not.found = "") %>%
+      trimws() %>% ws_to_single_space() %>%
+      strsplit(" ")
+    se_args = se_args[[1]]
+  } else {
+    abbr.row = which(opts_df$opt %in% unlist(abbr.li))
+    # cluster se may have option: robust cluster(myvar)
+    # we then just set option to cluster
+    if (length(abbr.row)==2) {
+      cl_ind = which(startsWith(opts_df$opt[abbr.row],"cl"))
+      if (length(cl_ind)>0) {
+        abbr.row = abbr.row[cl_ind]
+      }
+    }
+
+    if (length(abbr.row)==1) {
+      se_type = opts_df$opt[[abbr.row]]
+      se_type = expand_stata_abbr_one_val(se_type, abbr.li)
+      # using tolower causes errors if variable name for
+      # clustered standard errors is not in lower case
+      # se_str = tolower(opts_df$opt_arg[abbr.row])
+      se_str = opts_df$opt_arg[abbr.row]
+      if (is.na(se_str)) se_str = ""
+      se_args = se_str %>%
+        trimws() %>% ws_to_single_space() %>%
+        strsplit(" ")
+      se_args = se_args[[1]]
+    } else if (length(abbr.row)>1) {
+      stop("Regression options match multiple standard error abbreviations. Need to adapt stata.reg.se.info")
+    }
+  }
+
+
+  # Some commands have different naming conventions
+  if (cmd == "xtreg") {
+    if (se_type == "conventional") se_type == "iid"
+  } else if (cmd %in% c("reghdfe","ivreghdfe")) {
+    # iid = undadjusted
+    if (startsWith(se_type,"un")) se_type = "iid"
+  }
+
+  # No specific se option
+  if (se_type %in% c("","iid")) {
+    if (length(se_args)>0) {
+      restore.point("Problem in parsing se: se_type is iid but there are se_args")
+      stop("Problem in parsing se: se_type is iid but there are se_args")
+    }
+    se = tibble(
+      se_category = "iid",
+      se_type = "iid",
+      se_args = ""
+    )
+    return(se)
+  }
+  if (se_type=="robust" | tolower(se_type) %in% c("hc0", "hc1","hc2","hc3","hc4","hc5")) {
+
+    if (length(se_args)>0) {
+      restore.point("Problem in parsing se: se_type is robust but there are se_args")
+      stop(paste0("Problem in parsing se: se_type is ", se_type," but there are se_args"))
+    }
+    if (se_type=="robust") se_type = "hc1"
+    se = tibble(
+      se_category = "robust",
+      se_type = se_type,
+      se_args = ""
+    )
+    return(se)
+  }
+
+  if (se_type=="cluster") {
+    clustervar = list(se_args)
+    num_clustervar = length(clustervar)
+    if (num_clustervar==1) {
+      se_type = "cluster"
+    } else if (num_clustervar==2) {
+      se_type = "twoway"
+    } else if (num_clustervar > 2) {
+      se_type = "multiway"
+    } else {
+      stop("We have clustered se but no cluster variables can be found in options.")
+    }
+    se_args = paste0("cluster",seq_along(clustervar),"=", clustervar, collapse=";")
+
+    se = tibble(
+      se_category = "cluster",
+      se_type = se_type,
+      se_args = se_args
+    )
+    return(se)
+  }
+
+  stop(paste0("Have not yet implemented parsing of Stata standard error of type ", se_type))
+  return(NULL)
+}
+
+repdb_parse_se_args = function(se_args, as_df=FALSE) {
+  restore.point("repdb_parse_se_args")
+  #se_args = c("cluster1=i1;cluster2=i2","cluster2=i2")[1]
+  if (length(se_args)>1) {
+    stop("repdb_se_args_to_list is not yet vectorized.")
+  }
+
+  str = strsplit(se_args,";", fixed=TRUE)[[1]]
+  eq_pos = stri_locate_first_fixed(str,"=")[,1]
+  var = substring(str,1,eq_pos-1)
+  val = substring(str,eq_pos+1)
+  if (!as_df) {
+    names(val) = var
+    return(val)
+  }
+  tibble(arg_name=var, arg_val=val)
+}
+```
+# END OF FILE: mrb_se.R
+
+-----------------------------------------------------------
+
+
+# FILE: mrb_stata.R
+```
+# New attempt metareg base: compute Stata code
+# for repboxDRF generated Stata file
+
+example = function() {
+  # Should point to this project dir
+  project_dir = "~/repbox/projects/aejapp_11_2_10"
+
+  if (FALSE)
+    rstudioapi::filesPaneNavigate(project_dir)
+
+  drf = drf_load(project_dir)
+  mrb = mrb_init(project_dir, drf=drf)
+  #mrb = mrb_make_cmdpart_parcel(mrb)
+  mrb = mrb_full_stata_script(mrb, capture = FALSE)
+  mrb = mrb_run_stata_script(mrb)
+}
+
+
+mrb_run_stata_script = function(mrb, do_file = mrb$stata_do_file) {
+  restore.point("mrb_run_stata_script")
+  if (is.null(do_file) | !file.exists(do_file)) {
+    stop("No existing do file specified.")
+  }
+  library(repboxStata)
+  run_stata_do(do_file, nostop = FALSE)
+  mrb
+}
+
+mrb_check_stata_reg_out_complete = function(mrb) {
+  path_df = mrb$drf$path_df
+  pids = unique(path_df$pid)
+
+  length(pids)
+
+
+  reg_runids = unique(code_df$pid)
+
+}
+
+
+mrb_full_stata_script = function(mrb, capture=TRUE) {
+  restore.point("mrb_full_stata_script")
+  run_df = mrb$drf$run_df
+
+
+  path_merge = c("load_natural")
+  outdir = file.path(mrb$mrb_dir, "stata_reg_out")
+  code_df = repboxDRF::drf_stata_code_df(drf=mrb$drf)
+  code_df = code_df %>%
+    drf_code_adapt(mrb_code_reg_stata, just_path_pos="end", run_df=run_df, outdir=outdir, capture=capture) %>%
+    drf_code_stata_path_header()
+
+  script_file = file.path(mrb$mrb_dir, "stata_code/mrb_stata.do")
+  drf_code_write(code_df, script_file)
+  mrb$stata_code_df = code_df
+  mrb$stata_do_file = script_file
+  mrb
+}
+
+drf_code_write = function(code_df, file) {
+  dir = dirname(file)
+  if (!dir.exists(dir)) dir.create(dir, recursive = TRUE)
+  txt = paste0(code_df$pre, code_df$code, code_df$post, collapse="\n")
+  write_utf8(txt, file)
+  invisible(txt)
+}
+
+mrb_code_reg_stata = function(code_df, run_df=NULL, outdir=NULL,runid = code_df$runid, capture=TRUE, ...) {
+  restore.point("mrb_code_reg_stata")
+  library(repboxStata)
+  stata_code = code_df$code
+
+  if (!dir.exists(outdir))
+    dir.create(outdir, recursive = TRUE)
+
+  extra_code = ""
+  outfile = paste0(outdir, "/reg_", runid, "__sb.dta")
+  scalar_outfile = paste0(outdir, "/regscalar_", runid, "__sb.txt")
+  macro_outfile = paste0(outdir, "/regmacro_", runid, "__sb.txt")
+
+  if (capture) {
+    cap_str = "capture noisily "
+  } else {
+    cap_str = ""
+  }
+
+
+  cmd = code_df$cmd
+  # Command for which marginal effects are stored
+  if (cmd %in% stata_cmds_with_margin()) {
+    extra_code = paste0('
+', cap_str, 'margins, atmeans dydx(*) post
+', cap_str, 'parmest, saving("',outdir, "/reg_", runid, "__sb_mem.dta",'")
+', cap_str, 'repbox_write_reg_scalars "',outdir, "/regscalar_", runid, "__sb_mem.txt",'"
+', cap_str, 'repbox_write_reg_macros "',outdir, "/regmacro_", runid, "__sb_mem.txt",'"
+')
+  } else if (cmd == "dprobit") {
+    extra_code = paste0(cap_str, '
+repbox_write_dprobit_coef_se "',outdir, "/dprobit_", runid, ".csv\n")
+  } else if (cmd %in% stata_cmds_with_exp_coef()) {
+    extra_code = paste0(cap_str, ' estout . using "', outdir,'/reg_', runid, '__sb_exp.tsv", cells("b se t p ci_l ci_u") replace eform\n')
+  }
+
+  code = paste0(
+    cap_str, stata_code,
+    '\n
+', cap_str, 'parmest, label saving("',outfile,'", replace)
+', cap_str, 'repbox_write_reg_scalars "', scalar_outfile,'"
+', cap_str, 'repbox_write_reg_macros "', macro_outfile,'"
+', extra_code
+  )
+  code
+}
+```
+# END OF FILE: mrb_stata.R
+
+-----------------------------------------------------------
+
+
+# FILE: mrb_test_coef.R
+```
+mrb_test_regcoeff_diff = function(
+  project_dir,
+  parcels = list(),
+  compare_what = c("all", "coef")[1],
+  max_rel_diff_tol = 0.01,
+  max_deviation_tol = 1e-6,
+  min_within_share = 0.99,
+  max_cases = Inf,
+  max_coef_cases = 12
+) {
+  restore.point("mrb_test_regcoeff_diff")
+
+  compare_what_filter = match.arg(compare_what, c("all", "coef"))
+
+  parcels = repdb_load_parcels(
+    project_dir,
+    c("regcoef_diff", "reg", "reg_cmdpart", "regvar", "regxvar", "regsource", "regcoef", "regcoef_rb"),
+    parcels = parcels
+  )
+
+  diff = parcels$regcoef_diff
+  if (is.null(diff) || NROW(diff) == 0) return(NULL)
+
+  diff = diff %>%
+    filter(compare_what == compare_what_filter) %>%
+    mutate(
+      within_1pc_share = as.numeric(within_1pc_share),
+      max_rel_diff = as.numeric(max_rel_diff),
+      max_deviation = as.numeric(max_deviation),
+      identical = !is.na(identical) & identical,
+      is_problem =
+        !identical &
+        (
+          is.na(within_1pc_share) |
+          within_1pc_share < min_within_share |
+          (!is.na(max_rel_diff) & max_rel_diff > max_rel_diff_tol) |
+          (!is.na(max_deviation) & max_deviation > max_deviation_tol)
+        )
+    ) %>%
+    filter(is_problem) %>%
+    arrange(desc(max_rel_diff), desc(max_deviation), runid)
+
+  if (NROW(diff) == 0) return(NULL)
+
+  if (is.finite(max_cases) && NROW(diff) > max_cases) {
+    diff = diff[seq_len(max_cases), , drop = FALSE]
+  }
+
+  reg = parcels$reg
+  regsource = parcels$regsource
+  add_source_info = !is.null(regsource) && NROW(regsource) > 0
+
+  txt = lapply(seq_len(NROW(diff)), function(i) {
+    row = diff[i, ]
+    runid = row$runid
+
+    reg_row = NULL
+    if (!is.null(reg) && NROW(reg) > 0) {
+      reg_row = reg[reg$runid == runid & reg$variant == row$variant2, , drop = FALSE]
+      if (NROW(reg_row) == 0) {
+        reg_row = reg[reg$runid == runid, , drop = FALSE]
+      }
+    }
+
+    src_row = NULL
+    if (add_source_info) {
+      src_row = regsource[regsource$runid == runid, , drop = FALSE]
+      if (NROW(src_row) == 0) src_row = NULL
+    }
+
+    stata_code = ""
+    if (!is.null(reg_row) && NROW(reg_row) > 0 && "cmdline" %in% colnames(reg_row) && !is.na(reg_row$cmdline[1])) {
+      stata_code = reg_row$cmdline[1]
+    }
+
+    r_code = mrb_test_reg_r_code(project_dir, runid, parcels = parcels)
+
+    coef_pair = mrb_test_get_regcoef_pair(
+      runid = runid,
+      variant1 = row$variant1,
+      variant2 = row$variant2,
+      parcels = parcels
+    )
+
+    diff_tab = NULL
+    coef_stats = mrb_test_empty_coef_diff_stats()
+    coef_text = "- Could not create coefficient comparison table."
+
+    if (!is.null(coef_pair$co1) && !is.null(coef_pair$co2) &&
+        NROW(coef_pair$co1) > 0 && NROW(coef_pair$co2) > 0) {
+      diff_tab = coef_diff_table(coef_pair$co1, coef_pair$co2)
+      coef_stats = mrb_test_coef_diff_stats(diff_tab)
+      coef_text = mrb_test_regcoef_diff_text(
+        diff_tab = diff_tab,
+        variant1 = row$variant1,
+        variant2 = row$variant2,
+        compare_what = compare_what_filter,
+        max_coef_cases = max_coef_cases
+      )
+    }
+
+    header = paste0("## runid ", runid)
+
+    summary_li = c(
+      paste0(
+        "- variants: ", row$variant1, " vs ", row$variant2,
+        "; compare_what: ", row$compare_what
+      ),
+      paste0(
+        "- summary: identical_share = ", mrb_test_fmt_num(row$identical_share),
+        "; within_1pc_share = ", mrb_test_fmt_num(row$within_1pc_share),
+        "; max_rel_diff = ", mrb_test_fmt_num(row$max_rel_diff),
+        "; max_deviation = ", mrb_test_fmt_num(row$max_deviation)
+      ),
+      paste0(
+        "- coef_only: identical_share = ", mrb_test_fmt_num(coef_stats$identical_share_coef),
+        "; within_1pc_share = ", mrb_test_fmt_num(coef_stats$within_1pc_share_coef),
+        "; max_rel_diff = ", mrb_test_fmt_num(coef_stats$max_rel_diff_coef),
+        "; max_deviation = ", mrb_test_fmt_num(coef_stats$max_deviation_coef)
+      )
+    )
+
+    if (isTRUE(row$ref_level_differ)) {
+      summary_li = c(
+        summary_li,
+        "- note: reference levels differ, so part of the mismatch may come from different dummy dropping."
+      )
+    }
+    if (!is.null(row$problem) && !is.na(row$problem) && nzchar(row$problem)) {
+      summary_li = c(summary_li, paste0("- problem tag: ", row$problem))
+    }
+
+    if (!is.null(src_row) && NROW(src_row) > 0) {
+      source_str = src_row$script_path[1]
+      if ("line" %in% colnames(src_row) && !is.na(src_row$line[1])) {
+        source_str = paste0(source_str, " (line ", src_row$line[1], ")")
+      }
+      summary_li = c(summary_li, paste0("- source: ", source_str))
+    }
+
+    block = c(
+      header,
+      summary_li,
+      "",
+      "Stata command:",
+      "```stata",
+      stata_code,
+      "```",
+      "",
+      "R translation used by metaregBase:",
+      "```r",
+      r_code,
+      "```",
+      "",
+      "Coefficient mismatches:",
+      coef_text
+    )
+
+    paste0(block, collapse = "\n")
+  })
+
+  paste0(txt, collapse = "\n\n")
+}
+
+
+mrb_test_regcoef_diff_text = function(
+  diff_tab,
+  variant1 = "rb",
+  variant2 = "sb",
+  compare_what = c("all", "coef")[1],
+  max_coef_cases = 12
+) {
+  restore.point("mrb_test_regcoef_diff_text")
+
+  compare_what = match.arg(compare_what, c("all", "coef"))
+
+  if (is.null(diff_tab) || NROW(diff_tab) == 0) {
+    return("- No coefficient comparison rows available.")
+  }
+
+  tab = diff_tab %>%
+    mutate(
+      coef_missing = xor(is.na(coef_1), is.na(coef_2)),
+      se_missing = xor(is.na(se_1), is.na(se_2)),
+      has_coef_diff = coef_missing | (!is.na(abs_err_coef) & abs_err_coef > 0),
+      has_se_diff = se_missing | (!is.na(abs_err_se) & abs_err_se > 0),
+      has_any_diff = has_coef_diff | has_se_diff,
+      rel_rank_coef = ifelse(coef_missing, Inf, ifelse(is.na(rel_err_coef), -Inf, rel_err_coef)),
+      abs_rank_coef = ifelse(coef_missing, Inf, ifelse(is.na(abs_err_coef), -Inf, abs_err_coef)),
+      rel_rank_all = ifelse(
+        coef_missing | se_missing,
+        Inf,
+        pmax(
+          ifelse(is.na(rel_err_coef), -Inf, rel_err_coef),
+          ifelse(is.na(rel_err_se), -Inf, rel_err_se)
+        )
+      ),
+      abs_rank_all = ifelse(
+        coef_missing | se_missing,
+        Inf,
+        pmax(
+          ifelse(is.na(abs_err_coef), -Inf, abs_err_coef),
+          ifelse(is.na(abs_err_se), -Inf, abs_err_se)
+        )
+      )
+    )
+
+  if (compare_what == "coef") {
+    tab = tab %>%
+      filter(has_coef_diff) %>%
+      arrange(desc(coef_missing), desc(rel_rank_coef), desc(abs_rank_coef), cterm)
+  } else {
+    tab = tab %>%
+      filter(has_any_diff) %>%
+      arrange(desc(coef_missing | se_missing), desc(rel_rank_all), desc(abs_rank_all), cterm)
+  }
+
+  if (NROW(tab) == 0) {
+    return("- No differing coefficients to show.")
+  }
+
+  if (is.finite(max_coef_cases) && NROW(tab) > max_coef_cases) {
+    tab = tab[seq_len(max_coef_cases), , drop = FALSE]
+  }
+
+  if (compare_what == "coef") {
+    show = tibble(
+      cterm = tab$cterm,
+      coef_1 = tab$coef_1,
+      coef_2 = tab$coef_2
+    )
+    names(show)[2:3] = c(paste0("coef_", variant1), paste0("coef_", variant2))
+  } else {
+    show = tibble(
+      cterm = tab$cterm,
+      coef_1 = tab$coef_1,
+      coef_2 = tab$coef_2,
+      se_1 = tab$se_1,
+      se_2 = tab$se_2
+    )
+    names(show)[2:3] = c(paste0("coef_", variant1), paste0("coef_", variant2))
+    names(show)[4:5] = c(paste0("se_", variant1), paste0("se_", variant2))
+  }
+
+  out = paste0(capture.output(print(as.data.frame(show), row.names = FALSE, right = FALSE)), collapse = "\n")
+
+  paste0(
+    "- Top ", NROW(show), " mismatches shown",
+    if (compare_what == "coef") " (ordered by coefficient differences)." else " (ordered by coefficient and standard error differences).",
+    "\n```text\n",
+    out,
+    "\n```"
+  )
+}
+
+
+mrb_test_coef_diff_stats = function(diff_tab) {
+  restore.point("mrb_test_coef_diff_stats")
+
+  if (is.null(diff_tab) || NROW(diff_tab) == 0) {
+    return(mrb_test_empty_coef_diff_stats())
+  }
+
+  coef_missing = xor(is.na(diff_tab$coef_1), is.na(diff_tab$coef_2))
+  abs_err_coef = as.numeric(diff_tab$abs_err_coef)
+  rel_err_coef = as.numeric(diff_tab$rel_err_coef)
+
+  identical_coef = !coef_missing & !is.na(abs_err_coef) & abs_err_coef == 0
+  within_1pc_coef = !coef_missing & !is.na(rel_err_coef) & rel_err_coef <= 0.01
+
+  max_rel_diff_coef = if (all(is.na(rel_err_coef))) NA_real_ else max(rel_err_coef, na.rm = TRUE)
+
+  dev_coef = pmin(abs_err_coef, rel_err_coef)
+  max_deviation_coef = if (all(is.na(dev_coef))) NA_real_ else max(dev_coef, na.rm = TRUE)
+
+  list(
+    identical_share_coef = mean(identical_coef),
+    within_1pc_share_coef = mean(within_1pc_coef),
+    max_rel_diff_coef = max_rel_diff_coef,
+    max_deviation_coef = max_deviation_coef
+  )
+}
+
+
+mrb_test_empty_coef_diff_stats = function() {
+  list(
+    identical_share_coef = NA_real_,
+    within_1pc_share_coef = NA_real_,
+    max_rel_diff_coef = NA_real_,
+    max_deviation_coef = NA_real_
+  )
+}
+
+
+mrb_test_get_regcoef_pair = function(runid, variant1 = "rb", variant2 = "sb", parcels = list()) {
+  restore.point("mrb_test_get_regcoef_pair")
+
+  li = list()
+  if (!is.null(parcels$regcoef) && NROW(parcels$regcoef) > 0) {
+    li[[length(li) + 1]] = parcels$regcoef
+  }
+  if (!is.null(parcels$regcoef_rb) && NROW(parcels$regcoef_rb) > 0) {
+    li[[length(li) + 1]] = parcels$regcoef_rb
+  }
+  if (length(li) == 0) {
+    return(list(co1 = NULL, co2 = NULL))
+  }
+
+  all_coef = bind_rows(li)
+  all_coef = all_coef[all_coef$runid == runid, , drop = FALSE]
+
+  get_one = function(variant) {
+    if (NROW(all_coef) == 0) return(NULL)
+    if ("variant" %in% colnames(all_coef)) {
+      res = all_coef[all_coef$variant == variant, , drop = FALSE]
+      if (NROW(res) > 0) return(res)
+    }
+    NULL
+  }
+
+  list(
+    co1 = get_one(variant1),
+    co2 = get_one(variant2)
+  )
+}
+
+
+mrb_test_reg_r_code = function(project_dir, runid, parcels = list(), prefer = "fixest") {
+  restore.point("mrb_test_reg_r_code")
+
+  need = c("reg", "regvar", "regxvar", "reg_cmdpart")
+  missing = need[!need %in% names(parcels)]
+  if (length(missing) > 0) {
+    parcels = repdb_load_parcels(project_dir, missing, parcels = parcels)
+  }
+
+  if (is.null(parcels$reg) || is.null(parcels$regvar) || is.null(parcels$reg_cmdpart)) {
+    return("# Could not reconstruct R translation because required parcels are missing.")
+  }
+
+  reg = parcel_for_runid(parcels$reg, runid)
+  regvar = parcel_for_runid(parcels$regvar, runid)
+  regxvar = if (!is.null(parcels$regxvar)) parcel_for_runid(parcels$regxvar, runid) else tibble()
+  cmdpart = parcel_for_runid(parcels$reg_cmdpart, runid)
+
+  if (NROW(reg) == 0 || NROW(regvar) == 0 || NROW(cmdpart) == 0) {
+    return("# Could not reconstruct R translation because required parcels are missing.")
+  }
+
+  res = try({
+    opts = regtranslate::code_options(add_function = TRUE, add_broom = TRUE)
+    code_df = regtranslate::reg_stata_to_r_code(
+      reg = reg,
+      regvar = regvar,
+      regxvar = regxvar,
+      cmdpart = cmdpart,
+      prefer = prefer,
+      opts = opts
+    )
+    paste0(code_df$code, collapse = "\n")
+  }, silent = TRUE)
+
+  if (inherits(res, "try-error")) {
+    msg = conditionMessage(attr(res, "condition"))
+    return(paste0("# Could not reconstruct R translation: ", msg))
+  }
+
+  res
+}
+
+
+mrb_test_fmt_num = function(x, digits = 4) {
+  if (length(x) == 0 || is.na(x)) return("NA")
+  formatC(as.numeric(x), digits = digits, format = "fg", flag = "#")
+}
+```
+# END OF FILE: mrb_test_coef.R
+
+-----------------------------------------------------------
+
+
+# FILE: mrb_test.R
+```
+# Tools for systematic testing the metaregBase pipeline
+# Will be used for specific test projects
+
+# Key: Generate a report file (including run logs and sources) that
+# can be given to an AI that can search for the bug.
+
+example = function() {
+  project_dir = "~/repbox/projects/test"
+
+  if (FALSE)
+    rstudioapi::filesPaneNavigate(project_dir)
+
+  outfile = mrb_run_as_test(project_dir, file.path(project_dir, "run/run_test.R"))
+  rstudioapi::navigateToFile(outfile, line=10000)
+}
+
+
+mrb_run_as_test = function(project_dir, run_script, check_reg=TRUE, navigate=TRUE) {
+  restore.point("mrb_run_as_test")
+
+  try(library(repboxRun), silent=TRUE)
+  library(metaregBase)
+
+  if (!file.exists(run_script)) {
+    stop(paste0("The script to run ", run_script, " does not exist."))
+  }
+  test_dir = file.path(project_dir, "test_report")
+  if (!dir.exists(test_dir)) dir.create(test_dir)
+  outfile = file.path(test_dir, "test_report.md")
+  con = file(outfile, open="wt")
+  on.exit(try(close(con), silent=TRUE), add = TRUE)
+  add = function(...) {
+    txt = paste0(c(...), collapse="")
+    txt = paste0("\n",txt, "\n")
+    if (is.null(txt)) return(invisible())
+    writeLines(txt, con)
+  }
+  add("Report of test run for ", project_dir)
+  add("# do files in the project")
+  do_files = list.files(file.path(project_dir,"mod"), glob2rx("*.do"), recursive = TRUE, full.names = TRUE)
+  do_files = do_files[!startsWith(basename(do_files), "repbox_")]
+  add(files_to_md_fences(do_files))
+
+  add("# The script that is run")
+  add(files_to_md_fences(run_script))
+
+  add("# Run log of the script")
+  source_with_log(run_script,log_con=con)
+
+  parcels = list()
+
+  if (check_reg) {
+    add("# Comparision of Stata and R regressions")
+    parcels = repdb_load_parcels(
+      project_dir,
+      c("regcoef_diff", "reg", "reg_cmdpart", "regvar", "regxvar", "regsource"),
+      parcels = parcels
+    )
+    txt = mrb_test_regcoeff_diff(project_dir, parcels)
+    add(txt)
+  }
+
+
+  try(close(con), silent=TRUE)
+
+  if (navigate) {
+    rstudioapi::navigateToFile(outfile, line=10000)
+  }
+  outfile
+}
+
+files_to_md_fences = function(files, path) {
+  if (length(files)==0) return(NULL)
+  txt = sapply(files, function(file) {
+    txt = readLines(file, warn=FALSE)
+    txt = c("## ", file, "```", txt, "```")
+    paste0(txt, collapse="\n")
+  })
+  txt = paste0(txt, collapse="\n")
+  txt
+}
+
+
+```
+# END OF FILE: mrb_test.R
+
+-----------------------------------------------------------
+
+
+# FILE: stata_util.R
+```
+expand_stata_abbr_one_val = function(val, abbr.li) {
+  for (i in seq_along(abbr.li)) {
+    if (val %in% abbr.li[[i]]) return(abbr.li[[i]][1])
+  }
+  val
+}
+
+in_stata_abbr = function(val, abbr.li) {
+  all.abbr = unlist(abbr.li, recursive = FALSE, use.names=TRUE)
+  val %in% all.abbr
+}
+```
+# END OF FILE: stata_util.R
+
+-----------------------------------------------------------
+
+
+# FILE: static_reg.R
+```
+# Static code analysis of regression commands
+# Note that the static code can still contain Stata macros
+# and thus cannot be as reliably analysed as the command line
+# we get from our dynamic analysis in which macros have been
+# replaced.
+
+example = function() {
+  project_dir = "~/repbox/projects_static/aejapp_10_1_1"
+  parcels = repboxDB::repdb_load_parcels(project_dir, "reg_stata_cmd")
+  reg_cmd = parcels$reg_stata_cmd$reg_stata_cmd
+  reg_cmd$sregnum = 1:NROW(reg_cmd)
+  reg_df = static_reg_cmd_to_reg_df(reg_cmd)
+}
+
+static_reg_cmd_to_reg_df = function(reg_cmd) {
+  restore.point("static_reg_cmd_to_reg_df")
+  if (NROW(reg_cmd)==0) return(NULL)
+  reg_cmd$sregnum = seq_len(NROW(reg_cmd))
+  cmdpart = cmdparts_of_stata_reg(reg_cmd$cmdline)
+  cmdpart$artid = reg_cmd$artid[cmdpart$str_row]
+  cmdpart$step  = cmdpart$sregnum = cmdpart$str_row
+  opts_df = cmdpart_to_opts_df(cmdpart)
+
+  unique(cmdpart$part)
+  unique(cmdpart$tag)
+
+  cols = union(c("artid", "sregnum"), setdiff(colnames(reg_cmd), c("num_runs","num_err_runs","is_reg")))
+  reg_cmd = reg_cmd[,cols]
+
+
+  i = 1
+  reg_df = bind_rows(lapply(seq_len(NROW(reg_cmd)), function(i) {
+    #restore.point("hhsfkhf")
+    reg=reg_cmd[i,]
+    opts = opts_df[opts_df$step==i,]
+    reg$opts_have_macro = isTRUE(any( has.substr(opts$opt_arg,"$") | has.substr(opts$opt_arg,"`")))
+    se_info = try(se_stata_to_repdb(reg_cmd$cmd[i], opts),silent = TRUE)
+
+    if (is(se_info,"try-error")) {
+      cat(paste0("\nCould not parse se info:\n   ", reg$cmdline,"\n"))
+      reg[c("se_category","se_type","se_args")] = rep(NA_character_,3)
+    } else {
+      reg[c("se_category","se_type","se_args")] = se_info[c("se_category","se_type","se_args")]
+    }
+    reg
+  }))
+
+  cmd_sum = cmdpart %>%
+    group_by(artid, sregnum) %>%
+    summarize(
+      has_weights = "weight_str" %in% part,
+      has_absorb = "absorb" %in% tag,
+      specifies_se = "se" %in% tag,
+      has_if = "if_str" %in% part,
+      has_in = "in_str" %in% part,
+      has_opt = "opt_str" %in% part
+    )
+
+  reg_df = reg_df %>% left_join_overwrite(cmd_sum, by = c("artid","sregnum"))
+  reg_df$uses_macro = has.substr(reg_df$cmdline,"`") & has.substr(reg_df$cmdline,"$")
+
+  reg_df
+
+}
+```
+# END OF FILE: static_reg.R
+
+-----------------------------------------------------------
+
+
+# FILE: utils.R
+```
+parcel_for_runid = function(parcel, runid) {
+  parcel[parcel$runid==runid, ]
+}
+
+touchFile = function (pathname, ...) {
+  if (!exists("Sys.setFileTime", mode = "function")) {
+    Sys.setFileTime <- function(path, ...) {
+      info <- file.info(pathname)
+      if (info$isdir) {
+        stop(sprintf("In R v%s, it is not possible to change the timestamp of a directory: %s",
+                     getRversion(), pathname))
+      }
+      con <- NULL
+      on.exit({
+        if (!is.null(con)) close(con)
+      })
+      if (info$size == 0) {
+        con <- file(pathname, open = "w")
+      }
+      else {
+        con <- file(pathname, open = "r+b")
+        seek(con = con, where = 0, origin = "start",
+             rw = "read")
+        bfr <- readBin(con = con, what = raw(), n = 1)
+        seek(con = con, where = 0, origin = "start",
+             rw = "write")
+        writeBin(con = con, bfr)
+      }
+      invisible(TRUE)
+    }
+  }
+  pathname <- as.character(pathname)
+  nPathnames <- length(pathname)
+  if (nPathnames == 0L)
+    return(invisible(NULL))
+  if (nPathnames > 1L) {
+    res <- lapply(pathname, FUN = touchFile, ...)
+    res <- Reduce(c, res)
+    return(invisible(res))
+  }
+  if (!file.exists(pathname))
+    stop("No such file: ", pathname)
+  info <- file.info(pathname)
+  oldTimestamp <- info$mtime
+  if (!Sys.setFileTime(pathname, time = Sys.time())) {
+    cat("\nFailed to set timestamp: ", pathname)
+  }
+  invisible(oldTimestamp)
+}
+
+
+rstudio_job = function(name, expr, libs=NULL, wdir = getwd(), script.dir = tempdir(), importEnv=TRUE) {
+  expr = substitute(expr)
+  restore.point("as_job")
+  code = deparse1(expr)
+
+  #code = paste0('setwd("',wdir,'")\n', code)
+  if (!is.null(libs)) {
+    code = paste0(paste0("library(", libs,")", collapse="\n"), "\n", code)
+  }
+  cat("\nRun \n\n",code,"\n\n")
+
+  script.file = file.path(script.dir, paste0(name,".R"))
+  writeLines(code, script.file)
+  rstudioapi::jobRunScript(path = script.file,workingDir = wdir, name = name,importEnv = importEnv)
+
+}
+
+
+
+fe = function(val) {
+  as.factor(val)
+}
+
+
+df.rows.to.list = function(df) {
+  lapply(seq_len(NROW(df)), function(i) df[i,])
+}
+
+```
+# END OF FILE: utils.R
+
+-----------------------------------------------------------
+
+# Further packages of repbox project that are partialyl loaded
+
+https://github.com/repboxr
+
+https://github.com/repboxr/repboxDRF
+https://github.com/repboxr/repboxStata
+https://github.com/repboxr/repboxUtils
+https://github.com/repboxr/repboxDB
+https://github.com/repboxr/regtranslate
+
+##################################
+# Your Task
+##################################
+
+I want to refine my testing pipeline. If regressions in R are not the same as in Stata, there can be different reasons. Mainly, a problem in the R translation that generates the data, or a problem in the R translation of the regression.
+
+

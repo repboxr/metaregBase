@@ -44,11 +44,13 @@ mrb_run_r_reg = function(mrb, just_pids=NULL) {
 
   all_step_parcels = list()
 
+  cat("\nmrb_r_reg processing runids: ")
   for (pid in pids) {
-    cat(sprintf("\nProcessing pid: %s", pid))
+    cat(paste0(pid," "))
     step_parcels = mrb_run_r_reg_step(mrb, pid)
     all_step_parcels[[as.character(pid)]] = step_parcels
   }
+  cat("\n")
   mrb$all_step_parcels = all_step_parcels
 
   mrb = mrb_make_r_reg_parcels(mrb)
@@ -60,7 +62,6 @@ mrb_run_r_reg = function(mrb, just_pids=NULL) {
 #' Process a single regression, expand syntax, and format standard parcels
 mrb_run_r_reg_step = function(mrb, pid) {
   restore.point("mrb_run_r_reg_step")
-  stop()
 
   project_dir = mrb$project_dir
   parcels = mrb$parcels
@@ -70,81 +71,43 @@ mrb_run_r_reg_step = function(mrb, pid) {
   reg = parcel_for_runid(parcels$reg, runid)
   regvar = parcel_for_runid(parcels$regvar, runid)
   regxvar = parcel_for_runid(parcels$regxvar, runid)
-  cmdpart = parcel_for_runid(parcels$reg, runid)
+  cmdpart = parcel_for_runid(parcels$reg_cmdpart, runid)
   stata_co = parcel_for_runid(parcels$regcoef, runid)
+
+  if (NROW(stata_co)==0) {
+    cat("\nNo regcoef parcel entry from mrb_run_r_base for regression with runid=", pid, " found. Make sure you have run mrb_run_r_base.\n")
+    return(NULL)
+  }
 
   step_parcels = list()
 
-  # Default regcheck and error state
-  regcheck = tibble(runid = runid, problem = "", deviation = NA_real_, coef_deviation = NA_real_, identical = NA, identical_coef = NA)
 
-  if (nrow(reg) == 0) {
-    step_parcels$regcheck = regcheck %>% mutate(problem = "no reg parcel")
-    return(step_parcels)
-  }
 
   library(regtranslate)
   opts = code_options(add_function = TRUE, add_broom = TRUE)
-  code_df = try(reg_stata_to_r_code(reg, regvar, regxvar, cmdpart, prefer="fixest", opts=opts), silent = TRUE)
-
-  if (is(code_df, "try-error") || is.null(code_df) || nrow(code_df) == 0) {
-    err_msg = if(is.null(code_df) || nrow(code_df) == 0) "No translation available" else as.character(code_df)
-    reg_r = reg %>% mutate(variant = "r", error_in_r = TRUE, error_msg = err_msg)
-    step_parcels$reg_r = reg_r
-    step_parcels$regcheck = regcheck %>% mutate(problem = "translation failed")
-    return(step_parcels)
-  }
-
+  code_df = reg_stata_to_r_code(reg, regvar, regxvar, cmdpart, prefer="fixest", opts=opts)
   code = paste0(code_df$code, collapse="\n")
   reg_fun_code = paste0("reg_fun = ", code)
+  if (is_debug_mode()) {
 
-  eval_res = try(eval(parse(text=reg_fun_code)), silent=TRUE)
-  if (is(eval_res, "try-error")) {
-    reg_r = reg %>% mutate(variant = "r", error_in_r = TRUE, error_msg = paste0("Failed to parse R code: ", as.character(eval_res)))
-    step_parcels$reg_r = reg_r
-    step_parcels$regcheck = regcheck %>% mutate(problem = "R code parsing failed")
-    return(step_parcels)
   }
 
-  dat = try(repboxDRF::drf_get_data(runid, drf = mrb$drf), silent=TRUE)
-  if (is(dat, "try-error")) {
-    reg_r = reg %>% mutate(variant = "r", error_in_r = TRUE, error_msg = paste0("Failed to load data: ", as.character(dat)))
-    step_parcels$reg_r = reg_r
-    step_parcels$regcheck = regcheck %>% mutate(problem = "data loading failed")
-    return(step_parcels)
+  reg_fun = eval(parse(text=reg_fun_code))
+  dat = repboxDRF::drf_get_data(runid, drf = mrb$drf)
+  dat = create_cterm_cols(dat, unique(regvar$cterm))
+  if (nrow(regxvar) > 0) {
+    dat = make_regxvar_cols(dat, regxvar)
   }
-
-  # Prepare data with created cterms and interaction columns
-  dat = try({
-    dat = create_cterm_cols(dat, unique(regvar$cterm))
-    if (nrow(regxvar) > 0) {
-      dat = make_regxvar_cols(dat, regxvar)
-    }
-    dat
-  }, silent = TRUE)
-
-  if (is(dat, "try-error")) {
-    reg_r = reg %>% mutate(variant = "r", error_in_r = TRUE, error_msg = paste0("Failed to create cterms: ", as.character(dat)))
-    step_parcels$reg_r = reg_r
-    step_parcels$regcheck = regcheck %>% mutate(problem = "cterm creation failed")
-    return(step_parcels)
-  }
-
   results = try(reg_fun(dat), silent = TRUE)
-  if (is(results, "try-error")) {
-    reg_r = reg %>% mutate(variant = "r", error_in_r = TRUE, error_msg = paste0("Failed to run R regression: ", as.character(results)))
-    step_parcels$reg_r = reg_r
-    step_parcels$regcheck = regcheck %>% mutate(problem = "R regression failed")
-    return(step_parcels)
-  }
 
   # Process R results
   ct = results$ct
+
   if (!is.null(ct) && nrow(ct) > 0) {
     ct$cterm = cterm_of_r_coefs(ct$term, regvar, dot_to_at = TRUE)
-    co_df = ct_to_regcoef(ct, lang="r", variant="r", artid=artid)
+    co_df = ct_to_regcoef(ct, lang="r", variant="rb", artid=artid)
     co_df$runid = runid
-    step_parcels$regcoef_r = co_df
+    step_parcels$regcoef_rb = co_df
 
     # Comparison
     if (!is.null(stata_co) && nrow(stata_co) > 0) {
@@ -152,38 +115,24 @@ mrb_run_r_reg_step = function(mrb, pid) {
       if (!is.null(diff_tab)) {
         diff_sum = coef_diff_summary(diff_tab, compare_what=c("all","coef"))
         step_parcels$regcoef_diff = diff_sum
-
-        diff_all = diff_sum %>% filter(compare_what == "all")
-        diff_coef = diff_sum %>% filter(compare_what == "coef")
-
-        if (nrow(diff_all) > 0) {
-          regcheck$deviation = exp(0.5 * log(diff_all$max_rel_diff + 1e-12) + 0.5 * log(diff_all$max_deviation + 1e-12))
-          regcheck$identical = diff_all$identical[1]
-        }
-        if (nrow(diff_coef) > 0) {
-          regcheck$coef_deviation = exp(0.5 * log(diff_coef$max_rel_diff + 1e-12) + 0.5 * log(diff_coef$max_deviation + 1e-12))
-          regcheck$identical_coef = diff_coef$identical[1]
-        }
       }
     }
-  } else {
-    regcheck$problem = "no coefficients from R"
   }
 
   glance = results$glance
-  reg_r = reg %>% mutate(variant = "r", error_in_r = FALSE, error_msg = "")
+  reg_rb = reg %>% mutate(variant = "rb", error_in_r = FALSE, error_msg = "")
 
   if (!is.null(glance)) {
     glance$runid = runid
     glance$variant = "r"
     glance$artid = artid
 
-    res_scalars = repdb_stats_to_regscalar_regstring(glance, variant="r", artid=artid)
+    res_scalars = mrb_stats_to_regscalar_regstring(glance, variant="rb")
     if (!is.null(res_scalars$regscalar)) {
-      step_parcels$regscalar_r = res_scalars$regscalar
+      step_parcels$regscalar_rb = res_scalars$regscalar
     }
     if (!is.null(res_scalars$regstring)) {
-      step_parcels$regstring_r = res_scalars$regstring
+      step_parcels$regstring_rb = res_scalars$regstring
     }
 
     # Manual extraction of stats for reg table update
@@ -195,14 +144,13 @@ mrb_run_r_reg_step = function(mrb, pid) {
 
     stat_cols = intersect(c("r2", "adj_r2", "df_r", "F"), names(stats))
     for(col in stat_cols) {
-      reg_r[[col]] = stats[[col]]
+      reg[[col]] = stats[[col]]
     }
   }
-  reg_r$cmd = results$rcmd
-  reg_r$lang = "r"
+  reg_rb$cmd = results$rcmd
+  reg_rb$lang = "r"
 
-  step_parcels$reg_r = reg_r
-  step_parcels$regcheck = regcheck
+  step_parcels$reg_rb = reg_rb
 
   return(step_parcels)
 }
@@ -222,15 +170,16 @@ mrb_make_r_reg_parcels = function(mrb, save=TRUE) {
     res_list = lapply(all_step_parcels, function(x) x[[field]])
     res_list = res_list[!sapply(res_list, is.null)]
     if (length(res_list) == 0) return(tibble())
-    bind_rows(res_list)
+    parcel = bind_rows(res_list)
+    repdb_check_data(parcel, table=field)
+    parcel
   }
 
-  parcels$reg_r = combine_steps("reg_r")
-  parcels$regcoef_r = combine_steps("regcoef_r")
+  parcels$reg_rb = combine_steps("reg_rb")
+  parcels$regcoef_rb = combine_steps("regcoef_rb")
   parcels$regcoef_diff = combine_steps("regcoef_diff")
-  parcels$regscalar_r = combine_steps("regscalar_r")
-  parcels$regstring_r = combine_steps("regstring_r")
-  parcels$regcheck = combine_steps("regcheck")
+  parcels$regscalar_rb = combine_steps("regscalar_rb")
+  parcels$regstring_rb = combine_steps("regstring_rb")
 
   # Save everything directly into the repdb directory
   if (save) {
@@ -242,6 +191,68 @@ mrb_make_r_reg_parcels = function(mrb, save=TRUE) {
   return(mrb)
 }
 
+
+
+mrb_stats_to_regscalar_regstring = function(stats, runid=NULL, variant = NULL, omit_strings = c("cmdline","cmd","depvar","variant","artid"), omit_scalars = NULL) {
+  restore.point("mrb_split_regscalar_regstring")
+  stats = as_tibble(stats)
+
+  cols = names(stats)
+  char_cols = cols[sapply(stats, is.character)]
+  num_cols = setdiff(cols, c(char_cols,"runid", omit_scalars))
+  char_cols = setdiff(char_cols, omit_strings)
+
+  if (length(char_cols)>0) {
+    regstring = stats[,c("runid", char_cols)] %>%
+      tidyr::pivot_longer(all_of(char_cols), names_to="string_name", values_to="string_val")
+  } else {
+    regstring = NULL
+  }
+
+
+  if (length(num_cols)>0) {
+    stats[num_cols] = lapply(stats[num_cols], as.numeric)
+    regscalar = stats[,c("runid", num_cols)] %>%
+      tidyr::pivot_longer(all_of(num_cols), names_to="scalar_name", values_to="scalar_val")
+  } else {
+    regscalar = NULL
+  }
+
+
+  if (!"runid" %in% colnames(stats) & !is.null(runid)) {
+    if (NROW(regstring)>0) regstring$step = runid
+    if (NROW(regscalar)>0) regscalar$step = runid
+  }
+
+  if (!is.null(variant)) {
+    if (!has_col(regstring, "variant") & NROW(regstring)>0) regstring$variant = variant
+    if (!has_col(regscalar, "variant") & NROW(regscalar)>0) regscalar$variant = variant
+  }
+
+  if (NROW(regstring)==0) regstring = NULL
+  if (NROW(regscalar)==0) regscalar = NULL
+
+  list(regstring=regstring, regscalar=regscalar)
+
+}
+
+repdb_glance_to_reg_stats = function(glance) {
+  stats = glance %>%
+    add_coalesce("r2",c("r.squared")) %>%
+    add_coalesce("adj_r2",c("adj.r.squared")) %>%
+    add_coalesce("df_r",c("df.residual")) %>%
+    add_coalesce("F",c("F","statistic"))
+  stats[,intersect(c("artid","variant", "step", "r2","adj_r2","df_r","F"), colnames(stats))]
+}
+
+extract_reg_stats_from_regscalar = function(regscalar) {
+  restore.point("extract_reg_stats_from_regscalar")
+
+  stats = regscalar[, intersect(c("step","artid","variant"), colnames(regscalar))] %>%
+    unique()
+
+  stats
+}
 
 
 

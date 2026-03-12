@@ -7,6 +7,7 @@ mrb_agg_stata = function(mrb, skip_if_has = TRUE) {
   mrb$stata_ct_sb = mrb_agg_stata_regcoef(mrb)
   mrb$stata_scalars = mrb_agg_stata_reg_scalars(mrb)
   mrb$stata_macros = mrb_agg_stata_reg_macros(mrb)
+  mrb$stata_ct_dprobit = mrb_agg_add_dprobit_coef(mrb,mrb$stata_ct_sb)
   mrb
 }
 
@@ -124,7 +125,7 @@ mrb_agg_add_dprobit_coef = function(mrb, stata_ct, dir = file.path(mrb$mrb_dir, 
 
 
 
-  return(bind_rows(stata_ct,df))
+  return(df)
 }
 
 
