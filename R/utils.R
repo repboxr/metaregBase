@@ -77,3 +77,17 @@ df.rows.to.list = function(df) {
   lapply(seq_len(NROW(df)), function(i) df[i,])
 }
 
+
+
+files_to_md_fences = function(files, path=NULL) {
+  if (length(files)==0) return(NULL)
+  txt = sapply(files, function(file) {
+    txt = readLines(file, warn=FALSE)
+    ext = tools::file_ext(file)
+    txt = c(paste0("## ", file), paste0("```{",ext,"}"), txt, "```")
+    paste0(txt, collapse="\n")
+  })
+  txt = paste0(txt, collapse="\n")
+  txt
+}
+

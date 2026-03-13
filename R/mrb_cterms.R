@@ -26,7 +26,9 @@ stata_expr_to_cterm = function(stata_expr) {
   cterm = stringi::stri_replace_all_regex(stata_expr,"(#+)|(\\|)|(\\*)","#")
   cterm = gsub(" ","", cterm)
 
-  if ( has.substr(cterm, ".")) stop()
+  if (any(has.substr(cterm, "."))) {
+    restore.point("cterm_ts_op")
+  }
 
   # Normalize time-series operators using PCRE (perl=TRUE)
   # \U upper-cases the following backreference

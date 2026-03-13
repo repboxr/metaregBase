@@ -81,8 +81,6 @@ mrb_run_r_reg_step = function(mrb, pid) {
 
   step_parcels = list()
 
-
-
   library(regtranslate)
   opts = code_options(add_function = TRUE, add_broom = TRUE)
   code_df = reg_stata_to_r_code(reg, regvar, regxvar, cmdpart, prefer="fixest", opts=opts)
@@ -90,11 +88,10 @@ mrb_run_r_reg_step = function(mrb, pid) {
   reg_fun_code = paste0("reg_fun = ", code)
 
   reg_fun = eval(parse(text=reg_fun_code))
-  dat = repboxDRF::drf_get_data(runid, drf = mrb$drf)
-  dat = create_cterm_cols(dat, unique(regvar$cterm))
-  if (nrow(regxvar) > 0) {
-    dat = make_regxvar_cols(dat, regxvar)
-  }
+
+  # Fetch and prepare the data using our new refactored helper function
+  dat = mrb_get_regression_data(runid, drf = mrb$drf, regvar = regvar, regxvar = regxvar)
+
   results = try(reg_fun(dat))
   if (is(results, "try-error")) {
     cat("\nError occured for runid=",pid,"\n")
@@ -159,6 +156,24 @@ mrb_run_r_reg_step = function(mrb, pid) {
 
   return(step_parcels)
 }
+
+#' Get and prepare regression data (creates cterms and regxvar columns)
+mrb_get_regression_data = function(runid, drf, regvar, regxvar = NULL) {
+  restore.point("mrb_get_regression_data")
+
+  dat = repboxDRF::drf_get_data(runid, drf = drf)
+
+  if (!is.null(regvar) && nrow(regvar) > 0) {
+    dat = create_cterm_cols(dat, unique(regvar$cterm))
+  }
+
+  if (!is.null(regxvar) && nrow(regxvar) > 0) {
+    dat = make_regxvar_cols(dat, regxvar)
+  }
+
+  return(dat)
+}
+
 
 # The step parcels are generated in mrb_r
 mrb_make_r_reg_parcels = function(mrb, save=TRUE) {
