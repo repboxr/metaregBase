@@ -10,6 +10,10 @@
 expand_stata_var_patterns = function(pattern, cols, unlist=TRUE, uses_xi=FALSE) {
   restore.point("expand_stata_var_patterns")
 
+  # Helper to expand time series operators with ranges
+  # e.g. L(0/3).x1 -> x1 L1.x1 L2.x1 L3.x1
+  pattern = expand_stata_ts_ranges(pattern)
+
   if (uses_xi) {
     if (!is.null(pattern)) {
       pattern = stringi::stri_replace_all_fixed(pattern, "|","#")
@@ -40,9 +44,17 @@ expand_stata_var_patterns = function(pattern, cols, unlist=TRUE, uses_xi=FALSE) 
   minus_rows = which(has.substr(pattern,"-"))
   normal_rows = setdiff(seq_along(pattern), c(star_rows, minus_rows))
 
-  pattern_rhs = str.right.of(pattern,".")
-  pattern_lhs = str.left.of(pattern,".",not.found = rep("", length(pattern)))
-  pattern_lhs = ifelse(pattern_lhs == "","", paste0(pattern_lhs, "."))
+  # Split at the LAST dot to cleanly separate all Stata prefixes from the base variable
+  last_dot = stringi::stri_locate_last_fixed(pattern, ".")[, 1]
+  pattern_rhs = ifelse(is.na(last_dot), pattern, stringi::stri_sub(pattern, last_dot + 1))
+  pattern_lhs = ifelse(is.na(last_dot), "", stringi::stri_sub(pattern, 1, last_dot))
+
+  # Old code
+  #pattern_rhs = str.right.of(pattern,".")
+  #pattern_lhs = str.left.of(pattern,".",not.found = rep("", length(pattern)))
+  #pattern_lhs = ifelse(pattern_lhs == "","", paste0(pattern_lhs, "."))
+
+
 
   # Abbreviation Matching
   no_match_rows = normal_rows[which(!(pattern_rhs[normal_rows] %in% cols))]
@@ -98,6 +110,40 @@ expand_stata_var_patterns = function(pattern, cols, unlist=TRUE, uses_xi=FALSE) 
   vars
 }
 
+
+#' Helper to expand time series operators with ranges, e.g. L(0/3).x1 -> x1 L1.x1 L2.x1 L3.x1
+expand_stata_ts_ranges = function(patterns) {
+  if (length(patterns) == 0) return(patterns)
+
+  res = unlist(lapply(patterns, function(p) {
+    # Match start/end ranges like L(0/3).x1 or c.L(0-3).x1
+    match_range = stringi::stri_match_first_regex(p, "^([a-zA-Z\\.]+)\\(([0-9]+)[/\\-]([0-9]+)\\)\\.(.*)$")
+
+    if (!is.na(match_range[1,1])) {
+      prefix = match_range[1,2]
+      start_num = as.integer(match_range[1,3])
+      end_num = as.integer(match_range[1,4])
+      var = match_range[1,5]
+
+      if (start_num <= end_num) {
+        nums = start_num:end_num
+        expanded = sapply(nums, function(n) {
+          if (n == 0) {
+            # For 0, remove the trailing TS operator (e.g. "L", "F", "D") from the prefix
+            # Example: "i.L" becomes "i.", and "L" becomes ""
+            base_prefix = stringi::stri_replace_last_regex(prefix, "[a-zA-Z]+$", "")
+            paste0(base_prefix, var)
+          } else {
+            paste0(prefix, n, ".", var)
+          }
+        })
+        return(expanded)
+      }
+    }
+    return(p) # Return unchanged if no match
+  }))
+  return(res)
+}
 
 # ==============================================================================
 # PART 2: Semantic Data-Driven Expansion of `cmdpart`
