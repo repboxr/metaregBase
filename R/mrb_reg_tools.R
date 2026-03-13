@@ -112,38 +112,94 @@ expand_stata_var_patterns = function(pattern, cols, unlist=TRUE, uses_xi=FALSE) 
 
 
 #' Helper to expand time series operators with ranges, e.g. L(0/3).x1 -> x1 L1.x1 L2.x1 L3.x1
+# FILE: mrb_reg_tools.R
+# Replace the existing expand_stata_ts_ranges function:
+
+#' Helper to expand time series operators with ranges, e.g. L(0/3).x1 -> x1 L1.x1 L2.x1 L3.x1
+
 expand_stata_ts_ranges = function(patterns) {
-  if (length(patterns) == 0) return(patterns)
+  n = length(patterns)
+  if (n == 0) return(patterns)
 
-  res = unlist(lapply(patterns, function(p) {
-    # Match start/end ranges like L(0/3).x1 or c.L(0-3).x1
-    match_range = stringi::stri_match_first_regex(p, "^([a-zA-Z\\.]+)\\(([0-9]+)[/\\-]([0-9]+)\\)\\.(.*)$")
+  detect_rx = "^[A-Za-z.]+\\([0-9]+[/-][0-9]+\\)\\."
+  cand = stringi::stri_detect_regex(patterns, detect_rx)
 
-    if (!is.na(match_range[1,1])) {
-      prefix = match_range[1,2]
-      start_num = as.integer(match_range[1,3])
-      end_num = as.integer(match_range[1,4])
-      var = match_range[1,5]
+  if (!any(cand)) return(patterns)
 
-      if (start_num <= end_num) {
-        nums = start_num:end_num
-        expanded = sapply(nums, function(n) {
-          if (n == 0) {
-            # For 0, remove the trailing TS operator (e.g. "L", "F", "D") from the prefix
-            # Example: "i.L" becomes "i.", and "L" becomes ""
-            base_prefix = stringi::stri_replace_last_regex(prefix, "[a-zA-Z]+$", "")
-            paste0(base_prefix, var)
-          } else {
-            paste0(prefix, n, ".", var)
-          }
-        })
-        return(expanded)
-      }
+  match_rx = "^([A-Za-z.]+)\\(([0-9]+)[/-]([0-9]+)\\)\\.(.*)$"
+  cand_idx = which(cand)
+  mat = stringi::stri_match_first_regex(patterns[cand_idx], match_rx)
+
+  out = as.list(patterns)
+  out[cand_idx] = lapply(seq_along(cand_idx), function(i) {
+    if (is.na(mat[i, 1])) {
+      return(patterns[cand_idx[i]])
     }
-    return(p) # Return unchanged if no match
-  }))
-  return(res)
+
+    prefix = mat[i, 2]
+    start_num = as.integer(mat[i, 3])
+    end_num = as.integer(mat[i, 4])
+    var = mat[i, 5]
+
+    if (is.na(start_num) || is.na(end_num) || start_num > end_num) {
+      return(patterns[cand_idx[i]])
+    }
+
+    nums = start_num:end_num
+    expanded = paste0(prefix, nums, ".", var)
+
+    zero = nums == 0L
+    if (any(zero)) {
+      base_prefix = stringi::stri_replace_last_regex(prefix, "[LlFfDdSsOo]$", "")
+      if (tolower(base_prefix) %in% c("c", "i", "co", "o")) {
+        base_prefix = paste0(base_prefix, ".")
+      }
+      expanded[zero] = paste0(base_prefix, var)
+    }
+
+    expanded
+  })
+
+  unlist(out, use.names = FALSE)
 }
+
+# expand_stata_ts_ranges = function(patterns) {
+#   if (length(patterns) == 0) return(patterns)
+#
+#   res = unlist(lapply(patterns, function(p) {
+#     # Match start/end ranges like L(0/3).x1 or c.L(0-3).x1
+#     match_range = stringi::stri_match_first_regex(p, "^([a-zA-Z\\.]+)\\(([0-9]+)[/\\-]([0-9]+)\\)\\.(.*)$")
+#
+#     if (!is.na(match_range[1,1])) {
+#       prefix = match_range[1,2]
+#       start_num = as.integer(match_range[1,3])
+#       end_num = as.integer(match_range[1,4])
+#       var = match_range[1,5]
+#
+#       if (start_num <= end_num) {
+#         nums = start_num:end_num
+#         expanded = sapply(nums, function(n) {
+#           if (n == 0) {
+#             # For 0, remove the trailing TS operator (e.g. "L", "F", "D") from the prefix
+#             base_prefix = stringi::stri_replace_last_regex(prefix, "[LlFfDdSsOo]$", "")
+#
+#             # Reattach dot if the prefix is exclusively an isolated indicator
+#             if (tolower(base_prefix) %in% c("c", "i", "co", "o")) {
+#                base_prefix = paste0(base_prefix, ".")
+#             }
+#             paste0(base_prefix, var)
+#           } else {
+#             paste0(prefix, n, ".", var)
+#           }
+#         })
+#         return(expanded)
+#       }
+#     }
+#     return(p) # Return unchanged if no match
+#   }))
+#   return(res)
+# }
+
 
 # ==============================================================================
 # PART 2: Semantic Data-Driven Expansion of `cmdpart`
@@ -276,13 +332,14 @@ cmdpart_to_regvar = function(cmdpart, dat, opts_df, se_info) {
   vi = vi %>% left_join(cols_info, by = c("var" = "col"))
 
   # 4. Determine Types and Classes
+  # 4. Determine Types and Classes
   vi = vi %>%
     mutate(
       is_factor = class %in% c("character", "factor"),
       fe_type = case_when(
-        prefix %in% c("i", "I") ~ "i",
-        startsWith(prefix, "b") ~ "b",
-        has.substr(ia_expr, "#") & !startsWith(prefix, "c") ~ "#",
+        startsWith(tolower(prefix), "i") ~ "i",
+        startsWith(tolower(prefix), "b") ~ "b",
+        has.substr(ia_expr, "#") & !startsWith(tolower(prefix), "c") ~ "#",
         option %in% c("absorb", "fe") ~ option,
         is_factor ~ class,
         TRUE ~ ""

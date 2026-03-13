@@ -106,7 +106,7 @@ make_regxvar_cols = function(dat, regxvar) {
     # E.g. cols with o@ prefix can be missings
     if (!has.col(dat,vars[i])) next
     col_val = as.vector(dat[[ vars[i] ]])
-    dat[[ cterms[i] ]] = 1L*(col_val == as(vals[i], atomic_class(col_val)))
+    dat[[ cterms[i] ]] = suppressWarnings(1L*(col_val == as(vals[i], atomic_class(col_val))))
   }
 
   # Cols with pair interaction effect

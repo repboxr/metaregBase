@@ -715,6 +715,9 @@ recompute_colinfo_groups = function(colinfo) {
 #
 # cterm will not contain info on whether the variable is used
 # as factor or not.
+# FILE: mrb_cterms.R
+# Replace the existing stata_expr_to_cterm function:
+
 stata_expr_to_cterm = function(stata_expr) {
   restore.point("stata_expr_to_cterm")
 
@@ -733,15 +736,22 @@ stata_expr_to_cterm = function(stata_expr) {
   cterm = gsub("#[ic]\\.","#", cterm, ignore.case=TRUE)
   cterm = gsub("^[ic]\\.","", cterm, ignore.case=TRUE)
 
+  # Remove c or i prefixes immediately before TS operators, e.g. cL.x1 -> L.x1
+  cterm = gsub("#[ic]([LlFfDdSsOo][0-9]*\\.)","#\\1", cterm, ignore.case=TRUE)
+  cterm = gsub("^[ic]([LlFfDdSsOo][0-9]*\\.)","\\1", cterm, ignore.case=TRUE)
+
   # ib2000.year => year; b2000.year => year
   cterm = stringi::stri_replace_all_regex(cterm, "#[iI]?[bB]([0-9]+)\\.","#" )
   cterm = stringi::stri_replace_all_regex(cterm, "^[iI]?[bB]([0-9]+)\\.","" )
 
   # Normalize time-series operators using PCRE (perl=TRUE)
   # \U upper-cases the following backreference. Append 1 to L, F, D, S, O if missing.
-  #cterm = gsub("(^|#)([LlFfDdSsOo])1?\\.", "\\1\\U\\21.", cterm, perl=TRUE)
-  cterm = gsub("(^|#)([LlFfDdSsOo])1?\\.", "\\1\\U\\2.", cterm, perl=TRUE)
-  cterm = gsub("(^|#)([LlFfDdSsOo])([2-9]|[1-9][0-9]+)\\.", "\\1\\U\\2\\3.", cterm, perl=TRUE)
+  old_cterm = ""
+  while (any(old_cterm != cterm)) {
+    old_cterm = cterm
+    cterm = gsub("(^|#|\\.)([LlFfDdSsOo])1?\\.", "\\1\\U\\2.", cterm, perl=TRUE)
+    cterm = gsub("(^|#|\\.)([LlFfDdSsOo])([2-9]|[1-9][0-9]+)\\.", "\\1\\U\\2\\3.", cterm, perl=TRUE)
+  }
 
   # replace dot with @
   cterm = gsub(".","@", cterm, fixed=TRUE)
@@ -1054,19 +1064,31 @@ create_cterm_col = function(dat, cterm, timevar=NA, panelvar=NA, tdelta=NA, chec
 # L2.x1
 # but we currently ignore things like
 # L(0/4).x1
+# FILE: mrb_cterms.R
+# Replace the existing create_prefix_nolevel_cterm_col function:
+
 create_prefix_nolevel_cterm_col = function(dat,cterm, panelvar=NA, timevar=NA, tdelta=NA) {
   restore.point("create_numeric_cterm_col")
 
   prefix  = cterm_extract_prefix(cterm)
   basevar = cterm_extract_base(cterm)
 
+  # Recursively generate nested prefix variables (e.g. S2@y before L@S2@y)
+  if (!has.col(dat, basevar)) {
+    if (cterm_has_prefix(basevar)) {
+      dat = create_cterm_col(dat, basevar, timevar=timevar, panelvar=panelvar, tdelta=tdelta)
+    }
+  }
+
   dat[[cterm]] = NA
 
-  if (!has.col(dat, cterm)) {
+  # Fixed check to target basevar
+  if (!has.col(dat, basevar)) {
     msg = paste0("Column ", basevar, " does not exist in data set and thus I cannot generate the cterm ", cterm)
     repbox_problem(type="missing_var",msg=msg, fail_action="msg", fail_action = "error")
     return(dat)
   }
+
   if (prefix == "") {
     return(dat)
   }
@@ -1078,7 +1100,6 @@ create_prefix_nolevel_cterm_col = function(dat,cterm, panelvar=NA, timevar=NA, t
 
   prefix.type = toupper(substring(prefix,1,1))
   prefix.num = substring(prefix,2)
-
 
   tdelta = as.numeric(tdelta)
   if (is.na(tdelta)) tdelta = 1
@@ -1888,38 +1909,94 @@ expand_stata_var_patterns = function(pattern, cols, unlist=TRUE, uses_xi=FALSE) 
 
 
 #' Helper to expand time series operators with ranges, e.g. L(0/3).x1 -> x1 L1.x1 L2.x1 L3.x1
+# FILE: mrb_reg_tools.R
+# Replace the existing expand_stata_ts_ranges function:
+
+#' Helper to expand time series operators with ranges, e.g. L(0/3).x1 -> x1 L1.x1 L2.x1 L3.x1
+
 expand_stata_ts_ranges = function(patterns) {
-  if (length(patterns) == 0) return(patterns)
+  n = length(patterns)
+  if (n == 0) return(patterns)
 
-  res = unlist(lapply(patterns, function(p) {
-    # Match start/end ranges like L(0/3).x1 or c.L(0-3).x1
-    match_range = stringi::stri_match_first_regex(p, "^([a-zA-Z\\.]+)\\(([0-9]+)[/\\-]([0-9]+)\\)\\.(.*)$")
+  detect_rx = "^[A-Za-z.]+\\([0-9]+[/-][0-9]+\\)\\."
+  cand = stringi::stri_detect_regex(patterns, detect_rx)
 
-    if (!is.na(match_range[1,1])) {
-      prefix = match_range[1,2]
-      start_num = as.integer(match_range[1,3])
-      end_num = as.integer(match_range[1,4])
-      var = match_range[1,5]
+  if (!any(cand)) return(patterns)
 
-      if (start_num <= end_num) {
-        nums = start_num:end_num
-        expanded = sapply(nums, function(n) {
-          if (n == 0) {
-            # For 0, remove the trailing TS operator (e.g. "L", "F", "D") from the prefix
-            # Example: "i.L" becomes "i.", and "L" becomes ""
-            base_prefix = stringi::stri_replace_last_regex(prefix, "[a-zA-Z]+$", "")
-            paste0(base_prefix, var)
-          } else {
-            paste0(prefix, n, ".", var)
-          }
-        })
-        return(expanded)
-      }
+  match_rx = "^([A-Za-z.]+)\\(([0-9]+)[/-]([0-9]+)\\)\\.(.*)$"
+  cand_idx = which(cand)
+  mat = stringi::stri_match_first_regex(patterns[cand_idx], match_rx)
+
+  out = as.list(patterns)
+  out[cand_idx] = lapply(seq_along(cand_idx), function(i) {
+    if (is.na(mat[i, 1])) {
+      return(patterns[cand_idx[i]])
     }
-    return(p) # Return unchanged if no match
-  }))
-  return(res)
+
+    prefix = mat[i, 2]
+    start_num = as.integer(mat[i, 3])
+    end_num = as.integer(mat[i, 4])
+    var = mat[i, 5]
+
+    if (is.na(start_num) || is.na(end_num) || start_num > end_num) {
+      return(patterns[cand_idx[i]])
+    }
+
+    nums = start_num:end_num
+    expanded = paste0(prefix, nums, ".", var)
+
+    zero = nums == 0L
+    if (any(zero)) {
+      base_prefix = stringi::stri_replace_last_regex(prefix, "[LlFfDdSsOo]$", "")
+      if (tolower(base_prefix) %in% c("c", "i", "co", "o")) {
+        base_prefix = paste0(base_prefix, ".")
+      }
+      expanded[zero] = paste0(base_prefix, var)
+    }
+
+    expanded
+  })
+
+  unlist(out, use.names = FALSE)
 }
+
+# expand_stata_ts_ranges = function(patterns) {
+#   if (length(patterns) == 0) return(patterns)
+#
+#   res = unlist(lapply(patterns, function(p) {
+#     # Match start/end ranges like L(0/3).x1 or c.L(0-3).x1
+#     match_range = stringi::stri_match_first_regex(p, "^([a-zA-Z\\.]+)\\(([0-9]+)[/\\-]([0-9]+)\\)\\.(.*)$")
+#
+#     if (!is.na(match_range[1,1])) {
+#       prefix = match_range[1,2]
+#       start_num = as.integer(match_range[1,3])
+#       end_num = as.integer(match_range[1,4])
+#       var = match_range[1,5]
+#
+#       if (start_num <= end_num) {
+#         nums = start_num:end_num
+#         expanded = sapply(nums, function(n) {
+#           if (n == 0) {
+#             # For 0, remove the trailing TS operator (e.g. "L", "F", "D") from the prefix
+#             base_prefix = stringi::stri_replace_last_regex(prefix, "[LlFfDdSsOo]$", "")
+#
+#             # Reattach dot if the prefix is exclusively an isolated indicator
+#             if (tolower(base_prefix) %in% c("c", "i", "co", "o")) {
+#                base_prefix = paste0(base_prefix, ".")
+#             }
+#             paste0(base_prefix, var)
+#           } else {
+#             paste0(prefix, n, ".", var)
+#           }
+#         })
+#         return(expanded)
+#       }
+#     }
+#     return(p) # Return unchanged if no match
+#   }))
+#   return(res)
+# }
+
 
 # ==============================================================================
 # PART 2: Semantic Data-Driven Expansion of `cmdpart`
@@ -2052,13 +2129,14 @@ cmdpart_to_regvar = function(cmdpart, dat, opts_df, se_info) {
   vi = vi %>% left_join(cols_info, by = c("var" = "col"))
 
   # 4. Determine Types and Classes
+  # 4. Determine Types and Classes
   vi = vi %>%
     mutate(
       is_factor = class %in% c("character", "factor"),
       fe_type = case_when(
-        prefix %in% c("i", "I") ~ "i",
-        startsWith(prefix, "b") ~ "b",
-        has.substr(ia_expr, "#") & !startsWith(prefix, "c") ~ "#",
+        startsWith(tolower(prefix), "i") ~ "i",
+        startsWith(tolower(prefix), "b") ~ "b",
+        has.substr(ia_expr, "#") & !startsWith(tolower(prefix), "c") ~ "#",
         option %in% c("absorb", "fe") ~ option,
         is_factor ~ class,
         TRUE ~ ""
@@ -2233,7 +2311,7 @@ make_regxvar_cols = function(dat, regxvar) {
     # E.g. cols with o@ prefix can be missings
     if (!has.col(dat,vars[i])) next
     col_val = as.vector(dat[[ vars[i] ]])
-    dat[[ cterms[i] ]] = 1L*(col_val == as(vals[i], atomic_class(col_val)))
+    dat[[ cterms[i] ]] = suppressWarnings(1L*(col_val == as(vals[i], atomic_class(col_val))))
   }
 
   # Cols with pair interaction effect
@@ -8135,9 +8213,12 @@ reg y x
 reg y x if i1==2, robust
 
 * The following expressions cannot be correctly parsed
-*reg y L(0/3).x1 S2.i1
-*reg y cL.x1
-*reg L1.S2.y cL.x1
+reg y L(0/3).x1 S2.i1
+reg L1.S2.y cL.x1
+
+reg y cL.x1#i2
+
+reg y iL.i1
 
 reg L1.S2.y x1
 
@@ -8194,7 +8275,7 @@ mrb = mrb_run_r_reg(mrb)
 # Run log of the script
 
 
-### source_with_log start: 2026-03-13 13:52:06 
+### source_with_log start: 2026-03-13 18:32:51 
 ### file: /home/rstudio/repbox/projects/test/run/run_test.R 
 
 
@@ -8235,8 +8316,113 @@ mrb = mrb_run_r_reg(mrb)
 
 > mrb = mrb_run_r_base(mrb)
 
-mrb_r_base processing runids: 3 4 5 Error in flag.default(x = NULL, t = c(2001, 2002, 2003, 2004, 2005, 2006,  : 
-  Not a vector
+mrb_r_base processing runids: 3 4 5 6 7 8 9 10 11 12 13 
+
+> mrb = mrb_run_r_reg(mrb)
+
+mrb_r_reg processing runids: 3 4 5 NOTE: 15 observations removed because of NA values (RHS: 15).
+6 NOTE: 15 observations removed because of NA values (LHS: 15, RHS: 5).
+7 8 NOTE: 5 observations removed because of NA values (RHS: 5).
+9 NOTE: 15 observations removed because of NA values (LHS: 15).
+10 NOTE: 15 observations removed because of NA values (RHS: 15).
+11 NOTE: 15 observations removed because of NA values (RHS: 15).
+12 NOTE: 5 observations removed because of NA values (RHS: 5).
+13 NOTE: 5 observations removed because of NA values (LHS: 5, RHS: 5).
+
+
+### source_with_log end: 2026-03-13 18:32:53 
+In 1 of 11 regressions, problems were detected. 1 problematic cases are shown below.
+
+## runid 7
+
+**Issues detected:** Coefficients differ
+
+Examples of coefficient mismatches:
+
+```text
+ cterm       coef_rb   coef_sb    se_rb     se_sb    
+ i2=1#cL@x1         NA  0.1242022        NA 0.2084488
+ i2=2#cL@x1         NA  0.3597046        NA 0.3109381
+ (Intercept) -0.120332 -0.1155055 0.1066545 0.1108473
+```
+
+### Code Path
+```r
+# Stata: use ../data/data.dta, clear
+data = drf_load_data(project_dir, "data/data.dta")
+
+# Stata: tsset i year
+# No R translation found/needed
+
+# Stata: reg y x
+# No R translation found/needed
+
+# Stata: reg y x if i1==2, robust
+# No R translation found/needed
+
+# Stata: reg y L(0/3).x1 S2.i1
+# No R translation found/needed
+
+# Stata: reg L1.S2.y cL.x1
+# No R translation found/needed
+
+# Stata: reg y cL.x1#i2
+function(dat,...){
+library(fixest)
+rcmd = "feols"
+
+formula = `y` ~ 1
+reg_vcov = "iid"
+reg = feols(fml = formula,data = dat,vcov = reg_vcov)
+ct = broom::tidy(reg,conf.int=TRUE)
+glance = broom::glance(reg)
+results = list(reg=reg,rcmd=rcmd,ct=ct,glance=glance)
+return(results)
+}
+
+```
+
+#### Regression Data (fully prepared) (head)
+```
+# A tibble: 30 × 23
+      i2        y      x1  `L@x1` `i2=3` `i2=1` `i2=2` `i2=4` `i2=3#L@x1` `i2=1#L@x1` `i2=2#L@x1`
+   <dbl>    <dbl>   <dbl>   <dbl>  <int>  <int>  <int>  <int>       <dbl>       <dbl>       <dbl>
+ 1     3 -1.81     1.37   NA           1      0      0      0     NA           NA          NA    
+ 2     1 -0.736    1.18    1.37        0      1      0      0      0            1.37        0    
+ 3     1  1.19    -0.0386  1.18        0      1      0      0      0            1.18        0    
+ 4     3 -0.765    2.07   -0.0386      1      0      0      0     -0.0386       0           0    
+ 5     3  0.929    0.146   2.07        1      0      0      0      2.07         0           0    
+ 6     3 -0.399    0.834   0.146       1      0      0      0      0.146        0           0    
+ 7     1  0.00215 -0.316   0.834       0      1      0      0      0            0.834       0    
+ 8     2  0.323    0.354  -0.316       0      0      1      0      0            0          -0.316
+ 9     1 -1.53    -0.451   0.354       0      1      0      0      0            0.354       0    
+10     1 -0.180   -1.30   -0.451       0      1      0      0      0           -0.451       0    
+11     1  0.397    1.52   -1.30        0      1      0      0      0           -1.30        0    
+12     2  0.656    0.796   1.52        0      0      1      0      0            0           1.52 
+13     4  0.213    0.923   0.796       0      0      0      1      0            0           0    
+14     1  0.518    1.20    0.923       0      1      0      0      0            0.923       0    
+15     4 -1.38    -0.559   1.20        0      0      0      1      0            0           0    
+16     2 -1.66     0.752  -0.559       0      0      1      0      0            0          -0.559
+17     3  1.56    -1.00    0.752       1      0      0      0      0.752        0           0    
+18     4 -0.364   -0.471  -1.00        0      0      0      1      0            0           0    
+19     4 -1.34     0.666  -0.471       0      0      0      1      0            0           0    
+20     4  0.183    0.527   0.666       0      0      0      1      0            0           0    
+21     2  0.461    0.508  NA           0      0      1      0     NA           NA          NA    
+22     2 -1.74    -2.17    0.508       0      0      1      0      0            0           0.508
+23     3 -0.775   -0.740  -2.17        1      0      0      0     -2.17         0           0    
+24     4 -0.416    0.259  -0.740       0      0      0      1      0            0           0    
+25     3 -0.843    0.269   0.259       1      0      0      0      0.259        0           0    
+26     2 -0.527   -0.214   0.269       0      0      1      0      0            0           0.269
+27     4 -0.437   -0.103  -0.214       0      0      0      1      0            0           0    
+28     4  2.59    -1.55   -0.103       0      0      0      1      0            0           0    
+29     1 -0.127   -0.564  -1.55        0      1      0      0      0           -1.55        0    
+30     3 -1.33     1.24   -0.564       1      0      0      0     -0.564        0           0    
+# ℹ 12 more variables: `i2=4#L@x1` <dbl>, .ORG.ROW <int>, year <dbl>, date <date>, i <dbl>,
+#   d1 <dbl>, d2 <dbl>, i1 <dbl>, f1 <chr>, my_long_factor <chr>, my_long_integer <dbl>, key <dbl>
+```
+
+
+
 ```
 # END OF FILE: test_report.Rmd
 
@@ -8248,18 +8434,13 @@ mrb_r_base processing runids: 3 4 5 Error in flag.default(x = NULL, t = c(2001, 
 # Your Task
 ##################################
 
+Please try to find the reason for the errors / problems noted in the test report.
 
-The error occurred most likely in mrb_r_base run for the command
+Can you find the problem in some code in the provided package. How to solve it?
 
-reg L1.S2.y x1
+Would additional information be helpful to pinpoint the bug? Yes, what?
 
-I have not yet implemented the full functionality for nested time series
-operatores like L1.S2.y.
-
-This does quite rarely in Stata code and I might also ignore treatments of
-those case, with a clear repbox_problem note.
-
-But perhaps it is not to complicated to add treatment of those cases to my code basis? Please make an assessment.
+How would you improve the code that generates the test report?
 
 
 

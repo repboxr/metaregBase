@@ -20,6 +20,9 @@
 #
 # cterm will not contain info on whether the variable is used
 # as factor or not.
+# FILE: mrb_cterms.R
+# Replace the existing stata_expr_to_cterm function:
+
 stata_expr_to_cterm = function(stata_expr) {
   restore.point("stata_expr_to_cterm")
 
@@ -38,26 +41,22 @@ stata_expr_to_cterm = function(stata_expr) {
   cterm = gsub("#[ic]\\.","#", cterm, ignore.case=TRUE)
   cterm = gsub("^[ic]\\.","", cterm, ignore.case=TRUE)
 
+  # Remove c or i prefixes immediately before TS operators, e.g. cL.x1 -> L.x1
+  cterm = gsub("#[ic]([LlFfDdSsOo][0-9]*\\.)","#\\1", cterm, ignore.case=TRUE)
+  cterm = gsub("^[ic]([LlFfDdSsOo][0-9]*\\.)","\\1", cterm, ignore.case=TRUE)
+
   # ib2000.year => year; b2000.year => year
   cterm = stringi::stri_replace_all_regex(cterm, "#[iI]?[bB]([0-9]+)\\.","#" )
   cterm = stringi::stri_replace_all_regex(cterm, "^[iI]?[bB]([0-9]+)\\.","" )
 
   # Normalize time-series operators using PCRE (perl=TRUE)
   # \U upper-cases the following backreference. Append 1 to L, F, D, S, O if missing.
-  # Normalize time-series operators using PCRE (perl=TRUE)
-  # \U upper-cases the following backreference. Append 1 to L, F, D, S, O if missing.
-
-  # Make a loop to deal with chained operators like L1.S2.y
   old_cterm = ""
   while (any(old_cterm != cterm)) {
     old_cterm = cterm
     cterm = gsub("(^|#|\\.)([LlFfDdSsOo])1?\\.", "\\1\\U\\2.", cterm, perl=TRUE)
     cterm = gsub("(^|#|\\.)([LlFfDdSsOo])([2-9]|[1-9][0-9]+)\\.", "\\1\\U\\2\\3.", cterm, perl=TRUE)
   }
-
-  # Old code: no chained operator
-  #cterm = gsub("(^|#)([LlFfDdSsOo])1?\\.", "\\1\\U\\2.", cterm, perl=TRUE)
-  #cterm = gsub("(^|#)([LlFfDdSsOo])([2-9]|[1-9][0-9]+)\\.", "\\1\\U\\2\\3.", cterm, perl=TRUE)
 
   # replace dot with @
   cterm = gsub(".","@", cterm, fixed=TRUE)
