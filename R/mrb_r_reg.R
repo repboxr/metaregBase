@@ -90,7 +90,7 @@ mrb_run_r_reg_step = function(mrb, pid) {
   reg_fun = eval(parse(text=reg_fun_code))
 
   # Fetch and prepare the data using our new refactored helper function
-  dat = mrb_get_regression_data(runid, drf = mrb$drf, regvar = regvar, regxvar = regxvar)
+  dat = mrb_get_regression_data(runid, drf = mrb$drf, reg=reg, regvar = regvar, regxvar = regxvar)
 
   results = try(reg_fun(dat))
   if (is(results, "try-error")) {
@@ -158,13 +158,21 @@ mrb_run_r_reg_step = function(mrb, pid) {
 }
 
 #' Get and prepare regression data (creates cterms and regxvar columns)
-mrb_get_regression_data = function(runid, drf, regvar, regxvar = NULL) {
+mrb_get_regression_data = function(runid, drf, reg=NULL, regvar, regxvar = NULL) {
   restore.point("mrb_get_regression_data")
 
   dat = repboxDRF::drf_get_data(runid, drf = drf)
 
+  # CHANGE: Extract panel/time variables if available
+  timevar = NA; panelvar = NA; tdelta = NA
+  if (!is.null(reg) && nrow(reg) > 0) {
+    timevar = reg$timevar[1]
+    panelvar = reg$panelvar[1]
+    tdelta = reg$tdelta[1]
+  }
+
   if (!is.null(regvar) && nrow(regvar) > 0) {
-    dat = create_cterm_cols(dat, unique(regvar$cterm))
+    dat = create_cterm_cols(dat, unique(regvar$cterm),timevar = timevar,panelvar = panelvar, tdelta = tdelta)
   }
 
   if (!is.null(regxvar) && nrow(regxvar) > 0) {

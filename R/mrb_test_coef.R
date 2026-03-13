@@ -2,8 +2,9 @@ mrb_test_regcoef_diff_text = function(
   diff_tab,
   variant1 = "rb",
   variant2 = "sb",
-  max_rel_diff_tol = 0.01,
-  max_deviation_tol = 1e-6
+  max_rel_diff_tol = opts$max_rel_diff_tol,
+  max_deviation_tol = opts$max_deviation_tol,
+  opts = mrb_test()
 ) {
   restore.point("mrb_test_regcoef_diff_text")
 

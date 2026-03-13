@@ -264,7 +264,7 @@ create_cterm_cols = function(dat, cterms, timevar=NA, panelvar=NA, tdelta=NA) {
   new.cterms = cterms[!cterms %in% c("(Intercept)",colnames(dat))]
   for (cterm in new.cterms) {
     #cat(cterm,"\n")
-    dat = create_cterm_col(dat, cterm, timevar=NA, panelvar=NA, tdelta=NA)
+    dat = create_cterm_col(dat, cterm, timevar=timevar, panelvar=panelvar, tdelta=tdelta)
   }
   dat
 }
@@ -323,7 +323,7 @@ create_cterm_col = function(dat, cterm, timevar=NA, panelvar=NA, tdelta=NA, chec
 
   # Create all main effects
   for (cte in cterms) {
-    dat = create_cterm_col(dat, cte)
+    dat = create_cterm_col(dat, cte, timevar=timevar, panelvar=panelvar, tdelta=tdelta)
   }
 
   # If any of the cterms is a factor just paste them

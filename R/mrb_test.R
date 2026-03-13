@@ -10,12 +10,19 @@ example = function() {
   if (FALSE)
     rstudioapi::filesPaneNavigate(project_dir)
 
+  opts = mrb_test_opts()
   outfile = mrb_run_as_test(project_dir, file.path(project_dir, "run/run_test.R"))
   rstudioapi::navigateToFile(outfile, line=10000)
 }
 
+mrb_test_opts = function(show_org_data=TRUE, show_reg_data=TRUE, show_pre_reg_data=TRUE, data_head_rows=10, data_tail_rows=0,data_width=1000, max_cases=Inf, just_runid=NULL, ignore_flags=NULL, data_add_org_row=FALSE,  max_rel_diff_tol = 0.01,
+  max_deviation_tol = 1e-6) {
+  as.list(environment())
+}
 
-mrb_run_as_test = function(project_dir, run_script, check_reg=TRUE, navigate=TRUE, show_data_samples=TRUE) {
+
+
+mrb_run_as_test = function(project_dir, run_script, navigate=TRUE, opts=mrb_test_opts()) {
   restore.point("mrb_run_as_test")
 
   try(library(repboxRun), silent=TRUE)
@@ -39,6 +46,10 @@ mrb_run_as_test = function(project_dir, run_script, check_reg=TRUE, navigate=TRU
 
   add("# Report of test run for project ", project_dir)
 
+  # Allows knitting to HTML for humans
+  add("\n```{r setup, include=FALSE}
+knitr::opts_chunk$set(eval = FALSE)\n```")
+
   add("# do files in the project")
   do_files = list.files(file.path(project_dir,"mod"), glob2rx("*.do"), recursive = TRUE, full.names = TRUE)
   do_files = do_files[!startsWith(basename(do_files), "repbox_")]
@@ -51,19 +62,16 @@ mrb_run_as_test = function(project_dir, run_script, check_reg=TRUE, navigate=TRU
   source_with_log(run_script, log_con=con)
 
   parcels = list()
+  parcels = repboxDB::repdb_load_parcels(
+    project_dir,
+    c("regcoef_diff", "reg", "reg_rb", "reg_cmdpart", "regvar", "regxvar", "regsource", "regcoef", "regcoef_rb"),
+    parcels = parcels
+  )
 
-  if (check_reg) {
-    add("# Comparison of Stata and R regressions")
-    parcels = repboxDB::repdb_load_parcels(
-      project_dir,
-      c("regcoef_diff", "reg", "reg_rb", "reg_cmdpart", "regvar", "regxvar", "regsource", "regcoef", "regcoef_rb"),
-      parcels = parcels
-    )
+  drf = repboxDRF::drf_load(project_dir, parcels = parcels)
+  txt = mrb_test_report(project_dir, parcels, drf, opts=opts)
+  add(txt)
 
-    drf = repboxDRF::drf_load(project_dir, parcels = parcels)
-    txt = mrb_test_report(project_dir, parcels, drf, show_data_samples = show_data_samples)
-    add(txt)
-  }
 
   try(close(con), silent=TRUE)
 
@@ -73,13 +81,19 @@ mrb_run_as_test = function(project_dir, run_script, check_reg=TRUE, navigate=TRU
   outfile
 }
 
-mrb_test_report = function(project_dir, parcels, drf, max_cases = Inf, show_data_samples = TRUE) {
+mrb_test_report = function(project_dir, parcels, drf, opts=mrb_test_opts()) {
   restore.point("mrb_test_report")
+  max_cases = opts$max_cases
 
-  flags = mrb_test_generate_flags(project_dir, parcels, drf)
+  flags = mrb_test_generate_flags(project_dir, parcels, drf, opts=opts)
   if (NROW(flags) == 0) return("\n No regressions found to compare.")
 
   probs = flags %>% filter(is_problem)
+
+  if (!is.null(opts$just_runid)) {
+    probs = probs[probs$runid %in% opts$just_runid,]
+  }
+
 
   num_all_reg = n_distinct(flags$runid)
   num_all_prob = n_distinct(probs$runid)
@@ -114,20 +128,18 @@ mrb_test_report = function(project_dir, parcels, drf, max_cases = Inf, show_data
 
       if (!is.null(coef_pair$co1) && !is.null(coef_pair$co2) && NROW(coef_pair$co1) > 0 && NROW(coef_pair$co2) > 0) {
         diff_tab = coef_diff_table(coef_pair$co1, coef_pair$co2)
-        diff_res = mrb_test_regcoef_diff_text(diff_tab)
+        diff_res = mrb_test_regcoef_diff_text(diff_tab, opts=opts)
       } else {
          diff_res$text = "- Could not create coefficient comparison table. One variant returned an empty table."
       }
     }
 
     # Generate the comprehensive path of Stata and R code
-    code_path_text = mrb_test_code_path(project_dir, runid, parcels, drf)
+    code_path_text = mrb_test_code_path(project_dir, runid, parcels, drf, opts=opts)
 
     # Generate the data preview text (Original & Regression Datasets)
-    data_preview_text = ""
-    if (show_data_samples) {
-      data_preview_text = mrb_test_data_preview_text(runid, drf, parcels)
-    }
+    data_preview_text = mrb_test_data_preview_text(runid, drf, parcels, opts=opts)
+
 
     block = c(
       header,
@@ -136,11 +148,11 @@ mrb_test_report = function(project_dir, parcels, drf, max_cases = Inf, show_data
       "",
       if (nzchar(diff_res$note)) c(diff_res$note, "") else NULL,
       if (nzchar(diff_res$text)) c(diff_res$text, "") else NULL,
-      if (nzchar(data_preview_text)) c(data_preview_text, "") else NULL,
       "### Code Path",
       "```r",
       code_path_text,
-      "```"
+      "```",
+      if (nzchar(data_preview_text)) c(data_preview_text, "") else NULL
     )
 
     paste0(block, collapse = "\n")
@@ -151,80 +163,16 @@ mrb_test_report = function(project_dir, parcels, drf, max_cases = Inf, show_data
   paste0(c(head, unlist(txt)), collapse = "\n\n")
 }
 
-mrb_test_data_preview_text = function(runid, drf, parcels, n = 5) {
-  restore.point("mrb_test_data_preview_text")
-
-  # Get the path for this runid to find the first step (the data load state)
-  path_df = drf$path_df %>% filter(pid == !!runid, runid <= !!runid) %>% arrange(runid)
-  if (NROW(path_df) == 0) return("")
-
-  first_runid = path_df$runid[1]
-
-  # 1. Fetch Original Data
-  dat_org = try(repboxDRF::drf_get_data(first_runid, drf = drf), silent = TRUE)
-
-  # 2. Fetch Regression Data
-  regvar = parcel_for_runid(parcels$regvar, runid)
-  regxvar = if (!is.null(parcels$regxvar)) parcel_for_runid(parcels$regxvar, runid) else tibble()
-
-  dat_reg = try(mrb_get_regression_data(runid, drf, regvar, regxvar), silent = TRUE)
-
-  res = c("### Data Samples")
-
-  format_df_sample = function(df, title, is_reg = FALSE) {
-    if (inherits(df, "try-error") || is.null(df)) return(paste0("Could not load ", title, "."))
-    if (NROW(df) == 0) return(paste0(title, " is empty."))
-
-    # Filter to relevant columns for dat_reg to avoid overwhelming the output
-    if (is_reg && NROW(regvar) > 0) {
-       rel_cols = unique(c(regvar$var, regvar$cterm, regxvar$cterm))
-       rel_cols = intersect(rel_cols, colnames(df))
-       if (length(rel_cols) > 0) {
-         df = df[, rel_cols, drop = FALSE]
-       }
-    }
-
-    # Using tibble prints nicely across terminal widths truncating extra cols safely
-    df_tibble = tibble::as_tibble(df)
-
-    out_head = paste0(capture.output(print(head(df_tibble, n))), collapse = "\n")
-
-    if (NROW(df) > n) {
-       out_tail = paste0(capture.output(print(tail(df_tibble, n))), collapse = "\n")
-       paste0("**", title, " (Head):**\n```text\n", out_head, "\n```\n\n**", title, " (Tail):**\n```text\n", out_tail, "\n```")
-    } else {
-       paste0("**", title, " (All rows):**\n```text\n", out_head, "\n```")
-    }
-  }
-
-  res = c(res, format_df_sample(dat_org, "Original Data (First Step)", is_reg = FALSE), "")
-  res = c(res, format_df_sample(dat_reg, "Regression Data (Final Step)", is_reg = TRUE), "")
-
-  paste0(res, collapse = "\n")
-}
 
 
 
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-mrb_test_generate_flags = function(project_dir, parcels, drf = NULL, max_rel_diff_tol = 0.01, max_deviation_tol = 1e-6) {
+mrb_test_generate_flags = function(project_dir, parcels, drf = NULL,  opts=mrb_test_opts()) {
   restore.point("mrb_test_generate_flags")
   if (is.null(drf)) drf = repboxDRF::drf_load(project_dir, parcels = parcels)
+  max_rel_diff_tol = opts$max_rel_diff_tol
+  max_deviation_tol = opts$max_deviation_tol
 
   pids = repboxDRF::drf_pids(drf)
   if (length(pids) == 0) return(tibble())

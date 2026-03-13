@@ -2,7 +2,7 @@
 # create a text that shows the complete path including Stata data modification steps,
 # the filter code, and the translated R regression steps, formatted clearly.
 
-mrb_test_code_path = function(project_dir, runid, parcels, drf) {
+mrb_test_code_path = function(project_dir, runid, parcels, drf, opts=mrb_test_opts()) {
   restore.point("mrb_test_code_path")
 
   path_df = drf$path_df %>% filter(pid == !!runid, runid <= !!runid) %>% arrange(runid)

@@ -72,6 +72,13 @@ mrb_run_r_base_step = function(mrb, pid) {
   project_dir = mrb$project_dir
   runid = pid
 
+  xtvar = mrb$parcels$xtvar
+  xtvar = xtvar[xtvar$runid==pid,]
+  if (NROW(xtvar)==0) {
+    xtvar = list(timevar=NA, panelvar=NA, tdelta=NA_integer_)
+  }
+
+
   # 1. Base Components
   run_obj = mrb$drf$run_df %>% filter(runid == pid)
   cmd = run_obj$cmd[1]
@@ -99,7 +106,7 @@ mrb_run_r_base_step = function(mrb, pid) {
 
   # 5. Data Mutations & Stats
   ct_cterms = unique(c(depvar, regvar$var, regvar$cterm, regvar$ia_cterm)) %>% setdiff(c("(Intercept)",""))
-  wide_dat = create_cterm_cols(dat, ct_cterms)[, ct_cterms, drop=FALSE]
+  wide_dat = create_cterm_cols(dat, ct_cterms, timevar = xtvar$timevar, panelvar=xtvar$panelvar, tdelta=xtvar$tdelta)[, ct_cterms, drop=FALSE]
 
   reg_types = bind_rows(
     regvar %>% select(term = cterm, reg_type = var_reg_type),
@@ -182,11 +189,6 @@ mrb_run_r_base_step = function(mrb, pid) {
   nobs_val = if ("N" %in% names(stats_wide)) as.numeric(stats_wide$N) else NA_real_
   r2_val = if ("r2" %in% names(stats_wide)) as.numeric(stats_wide$r2) else if ("r2_p" %in% names(stats_wide)) as.numeric(stats_wide$r2_p) else NA_real_
 
-  xtvar = mrb$parcels$xtvar
-  xtvar = xtvar[xtvar$runid==pid,]
-  if (NROW(xtvar)==0) {
-    xtvar = list(timevar="", panelvar="", tdelta=NA_integer_)
-  }
 
   reg_dat = tibble(
     runid = pid,

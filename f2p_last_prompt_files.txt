@@ -15,6 +15,7 @@ R/mrb_se.R
 R/mrb_stata.R
 R/mrb_test_code_path.R
 R/mrb_test_coef.R
+R/mrb_test_data.R
 R/mrb_test.R
 R/stata_util.R
 R/static_reg.R
