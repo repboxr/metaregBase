@@ -30,37 +30,29 @@ stata_expr_to_cterm = function(stata_expr) {
     restore.point("cterm_ts_op")
   }
 
-  # Normalize time-series operators using PCRE (perl=TRUE)
-  # \U upper-cases the following backreference
-  cterm = gsub("(^|#)([LlFfDdSsOo])1?\\.", "\\1\\U\\2.", cterm, perl=TRUE)
-  cterm = gsub("(^|#)([LlFfDdSsOo])([2-9]|[1-9][0-9]+)\\.", "\\1\\U\\2\\3.", cterm, perl=TRUE)
-
   # i2000.year => year=2000
-  # generates a full dummy set. Not only numeric values allowed.
-  #cterm = "b1990.x##I2000.year"
   cterm = stringi::stri_replace_all_regex(cterm, "(#|^)[iI]([0-9]+)\\.([a-zA-Z_0-9]+)","$1$3=$2" )
 
-  # i.year => year
-  # c.year => year
+  # i.year => year; c.year => year
+  # MOVED UP: Do this before TS operators so stacked prefixes like "i.L1." become "L1."
   cterm = gsub("#[ic]\\.","#", cterm, ignore.case=TRUE)
   cterm = gsub("^[ic]\\.","", cterm, ignore.case=TRUE)
 
-  # ib2000.year => year
-  # b2000.year => year
-  # will generate full dummy set with reference level 2000
+  # ib2000.year => year; b2000.year => year
   cterm = stringi::stri_replace_all_regex(cterm, "#[iI]?[bB]([0-9]+)\\.","#" )
   cterm = stringi::stri_replace_all_regex(cterm, "^[iI]?[bB]([0-9]+)\\.","" )
 
-  # L1.year => L1@year
+  # Normalize time-series operators using PCRE (perl=TRUE)
+  # \U upper-cases the following backreference. Append 1 to L, F, D, S, O if missing.
+  #cterm = gsub("(^|#)([LlFfDdSsOo])1?\\.", "\\1\\U\\21.", cterm, perl=TRUE)
+  cterm = gsub("(^|#)([LlFfDdSsOo])1?\\.", "\\1\\U\\2.", cterm, perl=TRUE)
+  cterm = gsub("(^|#)([LlFfDdSsOo])([2-9]|[1-9][0-9]+)\\.", "\\1\\U\\2\\3.", cterm, perl=TRUE)
 
-  # remove i. in the beginning of a variable name
+  # replace dot with @
   cterm = gsub(".","@", cterm, fixed=TRUE)
 
-  # Update: Replace stuff like
-  #      1.disab#0.vid_late
-  # with disab=1#vid_late=0
-  cterm = stri_replace_all_regex(cterm, "(^|#)([0-9]+)@([a-zA-Z_][a-zA-Z_0-9]*)", "$1$3=$2")
-
+  # Replace stuff like 1@disab with disab=1
+  cterm = stringi::stri_replace_all_regex(cterm, "(^|#)([0-9]+)@([a-zA-Z_][a-zA-Z_0-9]*)", "$1$3=$2")
 
   cterm
 }
@@ -97,11 +89,6 @@ canonical.output.terms.stata.default = function(terms, ...) {
   terms[cons] = "(Intercept)"
 
   # Default interaction term with #
-
-  #terms = c("4.x#2.b","1.c#2.dg#3b.l","c")
-  # Note that before the . there is a number for factors
-  # if we have L2.x1 then we keep L2.x1 as it indicates a time lag
-
   rows = which(has.substr(terms,"#"))
   if (length(rows)>0) {
     lhs = str.left.of(terms[rows], "#")
@@ -111,26 +98,47 @@ canonical.output.terms.stata.default = function(terms, ...) {
       canonical.output.terms.stata.default(rhs, labels[rows]))
   }
 
-  # Remove a o. before a variable name: (means ommited for xi)
-  #before.dot = str.left.of(terms, ".", not.found = rep("", NROW(terms)))
-  #rows = has.s(terms,"o.")
-  #terms[rows] = substring(terms[rows], 3)
-
   # Factor variable (no string only integer before .)
   rows = dot.rows = has.substr(terms,".") & !is.na(suppressWarnings(as_integer(substring(terms,1,1))))
   base = str.right.of(terms[rows], ".")
   level = str.left.of(terms[rows], ".")
 
-  # remove b at end of level: this means that the variable is dropped
-  brows = endsWith(level,"b")  | endsWith(level, "o")
-  level[brows] = str.remove.ends(level[brows],right = 1)
+  # Extract Time Series operator from the end of the level (e.g., 1L, 2L2, 1bL)
+  match_lvl = stringi::stri_match_first_regex(trimws(level), "^([0-9]+)([bo]?)([a-zA-Z]*[0-9]*)$")
+  matched = !is.na(match_lvl[, 1])
+
+  if (any(matched)) {
+    num_val = match_lvl[matched, 2]
+    ts_op   = toupper(match_lvl[matched, 4])
+
+    # Normalize TS operators: if it's 'L1', make it 'L' to match Stata canonical
+    ts_op = gsub("^([LFDSO])1$", "\\1", ts_op)
+
+    # Prepend TS operator to the base where it exists (FIXED ASSIGNMENT)
+    has_ts = nchar(ts_op) > 0
+    if (any(has_ts)) {
+      update_idx = which(matched)[has_ts]
+      base[update_idx] = paste0(ts_op[has_ts], "@", base[update_idx])
+    }
+
+    # The level just becomes the numeric value
+    level[matched] = num_val
+  }
+
+  # Fallback for anything that didn't match the regex pattern
+  unmatched_idx = which(!matched)
+  if (length(unmatched_idx) > 0) {
+    brows = endsWith(trimws(level[unmatched_idx]), "b") | endsWith(trimws(level[unmatched_idx]), "o")
+    if (any(brows)) {
+      b_idx = unmatched_idx[brows]
+      level[b_idx] = str.remove.ends(level[b_idx], right = 1)
+    }
+  }
 
   terms[rows] = paste0(base, "=", level)
 
   # Remove certain prefixes like o. or co.
-
   rows = has.substr(terms,".") & !is.na(suppressWarnings(as_integer(substring(terms,1,1))))
-
   terms = remove.unused.stata.prefixes(terms)
   terms = adapt.stata.prefix.notation(terms)
   terms

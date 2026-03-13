@@ -106,7 +106,10 @@ mrb_run_r_base_step = function(mrb, pid) {
 
   # 5. Data Mutations & Stats
   ct_cterms = unique(c(depvar, regvar$var, regvar$cterm, regvar$ia_cterm)) %>% setdiff(c("(Intercept)",""))
-  wide_dat = create_cterm_cols(dat, ct_cterms, timevar = xtvar$timevar, panelvar=xtvar$panelvar, tdelta=xtvar$tdelta)[, ct_cterms, drop=FALSE]
+
+  # NEW: Keep the full expanded dataset so make_regxvar can access generated time-series columns!
+  wide_dat_full = create_cterm_cols(dat, ct_cterms, timevar=xtvar$timevar, panelvar=xtvar$panelvar, tdelta=xtvar$tdelta)
+  wide_dat = wide_dat_full[, ct_cterms, drop=FALSE]
 
   reg_types = bind_rows(
     regvar %>% select(term = cterm, reg_type = var_reg_type),
@@ -150,7 +153,8 @@ mrb_run_r_base_step = function(mrb, pid) {
     )
 
   # C. REGXVAR
-  step_parcels$regxvar = make_regxvar(step_parcels$regvar, dat, step_parcels$regcoef)
+  # NEW: Pass wide_dat_full instead of dat!
+  step_parcels$regxvar = make_regxvar(step_parcels$regvar, wide_dat_full, step_parcels$regcoef)
 
   # D. REGSCALAR & REGSTRING
   if (!is.null(stata_scalars) && nrow(stata_scalars) > 0) {
