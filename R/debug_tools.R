@@ -8,7 +8,7 @@ is_debug_mode = function() {
 
 
 source_with_log = function(
-  file,
+  file=NULL,
   log_file=NULL,
   append = TRUE,
   split = TRUE,
@@ -21,6 +21,7 @@ source_with_log = function(
   keep.source = getOption("keep.source"),
   log_con = NULL, close_con=is.null(log_con)
 ) {
+  restore.point("source_with_log")
   stopifnot(is.character(file), length(file) == 1L)
 
   if (is.null(log_con)) {
@@ -55,7 +56,6 @@ source_with_log = function(
   cat("### file:", normalizePath(file, winslash = "/", mustWork = FALSE), "\n\n")
 
   value = withCallingHandlers(
-    tryCatch(
       source(
         file = file,
         local = envir,
@@ -65,15 +65,27 @@ source_with_log = function(
         max.deparse.length = max.deparse.length,
         chdir = chdir,
         keep.source = keep.source
-      ),
-      error = function(e) {
-        error_obj <<- e
-        msg = conditionMessage(e)
-        cat("\nError in source_with_log:\n", file = stderr(), sep = "")
-        cat(msg, "\n", file = stderr(), sep = "")
-        NULL
-      }
-    ),
+      )
+    # tryCatch(
+    #   source(
+    #     file = file,
+    #     local = envir,
+    #     echo = echo,
+    #     print.eval = print.eval,
+    #     prompt.echo = prompt.echo,
+    #     max.deparse.length = max.deparse.length,
+    #     chdir = chdir,
+    #     keep.source = keep.source
+    #   ),
+    #   error = function(e) {
+    #     error_obj <<- e
+    #     msg = conditionMessage(e)
+    #     cat("\nError in source_with_log:\n", file = stderr(), sep = "")
+    #     cat(msg, "\n", file = stderr(), sep = "")
+    #     NULL
+    #   }
+    # )
+    ,
     warning = function(w) {
       warnings_seen <<- c(warnings_seen, conditionMessage(w))
       invokeRestart("muffleWarning")

@@ -44,9 +44,20 @@ stata_expr_to_cterm = function(stata_expr) {
 
   # Normalize time-series operators using PCRE (perl=TRUE)
   # \U upper-cases the following backreference. Append 1 to L, F, D, S, O if missing.
-  #cterm = gsub("(^|#)([LlFfDdSsOo])1?\\.", "\\1\\U\\21.", cterm, perl=TRUE)
-  cterm = gsub("(^|#)([LlFfDdSsOo])1?\\.", "\\1\\U\\2.", cterm, perl=TRUE)
-  cterm = gsub("(^|#)([LlFfDdSsOo])([2-9]|[1-9][0-9]+)\\.", "\\1\\U\\2\\3.", cterm, perl=TRUE)
+  # Normalize time-series operators using PCRE (perl=TRUE)
+  # \U upper-cases the following backreference. Append 1 to L, F, D, S, O if missing.
+
+  # Make a loop to deal with chained operators like L1.S2.y
+  old_cterm = ""
+  while (any(old_cterm != cterm)) {
+    old_cterm = cterm
+    cterm = gsub("(^|#|\\.)([LlFfDdSsOo])1?\\.", "\\1\\U\\2.", cterm, perl=TRUE)
+    cterm = gsub("(^|#|\\.)([LlFfDdSsOo])([2-9]|[1-9][0-9]+)\\.", "\\1\\U\\2\\3.", cterm, perl=TRUE)
+  }
+
+  # Old code: no chained operator
+  #cterm = gsub("(^|#)([LlFfDdSsOo])1?\\.", "\\1\\U\\2.", cterm, perl=TRUE)
+  #cterm = gsub("(^|#)([LlFfDdSsOo])([2-9]|[1-9][0-9]+)\\.", "\\1\\U\\2\\3.", cterm, perl=TRUE)
 
   # replace dot with @
   cterm = gsub(".","@", cterm, fixed=TRUE)
@@ -359,19 +370,31 @@ create_cterm_col = function(dat, cterm, timevar=NA, panelvar=NA, tdelta=NA, chec
 # L2.x1
 # but we currently ignore things like
 # L(0/4).x1
+# FILE: mrb_cterms.R
+# Replace the existing create_prefix_nolevel_cterm_col function:
+
 create_prefix_nolevel_cterm_col = function(dat,cterm, panelvar=NA, timevar=NA, tdelta=NA) {
   restore.point("create_numeric_cterm_col")
 
   prefix  = cterm_extract_prefix(cterm)
   basevar = cterm_extract_base(cterm)
 
+  # Recursively generate nested prefix variables (e.g. S2@y before L@S2@y)
+  if (!has.col(dat, basevar)) {
+    if (cterm_has_prefix(basevar)) {
+      dat = create_cterm_col(dat, basevar, timevar=timevar, panelvar=panelvar, tdelta=tdelta)
+    }
+  }
+
   dat[[cterm]] = NA
 
-  if (!has.col(dat, cterm)) {
+  # Fixed check to target basevar
+  if (!has.col(dat, basevar)) {
     msg = paste0("Column ", basevar, " does not exist in data set and thus I cannot generate the cterm ", cterm)
     repbox_problem(type="missing_var",msg=msg, fail_action="msg", fail_action = "error")
     return(dat)
   }
+
   if (prefix == "") {
     return(dat)
   }
@@ -383,7 +406,6 @@ create_prefix_nolevel_cterm_col = function(dat,cterm, panelvar=NA, timevar=NA, t
 
   prefix.type = toupper(substring(prefix,1,1))
   prefix.num = substring(prefix,2)
-
 
   tdelta = as.numeric(tdelta)
   if (is.na(tdelta)) tdelta = 1
