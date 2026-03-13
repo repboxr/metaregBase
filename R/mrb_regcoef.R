@@ -163,7 +163,7 @@ coef_diff_table = function(co1, co2, check.ref.levels = TRUE) {
   if (check.ref.levels) {
     cod = cod %>%
       mutate(
-        is_ia = has.substr(cterm ,":"),
+        is_ia = has.substr(cterm ,"#"),
         is_factor = has.substr(cterm, "="),
         factor_group = stringi::stri_replace_all_regex(paste0(cterm,":"), "=([^\\:]*):",":") %>% str.remove.ends(right=1)
       ) %>%

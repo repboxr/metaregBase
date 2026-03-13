@@ -22,8 +22,16 @@
 # as factor or not.
 stata_expr_to_cterm = function(stata_expr) {
   restore.point("stata_expr_to_cterm")
+
   cterm = stringi::stri_replace_all_regex(stata_expr,"(#+)|(\\|)|(\\*)","#")
   cterm = gsub(" ","", cterm)
+
+  if ( has.substr(cterm, ".")) stop()
+
+  # Normalize time-series operators using PCRE (perl=TRUE)
+  # \U upper-cases the following backreference
+  cterm = gsub("(^|#)([LlFfDdSsOo])1?\\.", "\\1\\U\\2.", cterm, perl=TRUE)
+  cterm = gsub("(^|#)([LlFfDdSsOo])([2-9]|[1-9][0-9]+)\\.", "\\1\\U\\2\\3.", cterm, perl=TRUE)
 
   # i2000.year => year=2000
   # generates a full dummy set. Not only numeric values allowed.

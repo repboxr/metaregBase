@@ -26,7 +26,7 @@ mrb_run_as_test = function(project_dir, run_script, check_reg=TRUE, navigate=TRU
   }
   test_dir = file.path(project_dir, "test_report")
   if (!dir.exists(test_dir)) dir.create(test_dir)
-  outfile = file.path(test_dir, "test_report.md")
+  outfile = file.path(test_dir, "test_report.Rmd")
   con = file(outfile, open="wt")
   on.exit(try(close(con), silent=TRUE), add = TRUE)
   add = function(...) {

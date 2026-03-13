@@ -1,0 +1,137 @@
+opt_prompt_file = "my_prompt.Rmd"
+
+include_files = '''
+pipeline.md
+'''
+exclude_files = '''
+*.toml
+'''
+
+template = '''
+
+Below is code from selected R projects from my repbox / metareg toolbox.
+
+# Package metaregBase
+
+{{metaregBase}}
+
+# Package repboxUtils
+
+{{repboxUtils}}
+
+
+# Package repboxStataReg
+
+{{repboxStataReg}}
+
+# Package repboxDRF
+
+{{repboxDRF}}
+
+# Package stata2R
+
+{{stata2R}}
+
+# Package regtranslate
+
+{{regtranslate}}
+
+###########
+# Test run
+###########
+
+I performed a test run of the pipeline using a project.
+
+Below is the test report generated with `mrb_run_as_test`
+
+{{test_report}}
+
+
+##################################
+# Your Task
+##################################
+
+Please try to find the reason for the errors / problems noted in the test report.
+
+Can you find the problem in some code in the provided package. How to solve it?
+
+Would additional information be helpful to pinpoint the bug? Yes, what?
+
+How would you improve the code that generates the test report?
+
+
+'''
+
+
+
+file_template = '''
+
+# FILE: {{filename}}
+```
+{{filetext}}
+```
+# END OF FILE: {{filename}}
+
+-----------------------------------------------------------
+'''
+
+
+[[metaregBase]]
+
+include_files = '''
+/home/rstudio/repbox/metaregBase/DESCRIPTION
+/home/rstudio/repbox/metaregBase/R/*.R
+'''
+
+
+[[metaregTools]]
+
+include_files = '''
+/home/rstudio/repbox/metaregTools/DESCRIPTION
+/home/rstudio/repbox/metaregTools/R/*.R
+'''
+
+
+[[repboxDRF]]
+
+include_files = '''
+/home/rstudio/repbox/repboxDRF/DESCRIPTION
+/home/rstudio/repbox/repboxDRF/R/*.R
+'''
+
+[[regtranslate]]
+
+include_files = '''
+/home/rstudio/repbox/regtranslate/DESCRIPTION
+/home/rstudio/repbox/regtranslate/R/*.R
+'''
+
+
+[[repboxUtils]]
+
+include_files = '''
+/home/rstudio/repbox/repboxUtils/DESCRIPTION
+/home/rstudio/repbox/repboxUtils/R/*.R
+'''
+
+[[repboxStataReg]]
+
+include_files = '''
+/home/rstudio/repbox/repboxStataReg/DESCRIPTION
+/home/rstudio/repbox/repboxStataReg/R/*.R
+'''
+
+[[stata2r]]
+
+include_files = '''
+/home/rstudio//aicoder/stata2r/DESCRIPTION
+/home/rstudio//aicoder/stata2r//R/*.R
+'''
+
+
+[[test_report]]
+
+include_files = '''
+~/repbox/projects/test/test_report/test_report.Rmd
+'''
+

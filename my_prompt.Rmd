@@ -705,8 +705,16 @@ recompute_colinfo_groups = function(colinfo) {
 # as factor or not.
 stata_expr_to_cterm = function(stata_expr) {
   restore.point("stata_expr_to_cterm")
+
   cterm = stringi::stri_replace_all_regex(stata_expr,"(#+)|(\\|)|(\\*)","#")
   cterm = gsub(" ","", cterm)
+
+  if ( has.substr(cterm, ".")) stop()
+
+  # Normalize time-series operators using PCRE (perl=TRUE)
+  # \U upper-cases the following backreference
+  cterm = gsub("(^|#)([LlFfDdSsOo])1?\\.", "\\1\\U\\2.", cterm, perl=TRUE)
+  cterm = gsub("(^|#)([LlFfDdSsOo])([2-9]|[1-9][0-9]+)\\.", "\\1\\U\\2\\3.", cterm, perl=TRUE)
 
   # i2000.year => year=2000
   # generates a full dummy set. Not only numeric values allowed.
@@ -1233,11 +1241,16 @@ mrb_run_r_base = function(mrb, just_pids=NULL, make_parcels=TRUE) {
 
   all_step_parcels = list()
 
+
+
+  cat("\nmrb_r_base processing runids: ")
   for (pid in pids) {
-    cat(sprintf("\nProcessing pid: %s", pid))
+    cat(paste0(pid," "))
     step_parcels = mrb_run_r_base_step(mrb, pid)
     all_step_parcels[[as.character(pid)]] = step_parcels
   }
+  cat("\n")
+
   mrb$all_step_parcels = all_step_parcels
   if (make_parcels) {
     mrb_make_r_base_parcels(mrb)
@@ -1419,7 +1432,7 @@ mrb_make_r_base_parcels = function(mrb, save=TRUE) {
   }
 
 
-  # Core & Regsource
+  # reg
   parcels$reg = combine_steps("reg")
 
   # Coefs & Variables
@@ -1448,7 +1461,8 @@ mrb_make_r_base_parcels = function(mrb, save=TRUE) {
     left_join(run_df %>% select(runid, file_path, line), by="runid") %>%
     left_join(mrb$parcels$stata_cmd %>% select(file_path, line, code_line_start=orgline_start, code_line_end = orgline_end), by = c("file_path", "line")) %>%
     left_join(mrb$parcels$stata_file, by="file_path") %>%
-    rename(script_path = file_path, script_name = file_name,script_type = file_type)
+    rename(script_path = file_path, script_name = file_name,script_type = file_type) %>%
+    mutate(script_file = basename(script_path))
 
   parcels$regsource = regsource
 
@@ -1641,7 +1655,7 @@ coef_diff_table = function(co1, co2, check.ref.levels = TRUE) {
   if (check.ref.levels) {
     cod = cod %>%
       mutate(
-        is_ia = has.substr(cterm ,":"),
+        is_ia = has.substr(cterm ,"#"),
         is_factor = has.substr(cterm, "="),
         factor_group = stringi::stri_replace_all_regex(paste0(cterm,":"), "=([^\\:]*):",":") %>% str.remove.ends(right=1)
       ) %>%
@@ -2228,11 +2242,13 @@ mrb_run_r_reg = function(mrb, just_pids=NULL) {
 
   all_step_parcels = list()
 
+  cat("\nmrb_r_reg processing runids: ")
   for (pid in pids) {
-    cat(sprintf("\nProcessing pid: %s", pid))
+    cat(paste0(pid," "))
     step_parcels = mrb_run_r_reg_step(mrb, pid)
     all_step_parcels[[as.character(pid)]] = step_parcels
   }
+  cat("\n")
   mrb$all_step_parcels = all_step_parcels
 
   mrb = mrb_make_r_reg_parcels(mrb)
@@ -2256,6 +2272,11 @@ mrb_run_r_reg_step = function(mrb, pid) {
   cmdpart = parcel_for_runid(parcels$reg_cmdpart, runid)
   stata_co = parcel_for_runid(parcels$regcoef, runid)
 
+  if (NROW(stata_co)==0) {
+    cat("\nNo regcoef parcel entry from mrb_run_r_base for regression with runid=", pid, " found. Make sure you have run mrb_run_r_base.\n")
+    return(NULL)
+  }
+
   step_parcels = list()
 
 
@@ -2265,9 +2286,6 @@ mrb_run_r_reg_step = function(mrb, pid) {
   code_df = reg_stata_to_r_code(reg, regvar, regxvar, cmdpart, prefer="fixest", opts=opts)
   code = paste0(code_df$code, collapse="\n")
   reg_fun_code = paste0("reg_fun = ", code)
-  if (is_debug_mode()) {
-
-  }
 
   reg_fun = eval(parse(text=reg_fun_code))
   dat = repboxDRF::drf_get_data(runid, drf = mrb$drf)
@@ -2275,7 +2293,15 @@ mrb_run_r_reg_step = function(mrb, pid) {
   if (nrow(regxvar) > 0) {
     dat = make_regxvar_cols(dat, regxvar)
   }
-  results = try(reg_fun(dat), silent = TRUE)
+  results = try(reg_fun(dat))
+  if (is(results, "try-error")) {
+    cat("\nError occured for runid=",pid,"\n")
+    cat("\nreg_fun_code:\n",paste0(reg_fun_code, collapse="\n"))
+    cat("\nHead of regression data set: head(dat,2)")
+    print(head(dat,2))
+    return(NULL)
+  }
+
 
   # Process R results
   ct = results$ct
@@ -2741,16 +2767,12 @@ repbox_write_dprobit_coef_se "',outdir, "/dprobit_", runid, ".csv\n")
 mrb_test_regcoeff_diff = function(
   project_dir,
   parcels = list(),
-  compare_what = c("all", "coef")[1],
   max_rel_diff_tol = 0.01,
   max_deviation_tol = 1e-6,
   min_within_share = 0.99,
-  max_cases = Inf,
-  max_coef_cases = 12
+  max_cases = Inf
 ) {
   restore.point("mrb_test_regcoeff_diff")
-
-  compare_what_filter = match.arg(compare_what, c("all", "coef"))
 
   parcels = repdb_load_parcels(
     project_dir,
@@ -2759,10 +2781,14 @@ mrb_test_regcoeff_diff = function(
   )
 
   diff = parcels$regcoef_diff
-  if (is.null(diff) || NROW(diff) == 0) return(NULL)
 
+  num_all_reg = n_distinct(diff$runid)
+
+  if (is.null(diff) || NROW(diff) == 0) return("\n regcoef_diff parcel contains no regressions, yet.")
+
+  # Find problematic runs using overall ("all") deviations
   diff = diff %>%
-    filter(compare_what == compare_what_filter) %>%
+    filter(compare_what == "all") %>%
     mutate(
       within_1pc_share = as.numeric(within_1pc_share),
       max_rel_diff = as.numeric(max_rel_diff),
@@ -2777,18 +2803,19 @@ mrb_test_regcoeff_diff = function(
           (!is.na(max_deviation) & max_deviation > max_deviation_tol)
         )
     ) %>%
-    filter(is_problem) %>%
-    arrange(desc(max_rel_diff), desc(max_deviation), runid)
+    filter(is_problem)
+  #%>%
+    #arrange(desc(max_rel_diff), desc(max_deviation), runid)
 
-  if (NROW(diff) == 0) return(NULL)
+  if (NROW(diff) == 0) return("\n-- In all regressions R and Stata coefficients match. --")
+
+  num_all_prob = n_distinct(diff$runid)
 
   if (is.finite(max_cases) && NROW(diff) > max_cases) {
     diff = diff[seq_len(max_cases), , drop = FALSE]
   }
 
   reg = parcels$reg
-  regsource = parcels$regsource
-  add_source_info = !is.null(regsource) && NROW(regsource) > 0
 
   txt = lapply(seq_len(NROW(diff)), function(i) {
     row = diff[i, ]
@@ -2800,12 +2827,6 @@ mrb_test_regcoeff_diff = function(
       if (NROW(reg_row) == 0) {
         reg_row = reg[reg$runid == runid, , drop = FALSE]
       }
-    }
-
-    src_row = NULL
-    if (add_source_info) {
-      src_row = regsource[regsource$runid == runid, , drop = FALSE]
-      if (NROW(src_row) == 0) src_row = NULL
     }
 
     stata_code = ""
@@ -2822,65 +2843,27 @@ mrb_test_regcoeff_diff = function(
       parcels = parcels
     )
 
-    diff_tab = NULL
-    coef_stats = mrb_test_empty_coef_diff_stats()
-    coef_text = "- Could not create coefficient comparison table."
+    diff_res = list(text = "- Could not create coefficient comparison table.", note = "")
 
     if (!is.null(coef_pair$co1) && !is.null(coef_pair$co2) &&
         NROW(coef_pair$co1) > 0 && NROW(coef_pair$co2) > 0) {
       diff_tab = coef_diff_table(coef_pair$co1, coef_pair$co2)
-      coef_stats = mrb_test_coef_diff_stats(diff_tab)
-      coef_text = mrb_test_regcoef_diff_text(
+      diff_res = mrb_test_regcoef_diff_text(
         diff_tab = diff_tab,
         variant1 = row$variant1,
         variant2 = row$variant2,
-        compare_what = compare_what_filter,
-        max_coef_cases = max_coef_cases
+        max_rel_diff_tol = max_rel_diff_tol,
+        max_deviation_tol = max_deviation_tol
       )
     }
 
     header = paste0("## runid ", runid)
 
-    summary_li = c(
-      paste0(
-        "- variants: ", row$variant1, " vs ", row$variant2,
-        "; compare_what: ", row$compare_what
-      ),
-      paste0(
-        "- summary: identical_share = ", mrb_test_fmt_num(row$identical_share),
-        "; within_1pc_share = ", mrb_test_fmt_num(row$within_1pc_share),
-        "; max_rel_diff = ", mrb_test_fmt_num(row$max_rel_diff),
-        "; max_deviation = ", mrb_test_fmt_num(row$max_deviation)
-      ),
-      paste0(
-        "- coef_only: identical_share = ", mrb_test_fmt_num(coef_stats$identical_share_coef),
-        "; within_1pc_share = ", mrb_test_fmt_num(coef_stats$within_1pc_share_coef),
-        "; max_rel_diff = ", mrb_test_fmt_num(coef_stats$max_rel_diff_coef),
-        "; max_deviation = ", mrb_test_fmt_num(coef_stats$max_deviation_coef)
-      )
-    )
-
-    if (isTRUE(row$ref_level_differ)) {
-      summary_li = c(
-        summary_li,
-        "- note: reference levels differ, so part of the mismatch may come from different dummy dropping."
-      )
-    }
-    if (!is.null(row$problem) && !is.na(row$problem) && nzchar(row$problem)) {
-      summary_li = c(summary_li, paste0("- problem tag: ", row$problem))
-    }
-
-    if (!is.null(src_row) && NROW(src_row) > 0) {
-      source_str = src_row$script_path[1]
-      if ("line" %in% colnames(src_row) && !is.na(src_row$line[1])) {
-        source_str = paste0(source_str, " (line ", src_row$line[1], ")")
-      }
-      summary_li = c(summary_li, paste0("- source: ", source_str))
-    }
-
     block = c(
       header,
-      summary_li,
+      "",
+      if (nzchar(diff_res$note)) c(diff_res$note, "") else NULL,
+      diff_res$text,
       "",
       "Stata command:",
       "```stata",
@@ -2890,16 +2873,15 @@ mrb_test_regcoeff_diff = function(
       "R translation used by metaregBase:",
       "```r",
       r_code,
-      "```",
-      "",
-      "Coefficient mismatches:",
-      coef_text
+      "```"
     )
 
     paste0(block, collapse = "\n")
   })
 
-  paste0(txt, collapse = "\n\n")
+  head = paste0("In ", num_all_prob, " of ", num_all_reg, " regressions the R and Stata coefficients don't match. ", NROW(diff), " problematic cases are shown below.")
+
+  paste0(c(head,txt), collapse = "\n\n")
 }
 
 
@@ -2907,90 +2889,85 @@ mrb_test_regcoef_diff_text = function(
   diff_tab,
   variant1 = "rb",
   variant2 = "sb",
-  compare_what = c("all", "coef")[1],
-  max_coef_cases = 12
+  max_rel_diff_tol = 0.01,
+  max_deviation_tol = 1e-6
 ) {
   restore.point("mrb_test_regcoef_diff_text")
 
-  compare_what = match.arg(compare_what, c("all", "coef"))
-
   if (is.null(diff_tab) || NROW(diff_tab) == 0) {
-    return("- No coefficient comparison rows available.")
+    return(list(text = "- No coefficient comparison rows available.", note = ""))
   }
 
+  # Add safety layers and deviation checks to all rows
   tab = diff_tab %>%
     mutate(
-      coef_missing = xor(is.na(coef_1), is.na(coef_2)),
-      se_missing = xor(is.na(se_1), is.na(se_2)),
-      has_coef_diff = coef_missing | (!is.na(abs_err_coef) & abs_err_coef > 0),
-      has_se_diff = se_missing | (!is.na(abs_err_se) & abs_err_se > 0),
-      has_any_diff = has_coef_diff | has_se_diff,
-      rel_rank_coef = ifelse(coef_missing, Inf, ifelse(is.na(rel_err_coef), -Inf, rel_err_coef)),
-      abs_rank_coef = ifelse(coef_missing, Inf, ifelse(is.na(abs_err_coef), -Inf, abs_err_coef)),
-      rel_rank_all = ifelse(
-        coef_missing | se_missing,
-        Inf,
-        pmax(
-          ifelse(is.na(rel_err_coef), -Inf, rel_err_coef),
-          ifelse(is.na(rel_err_se), -Inf, rel_err_se)
-        )
-      ),
-      abs_rank_all = ifelse(
-        coef_missing | se_missing,
-        Inf,
-        pmax(
-          ifelse(is.na(abs_err_coef), -Inf, abs_err_coef),
-          ifelse(is.na(abs_err_se), -Inf, abs_err_se)
-        )
-      )
+      coef_missing_one = xor(is.na(coef_1), is.na(coef_2)),
+      se_missing_one = xor(is.na(se_1), is.na(se_2)),
+
+      # Safe numeric extraction substituting NAs with -Inf for pure sorting purposes
+      safe_abs_coef = ifelse(is.na(abs_err_coef), -Inf, abs_err_coef),
+      safe_rel_coef = ifelse(is.na(rel_err_coef), -Inf, rel_err_coef),
+      safe_abs_se   = ifelse(is.na(abs_err_se), -Inf, abs_err_se),
+      safe_rel_se   = ifelse(is.na(rel_err_se), -Inf, rel_err_se),
+
+      is_coef_diff = !coef_missing_one & (safe_abs_coef > max_deviation_tol | safe_rel_coef > max_rel_diff_tol),
+      is_se_diff   = !se_missing_one & (safe_abs_se > max_deviation_tol | safe_rel_se > max_rel_diff_tol)
     )
 
-  if (compare_what == "coef") {
-    tab = tab %>%
-      filter(has_coef_diff) %>%
-      arrange(desc(coef_missing), desc(rel_rank_coef), desc(abs_rank_coef), cterm)
-  } else {
-    tab = tab %>%
-      filter(has_any_diff) %>%
-      arrange(desc(coef_missing | se_missing), desc(rel_rank_all), desc(abs_rank_all), cterm)
+  # Note if all coefficients match but SEs differ
+  only_se_wrong = !any(tab$is_coef_diff, na.rm = TRUE) && !any(tab$coef_missing_one, na.rm = TRUE) && any(tab$is_se_diff, na.rm = TRUE)
+  note = if (only_se_wrong) "Note: All coefficients match within tolerance; only standard errors differ." else ""
+
+  # Category 3: NA in only one of the two settings
+  cat_missing = tab %>%
+    filter(coef_missing_one) %>%
+    head(2)
+
+  # Category 1: Top wrong coefficients
+  cat_coef = tab %>%
+    filter(is_coef_diff) %>%
+    arrange(desc(safe_rel_coef), desc(safe_abs_coef)) %>%
+    head(2)
+
+  # Category 2: Wrong overall (focusing on SEs). Only added if the SE deviation dominates the Coef deviation
+  max_rel_coef = suppressWarnings(max(tab$safe_rel_coef, na.rm = TRUE))
+  max_rel_se   = suppressWarnings(max(tab$safe_rel_se, na.rm = TRUE))
+
+  cat_se = tibble()
+  if (max_rel_se > max_rel_coef && max_rel_se > max_rel_diff_tol) {
+    cat_se = tab %>%
+      filter(is_se_diff & !coef_missing_one) %>%
+      arrange(desc(safe_rel_se), desc(safe_abs_se)) %>%
+      head(2)
   }
 
-  if (NROW(tab) == 0) {
-    return("- No differing coefficients to show.")
+  # Combine categories and remove possible overlaps (e.g. if a row qualified for multiple)
+  show_tab = bind_rows(cat_missing, cat_coef, cat_se) %>% distinct(cterm, .keep_all = TRUE)
+
+  if (NROW(show_tab) == 0) {
+    return(list(text = "- No differing coefficients to show.", note = note))
   }
 
-  if (is.finite(max_coef_cases) && NROW(tab) > max_coef_cases) {
-    tab = tab[seq_len(max_coef_cases), , drop = FALSE]
-  }
-
-  if (compare_what == "coef") {
-    show = tibble(
-      cterm = tab$cterm,
-      coef_1 = tab$coef_1,
-      coef_2 = tab$coef_2
-    )
-    names(show)[2:3] = c(paste0("coef_", variant1), paste0("coef_", variant2))
-  } else {
-    show = tibble(
-      cterm = tab$cterm,
-      coef_1 = tab$coef_1,
-      coef_2 = tab$coef_2,
-      se_1 = tab$se_1,
-      se_2 = tab$se_2
-    )
-    names(show)[2:3] = c(paste0("coef_", variant1), paste0("coef_", variant2))
-    names(show)[4:5] = c(paste0("se_", variant1), paste0("se_", variant2))
-  }
+  # Assemble the exact layout format
+  show = tibble(
+    cterm = show_tab$cterm,
+    coef_1 = show_tab$coef_1,
+    coef_2 = show_tab$coef_2,
+    se_1 = show_tab$se_1,
+    se_2 = show_tab$se_2
+  )
+  names(show)[2:3] = c(paste0("coef_", variant1), paste0("coef_", variant2))
+  names(show)[4:5] = c(paste0("se_", variant1), paste0("se_", variant2))
 
   out = paste0(capture.output(print(as.data.frame(show), row.names = FALSE, right = FALSE)), collapse = "\n")
 
-  paste0(
-    "- Top ", NROW(show), " mismatches shown",
-    if (compare_what == "coef") " (ordered by coefficient differences)." else " (ordered by coefficient and standard error differences).",
-    "\n```text\n",
+  text = paste0(
+    "Examples of coefficient mismatches:\n\n```text\n",
     out,
     "\n```"
   )
+
+  return(list(text = text, note = note))
 }
 
 
@@ -3119,6 +3096,31 @@ mrb_test_fmt_num = function(x, digits = 4) {
 -----------------------------------------------------------
 
 
+# FILE: mrb_test_mod_code.R
+```
+
+# For a given runid=pid
+# create a text that shows the Stata data modification steps
+# as well as the translated R data modification steps
+# if add_filer_code also add the R code used to implement the filter
+# we use the same translation as used to generate the R code repboxDRF
+
+#' @param direct_stata_path if TRUE generated the Stata code for a direct Stata path
+#' if FALSE replicate the code as for mrb_full_stata_script, at least up to the relevant regression. Later code can be removed.
+#' @param line_numbers If TRUE append line numbers to
+mrb_test_mod_code = function(project_dir, runid, parcels=list(),add_state=TRUE, add_r = TRUE,add_filter_code = TRUE, direct_stata_path=FALSE, line_numbers=TRUE, drf=drf_load(project_dir, parcels=parcels)) {
+
+
+
+  return(txt)
+
+}
+```
+# END OF FILE: mrb_test_mod_code.R
+
+-----------------------------------------------------------
+
+
 # FILE: mrb_test.R
 ```
 # Tools for systematic testing the metaregBase pipeline
@@ -3149,7 +3151,7 @@ mrb_run_as_test = function(project_dir, run_script, check_reg=TRUE, navigate=TRU
   }
   test_dir = file.path(project_dir, "test_report")
   if (!dir.exists(test_dir)) dir.create(test_dir)
-  outfile = file.path(test_dir, "test_report.md")
+  outfile = file.path(test_dir, "test_report.Rmd")
   con = file(outfile, open="wt")
   on.exit(try(close(con), silent=TRUE), add = TRUE)
   add = function(...) {
@@ -3158,13 +3160,14 @@ mrb_run_as_test = function(project_dir, run_script, check_reg=TRUE, navigate=TRU
     if (is.null(txt)) return(invisible())
     writeLines(txt, con)
   }
-  add("Report of test run for ", project_dir)
+  add("Report of test run for project ", project_dir)
+
   add("# do files in the project")
   do_files = list.files(file.path(project_dir,"mod"), glob2rx("*.do"), recursive = TRUE, full.names = TRUE)
   do_files = do_files[!startsWith(basename(do_files), "repbox_")]
   add(files_to_md_fences(do_files))
 
-  add("# The script that is run")
+  add("# The R test script that is run")
   add(files_to_md_fences(run_script))
 
   add("# Run log of the script")
@@ -3196,7 +3199,8 @@ files_to_md_fences = function(files, path) {
   if (length(files)==0) return(NULL)
   txt = sapply(files, function(file) {
     txt = readLines(file, warn=FALSE)
-    txt = c("## ", file, "```", txt, "```")
+    ext = tools::file_ext(file)
+    txt = c(paste0("## ", file), paste0("```{",ext,"}"), txt, "```")
     paste0(txt, collapse="\n")
   })
   txt = paste0(txt, collapse="\n")
@@ -6543,6 +6547,73 @@ require_drf_dir = function(drf_dir) {
 -----------------------------------------------------------
 
 
+# FILE: drf_filter_code.R
+```
+# Code to filter the data set according to an if or in condition
+# in a regression command
+
+# At some point we may want to generalize it to non regression commands
+
+drf_get_filter_code = function(runid, drf, parcels=drf$parcels) {
+  restore.point("drf_get_filter_code")
+
+  # Load cmdpart parcel to get the stored if/in strings for this runid
+  parcels = repboxDB::repdb_load_parcels(drf$project_dir, "reg_cmdpart", parcels=drf$parcels)
+  cmdpart = parcels$reg_cmdpart
+
+  cp = cmdpart[cmdpart$runid == runid, ]
+  if (NROW(cp) == 0) {
+    cat("\nNot any existing cmdpart stored for runid=", runid, ". Try to parse again to get if and in conditions")
+    library(repboxStataReg)
+    cp = cmdparts_of_stata_reg(cmdline)
+  }
+  if_str = cp$content[cp$part == "if_str"]
+  in_str = cp$content[cp$part == "in_str"]
+
+  filter_code = character(0)
+
+  # 1. Translate `if_str` via stata2r dummy keep command
+  if (length(if_str) > 0 && nzchar(if_str[1])) {
+    fake_cmd = paste0("keep ", if_str[1])
+
+    # stata2r natively translates `keep if...` to `dat <- dat %>% filter(...)`
+    r_df = try(stata2r::do_to_r(fake_cmd)$r_df, silent = TRUE)
+
+    if (!inherits(r_df, "try-error") && !is.null(r_df) && NROW(r_df) > 0) {
+      filter_code = c(filter_code, r_df$r_code[1])
+    } else {
+      repbox_problem(
+        msg = paste0("Failed to translate if condition for runid ", runid),
+        type = "filter_translation_error",
+        project_dir = drf$project_dir,
+        fail_action = "warn"
+      )
+    }
+  }
+
+  # 2. Translate `in_str` natively (since it's just basic row subsetting)
+  if (length(in_str) > 0 && nzchar(in_str[1])) {
+    in_val = trimws(sub("^in\\s+", "", in_str[1]))
+    if (grepl("/", in_val)) {
+      parts = strsplit(in_val, "/")[[1]]
+      start = trimws(parts[1])
+      end = trimws(parts[2])
+      if (tolower(end) == "l") end = "NROW(dat)" # Stata's 'L' means last row
+      in_code = paste0("dat <- dat[", start, ":", end, ", , drop=FALSE]")
+    } else {
+      in_code = paste0("dat <- dat[", in_val, ", , drop=FALSE]")
+    }
+    filter_code = c(filter_code, in_code)
+  }
+
+  return(filter_code)
+}
+```
+# END OF FILE: drf_filter_code.R
+
+-----------------------------------------------------------
+
+
 # FILE: drf_paths.R
 ```
 # part of DAP function
@@ -6864,6 +6935,7 @@ drf_require = function(cond, msg, drf) {
 example = function() {
   # Should point to this project dir
   project_dir = "~/repbox/projects/aejapp_11_2_10"
+  project_dir = "~/repbox/projects/test"
 
   if (FALSE)
     rstudioapi::filesPaneNavigate(project_dir)
@@ -6923,8 +6995,7 @@ drf_run_df_create_rcode = function(run_df=drf$run_df, runids=drf_runids(drf), ov
 
   inds = rows[run_df$cmd_type[rows] %in% c("load")]
   if (length(inds)>0) {
-    #code = paste0('drf_load_data(project_dir, "', file.path(run_df$found_path[inds]) ,'",runid=',run_df$runid[inds],')')
-    code = paste0('drf_load_data(project_dir, "', file.path(run_df$found_path[inds]) ,'")')
+    code = paste0('dat = drf_load_data(project_dir, "', file.path(run_df$found_path[inds]) ,'")')
     run_df$rcode[inds] = code
   }
   run_df$rcode = na.val(run_df$rcode, "")
@@ -7076,7 +7147,10 @@ drf_get_data = function(runid=pid, drf, filtered=TRUE,before=TRUE, update_rcode=
   }
 
   if (filtered) {
-    cat("\nWarning: Data filtering is not yet implemented.")
+    filter_code = drf_get_filter_code(pid, drf)
+    if (length(filter_code) > 0) {
+      rcode = c(rcode, filter_code)
+    }
   }
 
   # Simple execution of R code
@@ -9406,29 +9480,246 @@ tidy.tobit <- function(x, ...) {
 -----------------------------------------------------------
 
 
+###########
+# Test run
+###########
+
+I performed a test run of the pipeline using a project.
+
+Below is the test report generated with `mrb_run_as_test`
+
+
+# FILE: test_report.Rmd
+```
+
+Report of test run for project ~/repbox/projects/test
+
+
+# do files in the project
+
+
+## /home/rstudio/repbox/projects/test/mod/code/ts_op.do
+```{do}
+use ../data/data.dta, clear
+
+tsset i year
+
+reg y x
+
+reg y x if i1==2, robust
+
+* The following expressions cannot be correctly parsed
+*reg y L(0/3).x1 S2.i1
+*reg y i.L(0/3).i1#i2
+*reg y cL.x1
+*reg L1.S2.y cL.x1
+
+* This should work and be the only regression in metareg
+
+reg y L1.x1
+
+reg d.y d.x1 i.i1, robust
+```
+
+
+# The R test script that is run
+
+
+## ~/repbox/projects/test/run/run_test.R
+```{R}
+library(repboxRun)
+library(metaregBase)
+
+# Should point to this project dir
+project_dir = rb_get_project_dir("~/repbox/projects/test")
+
+if (FALSE) {
+  metaregBase::mrb_run_as_test(project_dir = "~/repbox/projects/test","~/repbox/projects/test/run/run_test.R")
+  rstudioapi::filesPaneNavigate(project_dir)
+}
+
+rb = rb_new(project_dir)
+if (FALSE) {
+  rb = rb_update_file_info_parcel(rb, overwrite=!FALSE,assume_org_complete = TRUE)
+  rb = rb_update_script_parcels(rb, overwrite=!FALSE)
+  rb = rb_update_static_code_analysis(rb, overwrite = !FALSE)
+
+  rb = rb_run_stata_reproduction(rb, overwrite=!FALSE, store_reg_info=TRUE)
+}
+
+
+drf = repboxDRF::drf_load(project_dir)
+mrb = mrb_init(project_dir)
+if (FALSE) {
+  mrb = mrb_full_stata_script(mrb)
+  mrb = mrb_run_stata_script(mrb)
+  mrb = mrb_agg_stata(mrb)
+
+}
+mrb = mrb_run_r_base(mrb)
+mrb = mrb_run_r_reg(mrb)
+
+```
+
+
+# Run log of the script
+
+
+### source_with_log start: 2026-03-13 06:23:27 
+### file: /home/rstudio/repbox/projects/test/run/run_test.R 
+
+
+> library(repboxRun)
+
+> library(metaregBase)
+
+> # Should point to this project dir
+> project_dir = rb_get_project_dir("~/repbox/projects/test")
+
+> if (FALSE) {
++   metaregBase::mrb_run_as_test(project_dir = "~/repbox/projects/test","~/repbox/projects/test/run/run_test.R")
++   rstudioapi::filesPaneNavigate(project_dir)
++ }
+
+> rb = rb_new(project_dir)
+
+> if (FALSE) {
++   rb = rb_update_file_info_parcel(rb, overwrite=!FALSE,assume_org_complete = TRUE)
++   rb = rb_update_script_parcels(rb, overwrite=!FALSE)
++   rb = rb_update_static_code_analysis(rb, overwrite = !FALSE)
++ 
++   rb = rb_run_stata_reproduction(rb, overwrite=!FALSE, store_reg_info=TRUE)
++ }
+
+> drf = repboxDRF::drf_load(project_dir)
+
+> mrb = mrb_init(project_dir)
+
+> if (FALSE) {
++   mrb = mrb_full_stata_script(mrb)
++   mrb = mrb_run_stata_script(mrb)
++   mrb = mrb_agg_stata(mrb)
++ 
++ }
+
+> mrb = mrb_run_r_base(mrb)
+
+mrb_r_base processing runids: 3 4 5 6 
+Error in source_with_log:
+
+
+### source_with_log end: 2026-03-13 06:23:28 
+
+# Comparision of Stata and R regressions
+
+
+In 3 of 4 regressions the R and Stata coefficients don't match. 3 problematic cases are shown below.
+
+## runid 4
+
+Examples of coefficient mismatches:
+
+```text
+ cterm       coef_rb     coef_sb     se_rb     se_sb    
+ x1          -0.09180998 -0.40067661 0.1244126 0.1813916
+ (Intercept) -0.10941876 -0.03963154 0.1125622 0.2082003
+```
+
+Stata command:
+```stata
+reg y x if i1==2, robust
+```
+
+R translation used by metaregBase:
+```r
+function(dat,...){
+library(fixest)
+rcmd = "feols"
+
+formula = `y` ~ `x1`
+reg_vcov = "hetero"
+reg = feols(fml = formula,data = dat,vcov = reg_vcov)
+ct = broom::tidy(reg,conf.int=TRUE)
+glance = broom::glance(reg)
+results = list(reg=reg,rcmd=rcmd,ct=ct,glance=glance)
+return(results)
+}
+```
+
+## runid 5
+
+Examples of coefficient mismatches:
+
+```text
+ cterm       coef_rb    coef_sb    se_rb     se_sb    
+ (Intercept) -0.1288620 -0.1175014 0.1054785 0.1095908
+ L@x1         0.2214535  0.2060900 0.1095375 0.1140649
+```
+
+Stata command:
+```stata
+reg y L1.x1
+```
+
+R translation used by metaregBase:
+```r
+function(dat,...){
+library(fixest)
+rcmd = "feols"
+
+formula = `y` ~ `L@x1`
+reg_vcov = "iid"
+reg = feols(fml = formula,data = dat,vcov = reg_vcov)
+ct = broom::tidy(reg,conf.int=TRUE)
+glance = broom::glance(reg)
+results = list(reg=reg,rcmd=rcmd,ct=ct,glance=glance)
+return(results)
+}
+```
+
+## runid 6
+
+Examples of coefficient mismatches:
+
+```text
+ cterm coef_rb    coef_sb    se_rb     se_sb    
+ i1=2  -0.2323702 -0.3388709 0.4044543 0.4097375
+ i1=3  -0.5087099 -0.6808181 0.4278631 0.4409138
+```
+
+Stata command:
+```stata
+reg d.y d.x1 i.i1, robust
+```
+
+R translation used by metaregBase:
+```r
+function(dat,...){
+library(fixest)
+rcmd = "feols"
+dat[["D.__.y"]] = dat[["D@y"]]
+formula = `D.__.y` ~ `i1=3` + `i1=2` + `i1=4` + `D@x1`
+reg_vcov = "hetero"
+reg = feols(fml = formula,data = dat,vcov = reg_vcov)
+ct = broom::tidy(reg,conf.int=TRUE)
+glance = broom::glance(reg)
+results = list(reg=reg,rcmd=rcmd,ct=ct,glance=glance)
+return(results)
+}
+```
+
+```
+# END OF FILE: test_report.Rmd
+
+-----------------------------------------------------------
+
+
 
 ##################################
 # Your Task
 ##################################
 
-These packages are part of a workflow to allow robustness replications of regressions originally run in Stata also in R. Goal is to build a systemat regression database.
+Can you please rewrite the debug pipeline 
 
-Currently, repboxDRF allows to generate R code that modifies the data set in R to have the state as before the regression command.
-
-I need an additional feature: 
-
-Also get a filtered version of the data set, that applies the "if" and "in" filters used in the Stata regression.
-
-I don't want to reinvent the wheel.
-
-What is the best way to achieve it without much extra code.
-
-E.g. in the translation pipeline we could add a translate of a custom generated Stata "keep" command that select the rows based on filters from an if and in condition. 
-
-I don't know whether stata2r already systematically extracts the in and if conditions or has implemented something.
-
-cmdpart has a nicer parser from which we could extract the "if" or "in" conditions otherwise.
-
-Please suggest and discuss different approaches. Do not code yet.
 
 

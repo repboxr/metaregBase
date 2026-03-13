@@ -88,9 +88,6 @@ mrb_run_r_reg_step = function(mrb, pid) {
   code_df = reg_stata_to_r_code(reg, regvar, regxvar, cmdpart, prefer="fixest", opts=opts)
   code = paste0(code_df$code, collapse="\n")
   reg_fun_code = paste0("reg_fun = ", code)
-  if (is_debug_mode()) {
-
-  }
 
   reg_fun = eval(parse(text=reg_fun_code))
   dat = repboxDRF::drf_get_data(runid, drf = mrb$drf)
@@ -98,7 +95,15 @@ mrb_run_r_reg_step = function(mrb, pid) {
   if (nrow(regxvar) > 0) {
     dat = make_regxvar_cols(dat, regxvar)
   }
-  results = try(reg_fun(dat), silent = TRUE)
+  results = try(reg_fun(dat))
+  if (is(results, "try-error")) {
+    cat("\nError occured for runid=",pid,"\n")
+    cat("\nreg_fun_code:\n",paste0(reg_fun_code, collapse="\n"))
+    cat("\nHead of regression data set: head(dat,2)")
+    print(head(dat,2))
+    return(NULL)
+  }
+
 
   # Process R results
   ct = results$ct
