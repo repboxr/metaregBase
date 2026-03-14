@@ -8436,11 +8436,9 @@ return(results)
 
 Please try to find the reason for the errors / problems noted in the test report.
 
-Can you find the problem in some code in the provided package. How to solve it?
+Can you find the problem in some code in the provided packages. How to solve it?
 
-Would additional information be helpful to pinpoint the bug? Yes, what?
 
-How would you improve the code that generates the test report?
 
 
 

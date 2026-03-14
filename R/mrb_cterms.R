@@ -21,8 +21,6 @@
 # cterm will not contain info on whether the variable is used
 # as factor or not.
 # FILE: mrb_cterms.R
-# Replace the existing stata_expr_to_cterm function:
-
 stata_expr_to_cterm = function(stata_expr) {
   restore.point("stata_expr_to_cterm")
 
@@ -33,24 +31,14 @@ stata_expr_to_cterm = function(stata_expr) {
     restore.point("cterm_ts_op")
   }
 
-  # i2000.year => year=2000
   cterm = stringi::stri_replace_all_regex(cterm, "(#|^)[iI]([0-9]+)\\.([a-zA-Z_0-9]+)","$1$3=$2" )
-
-  # i.year => year; c.year => year
-  # MOVED UP: Do this before TS operators so stacked prefixes like "i.L1." become "L1."
   cterm = gsub("#[ic]\\.","#", cterm, ignore.case=TRUE)
   cterm = gsub("^[ic]\\.","", cterm, ignore.case=TRUE)
-
-  # Remove c or i prefixes immediately before TS operators, e.g. cL.x1 -> L.x1
   cterm = gsub("#[ic]([LlFfDdSsOo][0-9]*\\.)","#\\1", cterm, ignore.case=TRUE)
   cterm = gsub("^[ic]([LlFfDdSsOo][0-9]*\\.)","\\1", cterm, ignore.case=TRUE)
-
-  # ib2000.year => year; b2000.year => year
   cterm = stringi::stri_replace_all_regex(cterm, "#[iI]?[bB]([0-9]+)\\.","#" )
   cterm = stringi::stri_replace_all_regex(cterm, "^[iI]?[bB]([0-9]+)\\.","" )
 
-  # Normalize time-series operators using PCRE (perl=TRUE)
-  # \U upper-cases the following backreference. Append 1 to L, F, D, S, O if missing.
   old_cterm = ""
   while (any(old_cterm != cterm)) {
     old_cterm = cterm
@@ -58,35 +46,24 @@ stata_expr_to_cterm = function(stata_expr) {
     cterm = gsub("(^|#|\\.)([LlFfDdSsOo])([2-9]|[1-9][0-9]+)\\.", "\\1\\U\\2\\3.", cterm, perl=TRUE)
   }
 
-  # replace dot with @
   cterm = gsub(".","@", cterm, fixed=TRUE)
-
-  # Replace stuff like 1@disab with disab=1
   cterm = stringi::stri_replace_all_regex(cterm, "(^|#)([0-9]+)@([a-zA-Z_][a-zA-Z_0-9]*)", "$1$3=$2")
+  cterm = sort_interaction_terms(cterm)
 
   cterm
 }
+
 
 canonical.stata.output.terms = function(terms,labels, cmd=NULL) {
   restore.point("canonical.stata.output.terms")
 
   terms = canonical.output.terms.stata.default(terms)
   terms = canonical.output.terms.stata.xi(terms, labels)
+  terms = sort_interaction_terms(terms)
+
   return(terms)
-
-
-  cmd = rep(cmd, length.out = length(terms))
-  canonical = rep(NA, NROW(terms))
-
-  rows = which(is.na(canonical))
-  canonical[rows] = canonical.output.terms.stata.default(terms[rows])
-
-  na.rows = which(is.na(canonical))
-  if (length(na.rows)>0) {
-    stop(paste0("Cannot yet parse stata output terms for ", paste0(unique(cmd[na.rows]), collapse = ", "), ". Update canonical.stata.output.terms"))
-  }
-  canonical
 }
+
 
 adapt.stata.prefix.notation = function(cterm) {
   cterm = gsub(".","@", cterm,fixed = TRUE)
@@ -98,7 +75,6 @@ canonical.output.terms.stata.default = function(terms, ...) {
   cons = which(terms %in% c("_cons","o._cons"))
   terms[cons] = "(Intercept)"
 
-  # Default interaction term with #
   rows = which(has.substr(terms,"#"))
   if (length(rows)>0) {
     lhs = str.left.of(terms[rows], "#")
@@ -108,34 +84,25 @@ canonical.output.terms.stata.default = function(terms, ...) {
       canonical.output.terms.stata.default(rhs, labels[rows]))
   }
 
-  # Factor variable (no string only integer before .)
   rows = dot.rows = has.substr(terms,".") & !is.na(suppressWarnings(as_integer(substring(terms,1,1))))
   base = str.right.of(terms[rows], ".")
   level = str.left.of(terms[rows], ".")
 
-  # Extract Time Series operator from the end of the level (e.g., 1L, 2L2, 1bL)
   match_lvl = stringi::stri_match_first_regex(trimws(level), "^([0-9]+)([bo]?)([a-zA-Z]*[0-9]*)$")
   matched = !is.na(match_lvl[, 1])
 
   if (any(matched)) {
     num_val = match_lvl[matched, 2]
     ts_op   = toupper(match_lvl[matched, 4])
-
-    # Normalize TS operators: if it's 'L1', make it 'L' to match Stata canonical
     ts_op = gsub("^([LFDSO])1$", "\\1", ts_op)
-
-    # Prepend TS operator to the base where it exists (FIXED ASSIGNMENT)
     has_ts = nchar(ts_op) > 0
     if (any(has_ts)) {
       update_idx = which(matched)[has_ts]
       base[update_idx] = paste0(ts_op[has_ts], "@", base[update_idx])
     }
-
-    # The level just becomes the numeric value
     level[matched] = num_val
   }
 
-  # Fallback for anything that didn't match the regex pattern
   unmatched_idx = which(!matched)
   if (length(unmatched_idx) > 0) {
     brows = endsWith(trimws(level[unmatched_idx]), "b") | endsWith(trimws(level[unmatched_idx]), "o")
@@ -147,15 +114,23 @@ canonical.output.terms.stata.default = function(terms, ...) {
 
   terms[rows] = paste0(base, "=", level)
 
-  # Remove certain prefixes like o. or co.
   rows = has.substr(terms,".") & !is.na(suppressWarnings(as_integer(substring(terms,1,1))))
   terms = remove.unused.stata.prefixes(terms)
+
+  old_terms = ""
+  while (isTRUE(any(old_terms != terms, na.rm=TRUE))) {
+    old_terms = terms
+    terms = gsub("(^|#|\\.)([LlFfDdSsOo])1?\\.", "\\1\\U\\2.", terms, perl=TRUE)
+    terms = gsub("(^|#|\\.)([LlFfDdSsOo])([2-9]|[1-9][0-9]+)\\.", "\\1\\U\\2\\3.", terms, perl=TRUE)
+  }
+
   terms = adapt.stata.prefix.notation(terms)
   terms
 }
 
 remove.unused.stata.prefixes = function(terms) {
   terms = gsub("(^o\\.|^co\\.|^c\\.)","", terms)
+  terms = gsub("^[ic]([LlFfDdSsOo][0-9]*\\.)","\\1", terms, ignore.case=TRUE)
   terms
 }
 
@@ -202,6 +177,7 @@ canonical.output.terms.stata.xi = function(terms, labels, do.subst=TRUE, xi.rows
   terms
 }
 
+# Replace the existing canonical.r.output.terms function:
 canonical.r.output.terms = function(terms, vi=NULL, rcmd=NULL, from.stata=TRUE) {
   restore.point("canonical.r.output.terms")
 
@@ -213,9 +189,9 @@ canonical.r.output.terms = function(terms, vi=NULL, rcmd=NULL, from.stata=TRUE) 
   rows = setdiff(seq_along(terms), rows)
   terms[rows] = canonical.output.terms.fixest(terms[rows], from.stata=from.stata)
 
+  terms = sort_interaction_terms(terms)
   terms
 }
-
 
 canonical.output.terms.r.default = function(terms, from.stata=TRUE) {
   restore.point("canonical.output.terms.fixest")
@@ -492,5 +468,14 @@ cterm_extract_base = function(cterm, keep.level = FALSE) {
 
 cterm_extract_level = function(cterm) {
   str.right.of(cterm, "=")
+}
+
+
+sort_interaction_terms = function(terms) {
+  rows = which(has.substr(terms, "#"))
+  if (length(rows) > 0) {
+    terms[rows] = sapply(strsplit(terms[rows], "#", fixed=TRUE), function(x) paste0(sort(x), collapse="#"))
+  }
+  terms
 }
 

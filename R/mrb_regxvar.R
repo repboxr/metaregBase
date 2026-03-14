@@ -60,7 +60,6 @@ make_regxvar_ia1 = function(regvar,level_li) {
   cterms
 }
 
-
 make_regxvar_ia2 = function(rv, level_li) {
   restore.point("make_regxvar_ia2")
 
@@ -68,24 +67,38 @@ make_regxvar_ia2 = function(rv, level_li) {
   vars2 = make_regxvar_ia1(rv[2,], level_li)
 
   grid = expand.grid(var1=vars1, var2=vars2,stringsAsFactors = FALSE) %>%
-    mutate(var12 = paste0(var1,"#", var2))
+    mutate(var12 = sapply(strsplit(paste0(var1,"#", var2), "#", fixed=TRUE), function(x) paste0(sort(x), collapse="#")))
 
   unique(c(vars1,vars2, grid$var12))
 }
+
+
+# make_regxvar_ia3 = function(rv, level_li) {
+#   restore.point("make_regxvar_ia3")
+#
+#   vars12 = make_regxvar_ia2(rv[1:2,], level_li)
+#   #vars13 = make_regxvar_ia2(rv[c(1,3),], level_li)
+#   #vars23 = make_regxvar_ia2(rv[2:3,], level_li)
+#   vars3 = make_regxvar_ia1(rv[3,], level_li)
+#
+#   grid = expand.grid(var12=vars12, var3=vars3,stringsAsFactors = FALSE) %>%
+#     mutate(var123 = paste0(var12,"#", var3))
+#
+#   unique(c(vars12,vars3, grid$var123))
+# }
 
 make_regxvar_ia3 = function(rv, level_li) {
   restore.point("make_regxvar_ia3")
 
   vars12 = make_regxvar_ia2(rv[1:2,], level_li)
-  #vars13 = make_regxvar_ia2(rv[c(1,3),], level_li)
-  #vars23 = make_regxvar_ia2(rv[2:3,], level_li)
   vars3 = make_regxvar_ia1(rv[3,], level_li)
 
   grid = expand.grid(var12=vars12, var3=vars3,stringsAsFactors = FALSE) %>%
-    mutate(var123 = paste0(var12,"#", var3))
+    mutate(var123 = sapply(strsplit(paste0(var12,"#", var3), "#", fixed=TRUE), function(x) paste0(sort(x), collapse="#")))
 
   unique(c(vars12,vars3, grid$var123))
 }
+
 
 # Add the expanded columns specified in regxvar to dat
 # if a column already exists, we won't overwrite it.
