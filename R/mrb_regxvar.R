@@ -67,7 +67,7 @@ make_regxvar_ia2 = function(rv, level_li) {
   vars2 = make_regxvar_ia1(rv[2,], level_li)
 
   grid = expand.grid(var1=vars1, var2=vars2,stringsAsFactors = FALSE) %>%
-    mutate(var12 = sapply(strsplit(paste0(var1,"#", var2), "#", fixed=TRUE), function(x) paste0(sort(x), collapse="#")))
+    mutate(var12 = sort2_chr(var1, var2, sep="#"))
 
   unique(c(vars1,vars2, grid$var12))
 }
@@ -90,14 +90,22 @@ make_regxvar_ia2 = function(rv, level_li) {
 make_regxvar_ia3 = function(rv, level_li) {
   restore.point("make_regxvar_ia3")
 
-  vars12 = make_regxvar_ia2(rv[1:2,], level_li)
-  vars3 = make_regxvar_ia1(rv[3,], level_li)
+  v1 = make_regxvar_ia1(rv[1,], level_li)
+  v2 = make_regxvar_ia1(rv[2,], level_li)
+  v3 = make_regxvar_ia1(rv[3,], level_li)
 
-  grid = expand.grid(var12=vars12, var3=vars3,stringsAsFactors = FALSE) %>%
-    mutate(var123 = sapply(strsplit(paste0(var12,"#", var3), "#", fixed=TRUE), function(x) paste0(sort(x), collapse="#")))
+  # Generate 2-way interactions directly from components
+  v12 = expand.grid(a=v1, b=v2, stringsAsFactors=FALSE) %>% mutate(res = sort2_chr(a, b, sep="#")) %>% pull(res)
+  v13 = expand.grid(a=v1, b=v3, stringsAsFactors=FALSE) %>% mutate(res = sort2_chr(a, b, sep="#")) %>% pull(res)
+  v23 = expand.grid(a=v2, b=v3, stringsAsFactors=FALSE) %>% mutate(res = sort2_chr(a, b, sep="#")) %>% pull(res)
 
-  unique(c(vars12,vars3, grid$var123))
+  # Generate 3-way interactions directly from components
+  v123 = expand.grid(a=v1, b=v2, c=v3, stringsAsFactors=FALSE) %>%
+    mutate(res = split_and_sort(paste0(a, "#", b, "#", c), split = "#", k = 3L)) %>% pull(res)
+
+  unique(c(v1, v2, v3, v12, v13, v23, v123))
 }
+
 
 
 # Add the expanded columns specified in regxvar to dat

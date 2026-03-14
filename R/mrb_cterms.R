@@ -474,7 +474,8 @@ cterm_extract_level = function(cterm) {
 sort_interaction_terms = function(terms) {
   rows = which(has.substr(terms, "#"))
   if (length(rows) > 0) {
-    terms[rows] = sapply(strsplit(terms[rows], "#", fixed=TRUE), function(x) paste0(sort(x), collapse="#"))
+    terms[rows] = split_and_sort(terms[rows], split = "#")
+    #terms[rows] = sapply(strsplit(terms[rows], "#", fixed=TRUE), function(x) paste0(sort(x), collapse="#"))
   }
   terms
 }

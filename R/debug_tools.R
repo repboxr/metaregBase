@@ -23,7 +23,7 @@ source_with_log = function(
 ) {
   restore.point("source_with_log")
   stopifnot(is.character(file), length(file) == 1L)
-
+  options(error = function() mrb_test_traceback())
   if (is.null(log_con)) {
     stopifnot(is.character(log_file), length(log_file) == 1L)
     log_con = file(log_file, open = if (append) "at" else "wt")
@@ -37,6 +37,7 @@ source_with_log = function(
   value = NULL
 
   on.exit({
+    options(error = function() traceback(3))
     while (sink.number(type = "message") > message_sink_before) {
       sink(type = "message")
     }
@@ -100,4 +101,10 @@ source_with_log = function(
     error = error_obj,
     warnings = warnings_seen
   ))
+}
+
+mrb_test_traceback = function() {
+  traceback(3)
+  #restore.point("mrb_test_traceback")
+  #print(str)
 }
