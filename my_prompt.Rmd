@@ -276,7 +276,7 @@ source_with_log = function(
 ) {
   restore.point("source_with_log")
   stopifnot(is.character(file), length(file) == 1L)
-
+  options(error = function() mrb_test_traceback())
   if (is.null(log_con)) {
     stopifnot(is.character(log_file), length(log_file) == 1L)
     log_con = file(log_file, open = if (append) "at" else "wt")
@@ -290,6 +290,7 @@ source_with_log = function(
   value = NULL
 
   on.exit({
+    options(error = function() traceback(3))
     while (sink.number(type = "message") > message_sink_before) {
       sink(type = "message")
     }
@@ -353,6 +354,12 @@ source_with_log = function(
     error = error_obj,
     warnings = warnings_seen
   ))
+}
+
+mrb_test_traceback = function() {
+  traceback(3)
+  #restore.point("mrb_test_traceback")
+  #print(str)
 }
 ```
 # END OF FILE: debug_tools.R
@@ -716,8 +723,6 @@ recompute_colinfo_groups = function(colinfo) {
 # cterm will not contain info on whether the variable is used
 # as factor or not.
 # FILE: mrb_cterms.R
-# Replace the existing stata_expr_to_cterm function:
-
 stata_expr_to_cterm = function(stata_expr) {
   restore.point("stata_expr_to_cterm")
 
@@ -728,24 +733,14 @@ stata_expr_to_cterm = function(stata_expr) {
     restore.point("cterm_ts_op")
   }
 
-  # i2000.year => year=2000
   cterm = stringi::stri_replace_all_regex(cterm, "(#|^)[iI]([0-9]+)\\.([a-zA-Z_0-9]+)","$1$3=$2" )
-
-  # i.year => year; c.year => year
-  # MOVED UP: Do this before TS operators so stacked prefixes like "i.L1." become "L1."
   cterm = gsub("#[ic]\\.","#", cterm, ignore.case=TRUE)
   cterm = gsub("^[ic]\\.","", cterm, ignore.case=TRUE)
-
-  # Remove c or i prefixes immediately before TS operators, e.g. cL.x1 -> L.x1
   cterm = gsub("#[ic]([LlFfDdSsOo][0-9]*\\.)","#\\1", cterm, ignore.case=TRUE)
   cterm = gsub("^[ic]([LlFfDdSsOo][0-9]*\\.)","\\1", cterm, ignore.case=TRUE)
-
-  # ib2000.year => year; b2000.year => year
   cterm = stringi::stri_replace_all_regex(cterm, "#[iI]?[bB]([0-9]+)\\.","#" )
   cterm = stringi::stri_replace_all_regex(cterm, "^[iI]?[bB]([0-9]+)\\.","" )
 
-  # Normalize time-series operators using PCRE (perl=TRUE)
-  # \U upper-cases the following backreference. Append 1 to L, F, D, S, O if missing.
   old_cterm = ""
   while (any(old_cterm != cterm)) {
     old_cterm = cterm
@@ -753,35 +748,24 @@ stata_expr_to_cterm = function(stata_expr) {
     cterm = gsub("(^|#|\\.)([LlFfDdSsOo])([2-9]|[1-9][0-9]+)\\.", "\\1\\U\\2\\3.", cterm, perl=TRUE)
   }
 
-  # replace dot with @
   cterm = gsub(".","@", cterm, fixed=TRUE)
-
-  # Replace stuff like 1@disab with disab=1
   cterm = stringi::stri_replace_all_regex(cterm, "(^|#)([0-9]+)@([a-zA-Z_][a-zA-Z_0-9]*)", "$1$3=$2")
+  cterm = sort_interaction_terms(cterm)
 
   cterm
 }
+
 
 canonical.stata.output.terms = function(terms,labels, cmd=NULL) {
   restore.point("canonical.stata.output.terms")
 
   terms = canonical.output.terms.stata.default(terms)
   terms = canonical.output.terms.stata.xi(terms, labels)
+  terms = sort_interaction_terms(terms)
+
   return(terms)
-
-
-  cmd = rep(cmd, length.out = length(terms))
-  canonical = rep(NA, NROW(terms))
-
-  rows = which(is.na(canonical))
-  canonical[rows] = canonical.output.terms.stata.default(terms[rows])
-
-  na.rows = which(is.na(canonical))
-  if (length(na.rows)>0) {
-    stop(paste0("Cannot yet parse stata output terms for ", paste0(unique(cmd[na.rows]), collapse = ", "), ". Update canonical.stata.output.terms"))
-  }
-  canonical
 }
+
 
 adapt.stata.prefix.notation = function(cterm) {
   cterm = gsub(".","@", cterm,fixed = TRUE)
@@ -793,7 +777,6 @@ canonical.output.terms.stata.default = function(terms, ...) {
   cons = which(terms %in% c("_cons","o._cons"))
   terms[cons] = "(Intercept)"
 
-  # Default interaction term with #
   rows = which(has.substr(terms,"#"))
   if (length(rows)>0) {
     lhs = str.left.of(terms[rows], "#")
@@ -803,34 +786,25 @@ canonical.output.terms.stata.default = function(terms, ...) {
       canonical.output.terms.stata.default(rhs, labels[rows]))
   }
 
-  # Factor variable (no string only integer before .)
   rows = dot.rows = has.substr(terms,".") & !is.na(suppressWarnings(as_integer(substring(terms,1,1))))
   base = str.right.of(terms[rows], ".")
   level = str.left.of(terms[rows], ".")
 
-  # Extract Time Series operator from the end of the level (e.g., 1L, 2L2, 1bL)
   match_lvl = stringi::stri_match_first_regex(trimws(level), "^([0-9]+)([bo]?)([a-zA-Z]*[0-9]*)$")
   matched = !is.na(match_lvl[, 1])
 
   if (any(matched)) {
     num_val = match_lvl[matched, 2]
     ts_op   = toupper(match_lvl[matched, 4])
-
-    # Normalize TS operators: if it's 'L1', make it 'L' to match Stata canonical
     ts_op = gsub("^([LFDSO])1$", "\\1", ts_op)
-
-    # Prepend TS operator to the base where it exists (FIXED ASSIGNMENT)
     has_ts = nchar(ts_op) > 0
     if (any(has_ts)) {
       update_idx = which(matched)[has_ts]
       base[update_idx] = paste0(ts_op[has_ts], "@", base[update_idx])
     }
-
-    # The level just becomes the numeric value
     level[matched] = num_val
   }
 
-  # Fallback for anything that didn't match the regex pattern
   unmatched_idx = which(!matched)
   if (length(unmatched_idx) > 0) {
     brows = endsWith(trimws(level[unmatched_idx]), "b") | endsWith(trimws(level[unmatched_idx]), "o")
@@ -842,15 +816,23 @@ canonical.output.terms.stata.default = function(terms, ...) {
 
   terms[rows] = paste0(base, "=", level)
 
-  # Remove certain prefixes like o. or co.
   rows = has.substr(terms,".") & !is.na(suppressWarnings(as_integer(substring(terms,1,1))))
   terms = remove.unused.stata.prefixes(terms)
+
+  old_terms = ""
+  while (isTRUE(any(old_terms != terms, na.rm=TRUE))) {
+    old_terms = terms
+    terms = gsub("(^|#|\\.)([LlFfDdSsOo])1?\\.", "\\1\\U\\2.", terms, perl=TRUE)
+    terms = gsub("(^|#|\\.)([LlFfDdSsOo])([2-9]|[1-9][0-9]+)\\.", "\\1\\U\\2\\3.", terms, perl=TRUE)
+  }
+
   terms = adapt.stata.prefix.notation(terms)
   terms
 }
 
 remove.unused.stata.prefixes = function(terms) {
   terms = gsub("(^o\\.|^co\\.|^c\\.)","", terms)
+  terms = gsub("^[ic]([LlFfDdSsOo][0-9]*\\.)","\\1", terms, ignore.case=TRUE)
   terms
 }
 
@@ -897,6 +879,7 @@ canonical.output.terms.stata.xi = function(terms, labels, do.subst=TRUE, xi.rows
   terms
 }
 
+# Replace the existing canonical.r.output.terms function:
 canonical.r.output.terms = function(terms, vi=NULL, rcmd=NULL, from.stata=TRUE) {
   restore.point("canonical.r.output.terms")
 
@@ -908,9 +891,9 @@ canonical.r.output.terms = function(terms, vi=NULL, rcmd=NULL, from.stata=TRUE) 
   rows = setdiff(seq_along(terms), rows)
   terms[rows] = canonical.output.terms.fixest(terms[rows], from.stata=from.stata)
 
+  terms = sort_interaction_terms(terms)
   terms
 }
-
 
 canonical.output.terms.r.default = function(terms, from.stata=TRUE) {
   restore.point("canonical.output.terms.fixest")
@@ -1187,6 +1170,16 @@ cterm_extract_base = function(cterm, keep.level = FALSE) {
 
 cterm_extract_level = function(cterm) {
   str.right.of(cterm, "=")
+}
+
+
+sort_interaction_terms = function(terms) {
+  rows = which(has.substr(terms, "#"))
+  if (length(rows) > 0) {
+    terms[rows] = split_and_sort(terms[rows], split = "#")
+    #terms[rows] = sapply(strsplit(terms[rows], "#", fixed=TRUE), function(x) paste0(sort(x), collapse="#"))
+  }
+  terms
 }
 
 ```
@@ -2265,7 +2258,6 @@ make_regxvar_ia1 = function(regvar,level_li) {
   cterms
 }
 
-
 make_regxvar_ia2 = function(rv, level_li) {
   restore.point("make_regxvar_ia2")
 
@@ -2273,24 +2265,46 @@ make_regxvar_ia2 = function(rv, level_li) {
   vars2 = make_regxvar_ia1(rv[2,], level_li)
 
   grid = expand.grid(var1=vars1, var2=vars2,stringsAsFactors = FALSE) %>%
-    mutate(var12 = paste0(var1,"#", var2))
+    mutate(var12 = sort2_chr(var1, var2, sep="#"))
 
   unique(c(vars1,vars2, grid$var12))
 }
 
+
+# make_regxvar_ia3 = function(rv, level_li) {
+#   restore.point("make_regxvar_ia3")
+#
+#   vars12 = make_regxvar_ia2(rv[1:2,], level_li)
+#   #vars13 = make_regxvar_ia2(rv[c(1,3),], level_li)
+#   #vars23 = make_regxvar_ia2(rv[2:3,], level_li)
+#   vars3 = make_regxvar_ia1(rv[3,], level_li)
+#
+#   grid = expand.grid(var12=vars12, var3=vars3,stringsAsFactors = FALSE) %>%
+#     mutate(var123 = paste0(var12,"#", var3))
+#
+#   unique(c(vars12,vars3, grid$var123))
+# }
+
 make_regxvar_ia3 = function(rv, level_li) {
   restore.point("make_regxvar_ia3")
 
-  vars12 = make_regxvar_ia2(rv[1:2,], level_li)
-  #vars13 = make_regxvar_ia2(rv[c(1,3),], level_li)
-  #vars23 = make_regxvar_ia2(rv[2:3,], level_li)
-  vars3 = make_regxvar_ia1(rv[3,], level_li)
+  v1 = make_regxvar_ia1(rv[1,], level_li)
+  v2 = make_regxvar_ia1(rv[2,], level_li)
+  v3 = make_regxvar_ia1(rv[3,], level_li)
 
-  grid = expand.grid(var12=vars12, var3=vars3,stringsAsFactors = FALSE) %>%
-    mutate(var123 = paste0(var12,"#", var3))
+  # Generate 2-way interactions directly from components
+  v12 = expand.grid(a=v1, b=v2, stringsAsFactors=FALSE) %>% mutate(res = sort2_chr(a, b, sep="#")) %>% pull(res)
+  v13 = expand.grid(a=v1, b=v3, stringsAsFactors=FALSE) %>% mutate(res = sort2_chr(a, b, sep="#")) %>% pull(res)
+  v23 = expand.grid(a=v2, b=v3, stringsAsFactors=FALSE) %>% mutate(res = sort2_chr(a, b, sep="#")) %>% pull(res)
 
-  unique(c(vars12,vars3, grid$var123))
+  # Generate 3-way interactions directly from components
+  v123 = expand.grid(a=v1, b=v2, c=v3, stringsAsFactors=FALSE) %>%
+    mutate(res = split_and_sort(paste0(a, "#", b, "#", c), split = "#", k = 3L)) %>% pull(res)
+
+  unique(c(v1, v2, v3, v12, v13, v23, v123))
 }
+
+
 
 # Add the expanded columns specified in regxvar to dat
 # if a column already exists, we won't overwrite it.
@@ -2655,6 +2669,8 @@ get_se_parser_version = function() {
   return(0)
 }
 
+
+
 se_stata_to_repdb = function(cmd, opts_df = cmdpart_to_opts_df(cmdpart), cmdpart=NULL) {
   restore.point("se_stata_to_repdb")
 
@@ -2669,17 +2685,6 @@ se_stata_to_repdb = function(cmd, opts_df = cmdpart_to_opts_df(cmdpart), cmdpart
     return(se)
   }
 
-  # There are different ways how standard errors can be
-  # specified in Stata. All the following 4 versions
-  # specify the same robust standard errors:
-
-  # reg y x, vce(robust)
-  # reg y x, vce(r)
-  # reg y x, robust
-  # reg y x, rob
-
-  # Our code deals with the different version
-
   abbr.li = list(
     robust = c("robust","robus","robu","rob","ro","r"),
     cluster = c("cluster","cluste","clust","clus","clu","cl"),
@@ -2691,21 +2696,16 @@ se_stata_to_repdb = function(cmd, opts_df = cmdpart_to_opts_df(cmdpart), cmdpart
   vce_row = which(opts_df$opt=="vce")
 
   if (length(vce_row)>0) {
-    # using tolower causes errors if variable name for
-    # clustered standard errors is not in lower case
-    # se_str = tolower(opts_df$opt_arg[vce_row])
     se_str = opts_df$opt_arg[vce_row]
     se_type = str.left.of(se_str, " ")
     se_type = expand_stata_abbr_one_val(se_type, abbr.li)
     if (is.na(se_str)) se_str = ""
-    se_args = str.right.of(se_str, " ",not.found = "") %>%
+    se_args = se_str %>%
       trimws() %>% ws_to_single_space() %>%
       strsplit(" ")
     se_args = se_args[[1]]
   } else {
     abbr.row = which(opts_df$opt %in% unlist(abbr.li))
-    # cluster se may have option: robust cluster(myvar)
-    # we then just set option to cluster
     if (length(abbr.row)==2) {
       cl_ind = which(startsWith(opts_df$opt[abbr.row],"cl"))
       if (length(cl_ind)>0) {
@@ -2716,9 +2716,6 @@ se_stata_to_repdb = function(cmd, opts_df = cmdpart_to_opts_df(cmdpart), cmdpart
     if (length(abbr.row)==1) {
       se_type = opts_df$opt[[abbr.row]]
       se_type = expand_stata_abbr_one_val(se_type, abbr.li)
-      # using tolower causes errors if variable name for
-      # clustered standard errors is not in lower case
-      # se_str = tolower(opts_df$opt_arg[abbr.row])
       se_str = opts_df$opt_arg[abbr.row]
       if (is.na(se_str)) se_str = ""
       se_args = se_str %>%
@@ -2730,16 +2727,12 @@ se_stata_to_repdb = function(cmd, opts_df = cmdpart_to_opts_df(cmdpart), cmdpart
     }
   }
 
-
-  # Some commands have different naming conventions
   if (cmd == "xtreg") {
     if (se_type == "conventional") se_type == "iid"
   } else if (cmd %in% c("reghdfe","ivreghdfe")) {
-    # iid = undadjusted
     if (startsWith(se_type,"un")) se_type = "iid"
   }
 
-  # No specific se option
   if (se_type %in% c("","iid")) {
     if (length(se_args)>0) {
       restore.point("Problem in parsing se: se_type is iid but there are se_args")
@@ -2752,8 +2745,8 @@ se_stata_to_repdb = function(cmd, opts_df = cmdpart_to_opts_df(cmdpart), cmdpart
     )
     return(se)
   }
-  if (se_type=="robust" | tolower(se_type) %in% c("hc0", "hc1","hc2","hc3","hc4","hc5")) {
 
+  if (se_type=="robust" | tolower(se_type) %in% c("hc0", "hc1","hc2","hc3","hc4","hc5")) {
     if (length(se_args)>0) {
       restore.point("Problem in parsing se: se_type is robust but there are se_args")
       stop(paste0("Problem in parsing se: se_type is ", se_type," but there are se_args"))
@@ -2768,8 +2761,11 @@ se_stata_to_repdb = function(cmd, opts_df = cmdpart_to_opts_df(cmdpart), cmdpart
   }
 
   if (se_type=="cluster") {
-    clustervar = list(se_args)
+    # FIX: Don't wrap in list() otherwise paste0 creates literal c("i", "year") strings
+    clustervar = as.character(se_args)
+    clustervar = clustervar[clustervar != ""]
     num_clustervar = length(clustervar)
+
     if (num_clustervar==1) {
       se_type = "cluster"
     } else if (num_clustervar==2) {
@@ -2792,6 +2788,7 @@ se_stata_to_repdb = function(cmd, opts_df = cmdpart_to_opts_df(cmdpart), cmdpart
   stop(paste0("Have not yet implemented parsing of Stata standard error of type ", se_type))
   return(NULL)
 }
+
 
 repdb_parse_se_args = function(se_args, as_df=FALSE) {
   restore.point("repdb_parse_se_args")
@@ -6504,24 +6501,15 @@ cterm_of_r_coefs_fixest = function(terms, regvar, dot_to_at=FALSE) {
   restore.point("r_coefs_cterm_fixest")
 
   terms = gsub("`","", terms, fixed=TRUE)
-  # factor in form: farmass_q::2
-  # to farmass_q=2
   terms = gsub("::","=", terms, fixed=TRUE)
-  #terms = gsub(" ","", terms, fixed=TRUE)
 
-  # factor in form
-  # factor(i1)4:factor(d1)1
-  # to i1=4:d1=1
   factor.rx = "factor\\(([a-zA-Z0-9_.]*)\\)"
   terms = gsub(factor.rx,"\\1=",terms,fixed=FALSE)
 
-  # Replace . by @ if . was a Stata prefix
   if (dot_to_at) {
     terms = gsub(".","@", terms, fixed=TRUE)
   }
 
-  # In an IV regression feols adds "fit_" to the result
-  # variable. We want to remove that
   rows = which(startsWith(terms,"fit_"))
   if (length(rows)>0) {
     terms.no.fit = substring(terms[rows], 5)
@@ -6529,8 +6517,45 @@ cterm_of_r_coefs_fixest = function(terms, regvar, dot_to_at=FALSE) {
     terms[rows[change]] = terms.no.fit[change]
   }
 
+  ia_rows = which(has.substr(terms, "#"))
+  if (length(ia_rows) > 0) {
+    terms[ia_rows] = split_and_sort(terms[ia_rows], split = "#")
+  }
+
   terms
 }
+
+# cterm_of_r_coefs_fixest = function(terms, regvar, dot_to_at=FALSE) {
+#   restore.point("r_coefs_cterm_fixest")
+#
+#   terms = gsub("`","", terms, fixed=TRUE)
+#   # factor in form: farmass_q::2
+#   # to farmass_q=2
+#   terms = gsub("::","=", terms, fixed=TRUE)
+#   #terms = gsub(" ","", terms, fixed=TRUE)
+#
+#   # factor in form
+#   # factor(i1)4:factor(d1)1
+#   # to i1=4:d1=1
+#   factor.rx = "factor\\(([a-zA-Z0-9_.]*)\\)"
+#   terms = gsub(factor.rx,"\\1=",terms,fixed=FALSE)
+#
+#   # Replace . by @ if . was a Stata prefix
+#   if (dot_to_at) {
+#     terms = gsub(".","@", terms, fixed=TRUE)
+#   }
+#
+#   # In an IV regression feols adds "fit_" to the result
+#   # variable. We want to remove that
+#   rows = which(startsWith(terms,"fit_"))
+#   if (length(rows)>0) {
+#     terms.no.fit = substring(terms[rows], 5)
+#     change = (!terms[rows] %in% regvar$ia_cterm) & (terms.no.fit %in% regvar$ia_cterm)
+#     terms[rows[change]] = terms.no.fit[change]
+#   }
+#
+#   terms
+# }
 ```
 # END OF FILE: cterms_r.R
 
@@ -7127,6 +7152,8 @@ expand_reg_dat_cols = function(regvar, dat) {
       res = make_factor_level_vars(cterm,dat, level_li = factor_levels)
     } else if (length(rows)==2) {
       res = make_ia2_vars(regvar[rows,], dat,  level_li = factor_levels)
+    } else if (length(rows)==3) {
+      res = make_ia3_vars(regvar[rows,], dat,  level_li = factor_levels)
     } else {
       stop("Cannot yet deal with tripple interactions or more.")
     }
@@ -7153,7 +7180,6 @@ expand_reg_dat_cols = function(regvar, dat) {
 make_ia2_vars = function(rv, dat, level_li) {
   restore.point("make_ia2_vars")
 
-  # Create main effects (just for factors: numerical variables are already part of dat)
   factor_rows = which(rv$var_reg_type == "factor")
   if (length(factor_rows)>0) {
     fdat = lapply(rv$cterm[factor_rows],make_factor_level_vars, dat=dat, level_li=level_li) %>%
@@ -7161,9 +7187,6 @@ make_ia2_vars = function(rv, dat, level_li) {
   } else {
     fdat = NULL
   }
-
-  #new_cols = setdiff(colnames(fdat), colnames(dat))
-  #dat[new_cols] = fdat[new_cols]
 
   cterm1 = rv$cterm[1]
   cterm2 = rv$cterm[2]
@@ -7184,7 +7207,7 @@ make_ia2_vars = function(rv, dat, level_li) {
   }
 
   grid = expand.grid(var1=vars1, var2=vars2,stringsAsFactors = FALSE) %>%
-    mutate(var12 = paste0(var1,"#", var2))
+    mutate(var12 = sort2_chr(var1, var2, "#"))
 
   dat12_li = lapply(seq_rows(grid), function(i) {
     if (is_factor1) {
@@ -7205,6 +7228,45 @@ make_ia2_vars = function(rv, dat, level_li) {
   bind_cols(fdat, dat12)
 }
 
+# FILE: regtranslate/regvar_expand.R
+make_ia3_vars = function(rv, dat, level_li) {
+  restore.point("make_ia3_vars")
+
+  factor_rows = which(rv$var_reg_type == "factor")
+  if (length(factor_rows)>0) {
+    fdat = lapply(rv$cterm[factor_rows], make_factor_level_vars, dat=dat, level_li=level_li) %>%
+      bind_cols()
+  } else {
+    fdat = NULL
+  }
+
+  is_f1 = rv$var_reg_type[1]=="factor"
+  is_f2 = rv$var_reg_type[2]=="factor"
+  is_f3 = rv$var_reg_type[3]=="factor"
+
+  vars1 = if (is_f1) paste0(rv$cterm[1],"=", level_li[[rv$cterm[1]]]) else rv$cterm[1]
+  vars2 = if (is_f2) paste0(rv$cterm[2],"=", level_li[[rv$cterm[2]]]) else rv$cterm[2]
+  vars3 = if (is_f3) paste0(rv$cterm[3],"=", level_li[[rv$cterm[3]]]) else rv$cterm[3]
+
+  # 2-way grids
+  g12 = expand.grid(v1=vars1, v2=vars2, stringsAsFactors=FALSE) %>% mutate(var = sort2_chr(v1, v2, sep="#"))
+  g13 = expand.grid(v1=vars1, v2=vars3, stringsAsFactors=FALSE) %>% mutate(var = sort2_chr(v1, v2, sep="#"))
+  g23 = expand.grid(v1=vars2, v2=vars3, stringsAsFactors=FALSE) %>% mutate(var = sort2_chr(v1, v2, sep="#"))
+
+  # 3-way grid
+  g123 = expand.grid(v1=vars1, v2=vars2, v3=vars3, stringsAsFactors=FALSE) %>%
+    mutate(var = split_and_sort(paste0(v1, "#", v2, "#", v3), split="#", k=3L))
+
+  # Compute values
+  get_val = function(is_f, grid_col, i) if (is_f) fdat[[grid_col[i]]] else dat[[grid_col[i]]]
+
+  dat12 = as_tibble(setNames(lapply(seq_rows(g12), function(i) get_val(is_f1, g12$v1, i) * get_val(is_f2, g12$v2, i)), g12$var))
+  dat13 = as_tibble(setNames(lapply(seq_rows(g13), function(i) get_val(is_f1, g13$v1, i) * get_val(is_f3, g13$v2, i)), g13$var))
+  dat23 = as_tibble(setNames(lapply(seq_rows(g23), function(i) get_val(is_f2, g23$v1, i) * get_val(is_f3, g23$v2, i)), g23$var))
+  dat123 = as_tibble(setNames(lapply(seq_rows(g123), function(i) get_val(is_f1, g123$v1, i) * get_val(is_f2, g123$v2, i) * get_val(is_f3, g123$v3, i)), g123$var))
+
+  bind_cols(fdat, dat12, dat13, dat23, dat123)
+}
 
 make_factor_level_vars = function(var,dat, levels = level_li[[var]],level_li) {
   restore.point("make_factor_level_vars")
@@ -7415,8 +7477,80 @@ regdb_parse_se_args = function(se_args, as_df=FALSE) {
 -----------------------------------------------------------
 
 
+# FILE: split_n_sort.R
+```
+sort2_chr = function(a, b, ..., sep=NULL) {
+  swap = stringi::stri_cmp_gt(a, b, ...)
+  lo = ifelse(swap, b, a)
+  hi = ifelse(swap, a, b)
+  if (!is.null(sep)) return(paste0(a,sep,b))
+  list(lo = lo, hi = hi)
+}
+
+sort3_chr = function(a, b, c, ..., sep=NULL) {
+  s = sort2_chr(a, b, ...)
+  a = s$lo
+  b = s$hi
+
+  s = sort2_chr(b, c, ...)
+  b = s$lo
+  c = s$hi
+
+  s = sort2_chr(a, b, ...)
+  a = s$lo
+  b = s$hi
+
+  if (!is.null(sep)) return(paste0(a,sep,b,sep,c))
+
+  list(a = a, b = b, c = c)
+}
+
+split_and_sort = function(terms, split = "#", ..., k = NULL) {
+  if (!length(terms)) {
+    return(character())
+  }
+
+  if (is.null(k)) {
+    n_tok = stringi::stri_count_fixed(terms, split) + 1L
+    same_k = length(unique(n_tok)) == 1L
+    if (same_k) {
+      k = n_tok[1]
+    } else {
+      k = NA_integer_
+    }
+  }
+
+  if (identical(k, 2L)) {
+    m = stringi::stri_split_fixed(terms, split, simplify = TRUE)
+    s = sort2_chr(m[, 1], m[, 2], ..., sep=split)
+    return(s)
+    #return(stringi::stri_join(s$lo, s$hi, sep = split))
+  }
+
+  if (identical(k, 3L)) {
+    m = stringi::stri_split_fixed(terms, split, simplify = TRUE)
+    s = sort3_chr(m[, 1], m[, 2], m[, 3], ..., sep=split)
+    return(s)
+    return(stringi::stri_join(s$a, s$b, s$c, sep = split))
+  }
+
+  x = stringi::stri_split_fixed(terms, split, simplify = FALSE)
+  vapply(
+    x,
+    function(tok) stringi::stri_flatten(stringi::stri_sort(tok, ...), collapse = split),
+    character(1)
+  )
+}
+```
+# END OF FILE: split_n_sort.R
+
+-----------------------------------------------------------
+
+
 # FILE: to_r_fixest.R
 ```
+
+# Replace stata_to_r_code_fixest and fixest_vcov_code_from_regdb
 stata_to_r_code_fixest = function(reg, regvar, regxvar, cmdpart, opts=code_options(), parts = list()) {
   restore.point("stata_to_r_code_fixest")
 
@@ -7428,7 +7562,6 @@ stata_to_r_code_fixest = function(reg, regvar, regxvar, cmdpart, opts=code_optio
   vcov_type = fixest_vcov_type_from_regdb(reg$se_type, reg$se_args)
 
   use_ssc = vcov_type %in% c("cluster","twoway","DK","NW")
-
   use_sandwich = (vcov_type == "sandwich") | opts$prefer_sandwich
   use_summary = use_sandwich | opts$prefer_summary
 
@@ -7438,7 +7571,7 @@ stata_to_r_code_fixest = function(reg, regvar, regxvar, cmdpart, opts=code_optio
   } else {
     reg_vcov = fixest_vcov_code_from_regdb(reg$se_type, reg$se_args, vcov_type, quote=FALSE)
     if (use_summary) {
-      vccov = reg_vcov
+      vcov = reg_vcov
     }
   }
 
@@ -7452,9 +7585,8 @@ stata_to_r_code_fixest = function(reg, regvar, regxvar, cmdpart, opts=code_optio
   } else if (reg$cmd %in% c("probit","xtprobit","dprobit")) {
     command = "feglm"
     arg_str = 'family=binomial(link = "probit")'
-  } else {
-
   }
+
   arg_str = c(
     paste0("fml = formula"),
     paste0('data = dat'),
@@ -7462,16 +7594,18 @@ stata_to_r_code_fixest = function(reg, regvar, regxvar, cmdpart, opts=code_optio
     arg_str
   )
 
+  # Pass ssc to feols natively
+  if (use_ssc) {
+    arg_str = c(arg_str, "ssc = ssc")
+  }
+
   weight_var = regvar$cterm[regvar$role == "weight"]
   if (length(weight_var)>0) {
     arg_str = c(arg_str, paste0("weights = ~", paste0(weight_var, collapse="+")))
   }
 
-
   library_code = "library(fixest)"
   rcmd_code = paste0('rcmd = "',command,'"')
-  # We use the default ssc arguments since they are closest to the
-  # Stata defaults
   if (all(org_depvars==mod_depvars)) {
     data_code = ""
   } else {
@@ -7485,7 +7619,8 @@ stata_to_r_code_fixest = function(reg, regvar, regxvar, cmdpart, opts=code_optio
   reg_vcov_code = paste0('reg_vcov = ', quote_arg(reg_vcov))
   reg_code = paste0('reg = ', command, "(", paste0(arg_str, collapse=","),")")
 
-  code_df = tibble(part = c("library", "rcmd","data","formula", if (use_ssc) "ssc", "reg_vcov","reg"), code = c(library_code, rcmd_code,data_code, formula_code,if (use_ssc) ssc_code, reg_vcov_code, reg_code))
+  code_df = tibble(part = c("library", "rcmd","data","formula", if (use_ssc) "ssc", "reg_vcov","reg"),
+                   code = c(library_code, rcmd_code,data_code, formula_code,if (use_ssc) ssc_code, reg_vcov_code, reg_code))
 
   if (use_summary) {
     sum_vcov_code = paste0('sum_vcov = ', quote_arg(vcov))
@@ -7503,6 +7638,26 @@ stata_to_r_code_fixest = function(reg, regvar, regxvar, cmdpart, opts=code_optio
   code_df
 }
 
+
+fixest_vcov_code_from_regdb = function(se_type, se_args, vcov_type=fixest_vcov_type_from_regdb(se_type,se_args), quote=TRUE) {
+  restore.point("fixest_vcov_code_from_regdb")
+
+  if (vcov_type %in% c("cluster","twoway")) {
+    clustervar = extract_clustervar_from_se_args(se_args)
+    # Return as a formula (~ var1 + var2) natively supported by fixest
+    code = paste0("~ ", paste0("`", clustervar, "`", collapse = " + "))
+    return(code)
+  }
+  if (vcov_type %in% c("DK","NW")) {
+    stop("fixest_vcov_code_from_regdb not yet implemented for ", vcov_type)
+  }
+  if (quote) return(paste0('"',vcov_type,'"'))
+  return(vcov_type)
+}
+
+
+
+
 fixest_vcov_type_from_regdb = function(se_type, se_args) {
   restore.point("se_type_to_fixest_vcov")
   if (se_type == "hc1") return("hetero")
@@ -7512,24 +7667,6 @@ fixest_vcov_type_from_regdb = function(se_type, se_args) {
   return("sandwich")
 }
 
-
-
-fixest_vcov_code_from_regdb = function(se_type, se_args,vcov_type=se_type_to_fixest_vcov_type(se_type,se_args), quote=TRUE) {
-  restore.point("fixest_vcov_code_from_regdb")
-  if (vcov_type %in% c("cluster","twoway")) {
-    clustervar = extract_clustervar_from_se_args(se_args)
-    #clustervar = regdb_parse_se_args(se_args)
-    #clustervar = clustervar[startsWith(names(clustervar),"cluster")]
-    clustervar_def = paste0('c(',paste0('"', clustervar,'"', collapse=", "),")")
-    code = paste0("vcov_cluster(",clustervar_def, ",ssc)")
-    return(code)
-  }
-  if (vcov_type %in% c("DK","NW")) {
-    stop("fixest_vcov_code_from_regdb not yet implemented for", vcov_type)
-  }
-  if (quote) return(paste0('"',vcov_type,'"'))
-  return(vcov_type)
-}
 
 
 # Ideally this is independent of the original language from
@@ -8090,11 +8227,16 @@ add_reg_broom_code = function(code_df, use_summary=any(code_df$part=="sum"), use
   bind_rows(code_df, tidy_df)
 }
 
-
+# update: don't quote one-sided formulas
 quote_arg = function(arg) {
-  quote = suppressWarnings(!has.substr(arg,"(") & is.na(as.numeric(arg)) & is.na(as.logical(arg)))
+  quote = suppressWarnings(!has.substr(arg,"(") & !startsWith(trimws(arg), "~") & is.na(as.numeric(arg)) & is.na(as.logical(arg)))
   ifelse(quote, paste0('"', arg,'"'), arg)
 }
+
+# quote_arg = function(arg) {
+#   quote = suppressWarnings(!has.substr(arg,"(") & is.na(as.numeric(arg)) & is.na(as.logical(arg)))
+#   ifelse(quote, paste0('"', arg,'"'), arg)
+# }
 
 replace_regvar_prefix_sep = function(regvar, from="@", to=".") {
   regvar$cterm = gsub(from, to, regvar$cterm, fixed=TRUE)
@@ -8202,34 +8344,12 @@ knitr::opts_chunk$set(eval = FALSE)
 
 # do files in the project
 
-## /home/rstudio/repbox/projects/test/mod/code/ts_op.do
+## /home/rstudio/repbox/projects/test/mod/code/current_test.do
 ```{do}
 use ../data/data.dta, clear
-
 tsset i year
 
-reg y x
-
-reg y x if i1==2, robust
-
-* The following expressions cannot be correctly parsed
-reg y L(0/3).x1 S2.i1
-reg L1.S2.y cL.x1
-
-reg y cL.x1#i2
-
-reg y iL.i1
-
-reg L1.S2.y x1
-
-
-reg y L(0/3).x1
-reg y i.L(0/3).i1#i2
-
-
-reg y L1.x1
-
-reg d.y d.x1 i.i1, robust
+reghdfe y x1, absorb(i1 i2) vce(cluster i year)
 ```
 
 # The R test script that is run
@@ -8250,7 +8370,7 @@ if (FALSE) {
 }
 
 rb = rb_new(project_dir)
-if (FALSE) {
+if (!FALSE) {
   rb = rb_update_file_info_parcel(rb, overwrite=!FALSE,assume_org_complete = TRUE)
   rb = rb_update_script_parcels(rb, overwrite=!FALSE)
   rb = rb_update_static_code_analysis(rb, overwrite = !FALSE)
@@ -8261,7 +8381,7 @@ if (FALSE) {
 
 drf = repboxDRF::drf_load(project_dir)
 mrb = mrb_init(project_dir)
-if (FALSE) {
+if (!FALSE) {
   mrb = mrb_full_stata_script(mrb)
   mrb = mrb_run_stata_script(mrb)
   mrb = mrb_agg_stata(mrb)
@@ -8275,7 +8395,7 @@ mrb = mrb_run_r_reg(mrb)
 # Run log of the script
 
 
-### source_with_log start: 2026-03-13 18:32:51 
+### source_with_log start: 2026-03-14 11:49:32 
 ### file: /home/rstudio/repbox/projects/test/run/run_test.R 
 
 
@@ -8295,7 +8415,7 @@ mrb = mrb_run_r_reg(mrb)
 
 > rb = rb_new(project_dir)
 
-> if (FALSE) {
+> if (!FALSE) {
 +   rb = rb_update_file_info_parcel(rb, overwrite=!FALSE,assume_org_complete = TRUE)
 +   rb = rb_update_script_parcels(rb, overwrite=!FALSE)
 +   rb = rb_update_static_code_analysis(rb, overwrite = !FALSE)
@@ -8303,126 +8423,62 @@ mrb = mrb_run_r_reg(mrb)
 +   rb = rb_run_stata_reproduction(rb, overwrite=!FALSE, store_reg_info=TRUE)
 + }
 
+  Stata static code analysis...
+
+
+  R static code analysis...
+
+
+Replicate  test  with  1  do files.
+
+1 of 1 inject and run
+
+Run  /home/rstudio/repbox/projects/test/mod/code/repbox_current_test.do
+    finished after 0.19 seconds.
+
 > drf = repboxDRF::drf_load(project_dir)
 
 > mrb = mrb_init(project_dir)
 
-> if (FALSE) {
+> if (!FALSE) {
 +   mrb = mrb_full_stata_script(mrb)
 +   mrb = mrb_run_stata_script(mrb)
 +   mrb = mrb_agg_stata(mrb)
 + 
 + }
 
+
+Run  /home/rstudio/repbox/projects/test/metareg/base/stata_code/mrb_stata.do
+    finished after 0.18 seconds.
+
 > mrb = mrb_run_r_base(mrb)
 
-mrb_r_base processing runids: 3 4 5 6 7 8 9 10 11 12 13 
-
-> mrb = mrb_run_r_reg(mrb)
-
-mrb_r_reg processing runids: 3 4 5 NOTE: 15 observations removed because of NA values (RHS: 15).
-6 NOTE: 15 observations removed because of NA values (LHS: 15, RHS: 5).
-7 8 NOTE: 5 observations removed because of NA values (RHS: 5).
-9 NOTE: 15 observations removed because of NA values (LHS: 15).
-10 NOTE: 15 observations removed because of NA values (RHS: 15).
-11 NOTE: 15 observations removed because of NA values (RHS: 15).
-12 NOTE: 5 observations removed because of NA values (RHS: 5).
-13 NOTE: 5 observations removed because of NA values (LHS: 5, RHS: 5).
-
-
-### source_with_log end: 2026-03-13 18:32:53 
-In 1 of 11 regressions, problems were detected. 1 problematic cases are shown below.
-
-## runid 7
-
-**Issues detected:** Coefficients differ
-
-Examples of coefficient mismatches:
-
-```text
- cterm       coef_rb   coef_sb    se_rb     se_sb    
- i2=1#cL@x1         NA  0.1242022        NA 0.2084488
- i2=2#cL@x1         NA  0.3597046        NA 0.3109381
- (Intercept) -0.120332 -0.1155055 0.1066545 0.1108473
-```
-
-### Code Path
-```r
-# Stata: use ../data/data.dta, clear
-data = drf_load_data(project_dir, "data/data.dta")
-
-# Stata: tsset i year
-# No R translation found/needed
-
-# Stata: reg y x
-# No R translation found/needed
-
-# Stata: reg y x if i1==2, robust
-# No R translation found/needed
-
-# Stata: reg y L(0/3).x1 S2.i1
-# No R translation found/needed
-
-# Stata: reg L1.S2.y cL.x1
-# No R translation found/needed
-
-# Stata: reg y cL.x1#i2
-function(dat,...){
-library(fixest)
-rcmd = "feols"
-
-formula = `y` ~ 1
-reg_vcov = "iid"
-reg = feols(fml = formula,data = dat,vcov = reg_vcov)
-ct = broom::tidy(reg,conf.int=TRUE)
-glance = broom::glance(reg)
-results = list(reg=reg,rcmd=rcmd,ct=ct,glance=glance)
-return(results)
-}
-
-```
-
-#### Regression Data (fully prepared) (head)
-```
-# A tibble: 30 × 23
-      i2        y      x1  `L@x1` `i2=3` `i2=1` `i2=2` `i2=4` `i2=3#L@x1` `i2=1#L@x1` `i2=2#L@x1`
-   <dbl>    <dbl>   <dbl>   <dbl>  <int>  <int>  <int>  <int>       <dbl>       <dbl>       <dbl>
- 1     3 -1.81     1.37   NA           1      0      0      0     NA           NA          NA    
- 2     1 -0.736    1.18    1.37        0      1      0      0      0            1.37        0    
- 3     1  1.19    -0.0386  1.18        0      1      0      0      0            1.18        0    
- 4     3 -0.765    2.07   -0.0386      1      0      0      0     -0.0386       0           0    
- 5     3  0.929    0.146   2.07        1      0      0      0      2.07         0           0    
- 6     3 -0.399    0.834   0.146       1      0      0      0      0.146        0           0    
- 7     1  0.00215 -0.316   0.834       0      1      0      0      0            0.834       0    
- 8     2  0.323    0.354  -0.316       0      0      1      0      0            0          -0.316
- 9     1 -1.53    -0.451   0.354       0      1      0      0      0            0.354       0    
-10     1 -0.180   -1.30   -0.451       0      1      0      0      0           -0.451       0    
-11     1  0.397    1.52   -1.30        0      1      0      0      0           -1.30        0    
-12     2  0.656    0.796   1.52        0      0      1      0      0            0           1.52 
-13     4  0.213    0.923   0.796       0      0      0      1      0            0           0    
-14     1  0.518    1.20    0.923       0      1      0      0      0            0.923       0    
-15     4 -1.38    -0.559   1.20        0      0      0      1      0            0           0    
-16     2 -1.66     0.752  -0.559       0      0      1      0      0            0          -0.559
-17     3  1.56    -1.00    0.752       1      0      0      0      0.752        0           0    
-18     4 -0.364   -0.471  -1.00        0      0      0      1      0            0           0    
-19     4 -1.34     0.666  -0.471       0      0      0      1      0            0           0    
-20     4  0.183    0.527   0.666       0      0      0      1      0            0           0    
-21     2  0.461    0.508  NA           0      0      1      0     NA           NA          NA    
-22     2 -1.74    -2.17    0.508       0      0      1      0      0            0           0.508
-23     3 -0.775   -0.740  -2.17        1      0      0      0     -2.17         0           0    
-24     4 -0.416    0.259  -0.740       0      0      0      1      0            0           0    
-25     3 -0.843    0.269   0.259       1      0      0      0      0.259        0           0    
-26     2 -0.527   -0.214   0.269       0      0      1      0      0            0           0.269
-27     4 -0.437   -0.103  -0.214       0      0      0      1      0            0           0    
-28     4  2.59    -1.55   -0.103       0      0      0      1      0            0           0    
-29     1 -0.127   -0.564  -1.55        0      1      0      0      0           -1.55        0    
-30     3 -1.33     1.24   -0.564       1      0      0      0     -0.564        0           0    
-# ℹ 12 more variables: `i2=4#L@x1` <dbl>, .ORG.ROW <int>, year <dbl>, date <date>, i <dbl>,
-#   d1 <dbl>, d2 <dbl>, i1 <dbl>, f1 <chr>, my_long_factor <chr>, my_long_integer <dbl>, key <dbl>
-```
-
-
-
+mrb_r_base processing runids: 3 Error: Column cluster does not exist in data set and thus I cannot generate the cterm cluster
+14: (function () 
+    mrb_test_traceback())()
+13: stop(msg, call. = FALSE) at problems.R#94
+12: repbox_problem(type = "regvar_no_match", msg = msg, fail_action = "error") at mrb_cterms.R#292
+11: create_cterm_col(dat, cterm, timevar = timevar, panelvar = panelvar, 
+        tdelta = tdelta) at mrb_cterms.R#261
+10: create_cterm_cols(dat, ct_cterms, timevar = xtvar$timevar, panelvar = xtvar$panelvar, 
+        tdelta = xtvar$tdelta) at mrb_r_base.R#111
+9: mrb_run_r_base_step(mrb, pid) at mrb_r_base.R#50
+8: mrb_run_r_base(mrb) at run_test.R#32
+7: eval(ei, envir)
+6: eval(ei, envir)
+5: withVisible(eval(ei, envir))
+4: source(file = file, local = envir, echo = echo, print.eval = print.eval, 
+       prompt.echo = prompt.echo, max.deparse.length = max.deparse.length, 
+       chdir = chdir, keep.source = keep.source) at debug_tools.R#59
+3: withCallingHandlers(source(file = file, local = envir, echo = echo, 
+       print.eval = print.eval, prompt.echo = prompt.echo, max.deparse.length = max.deparse.length, 
+       chdir = chdir, keep.source = keep.source), warning = function(w) {
+       warnings_seen <<- c(warnings_seen, conditionMessage(w))
+       invokeRestart("muffleWarning")
+   }) at debug_tools.R#59
+2: source_with_log(run_script, log_con = con) at mrb_test.R#62
+1: metaregBase::mrb_run_as_test(project_dir = "~/repbox/projects/test", 
+       "~/repbox/projects/test/run/run_test.R", opts = opts)
 ```
 # END OF FILE: test_report.Rmd
 
@@ -8434,11 +8490,9 @@ return(results)
 # Your Task
 ##################################
 
-Please try to find the reason for the errors / problems noted in the test report.
+Please try to find the reason for the errors / problems shown in the test report of an example do file.
 
-Can you find the problem in some code in the provided packages. How to solve it?
-
-
+Can you find the problem in some code in the provided package? Can you explain the issue and solve it?
 
 
 
