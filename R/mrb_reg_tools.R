@@ -230,9 +230,11 @@ cmdpart_expand_vars = function(cmdpart, data_cols) {
       new_rows = row_data[rep(1, length(expanded_content)), ]
       new_rows$content = expanded_content
       return(new_rows)
-    } else {
+    } else if (length(expanded_content) == 1) {
       row_data$content = expanded_content
       return(row_data)
+    } else {
+      return(row_data[0, ])
     }
   })
 

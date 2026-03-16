@@ -33,13 +33,18 @@ se_stata_to_repdb = function(cmd, opts_df = cmdpart_to_opts_df(cmdpart), cmdpart
 
   if (length(vce_row)>0) {
     se_str = opts_df$opt_arg[vce_row]
-    se_type = str.left.of(se_str, " ")
-    se_type = expand_stata_abbr_one_val(se_type, abbr.li)
     if (is.na(se_str)) se_str = ""
-    se_args = se_str %>%
+    se_words = se_str %>%
       trimws() %>% ws_to_single_space() %>%
       strsplit(" ")
-    se_args = se_args[[1]]
+    se_words = se_words[[1]]
+    if (length(se_words) > 0 && se_words[1] != "") {
+      se_type = expand_stata_abbr_one_val(se_words[1], abbr.li)
+      se_args = se_words[-1]
+    } else {
+      se_type = ""
+      se_args = character(0)
+    }
   } else {
     abbr.row = which(opts_df$opt %in% unlist(abbr.li))
     if (length(abbr.row)==2) {
@@ -64,7 +69,7 @@ se_stata_to_repdb = function(cmd, opts_df = cmdpart_to_opts_df(cmdpart), cmdpart
   }
 
   if (cmd == "xtreg") {
-    if (se_type == "conventional") se_type == "iid"
+    if (se_type == "conventional") se_type = "iid"
   } else if (cmd %in% c("reghdfe","ivreghdfe")) {
     if (startsWith(se_type,"un")) se_type = "iid"
   }
