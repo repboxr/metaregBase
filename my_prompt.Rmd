@@ -2020,9 +2020,11 @@ cmdpart_expand_vars = function(cmdpart, data_cols) {
       new_rows = row_data[rep(1, length(expanded_content)), ]
       new_rows$content = expanded_content
       return(new_rows)
-    } else {
+    } else if (length(expanded_content) == 1) {
       row_data$content = expanded_content
       return(row_data)
+    } else {
+      return(row_data[0, ])
     }
   })
 
@@ -2697,13 +2699,18 @@ se_stata_to_repdb = function(cmd, opts_df = cmdpart_to_opts_df(cmdpart), cmdpart
 
   if (length(vce_row)>0) {
     se_str = opts_df$opt_arg[vce_row]
-    se_type = str.left.of(se_str, " ")
-    se_type = expand_stata_abbr_one_val(se_type, abbr.li)
     if (is.na(se_str)) se_str = ""
-    se_args = se_str %>%
+    se_words = se_str %>%
       trimws() %>% ws_to_single_space() %>%
       strsplit(" ")
-    se_args = se_args[[1]]
+    se_words = se_words[[1]]
+    if (length(se_words) > 0 && se_words[1] != "") {
+      se_type = expand_stata_abbr_one_val(se_words[1], abbr.li)
+      se_args = se_words[-1]
+    } else {
+      se_type = ""
+      se_args = character(0)
+    }
   } else {
     abbr.row = which(opts_df$opt %in% unlist(abbr.li))
     if (length(abbr.row)==2) {
@@ -2728,7 +2735,7 @@ se_stata_to_repdb = function(cmd, opts_df = cmdpart_to_opts_df(cmdpart), cmdpart
   }
 
   if (cmd == "xtreg") {
-    if (se_type == "conventional") se_type == "iid"
+    if (se_type == "conventional") se_type = "iid"
   } else if (cmd %in% c("reghdfe","ivreghdfe")) {
     if (startsWith(se_type,"un")) se_type = "iid"
   }
@@ -3745,8 +3752,1675 @@ files_to_md_fences = function(files, path=NULL) {
 
 # Package repboxUtils
 
---omitted--
-{repboxUtils}
+
+# FILE: DESCRIPTION
+```
+Package: repboxUtils
+Type: Package
+Title: Utility functions shared by several repbox packages
+Version: 0.1.0
+Author: Sebastian Kranz
+Maintainer: Sebastian Kranz <sebastian.kranz@uni-ulm.de>
+Description: Utility functions shared by several repbox packages
+License: GPL >= 3.0
+Encoding: UTF-8
+LazyData: true
+Depends: data.table, dplyr, digest
+```
+# END OF FILE: DESCRIPTION
+
+-----------------------------------------------------------
+
+
+# FILE: cmdpart_create.R
+```
+# Split Stata commands into parts that have a special cmdpart structure
+
+cp_init = function(str, org_rows=NULL, str_part = "main") {
+  cp = list(
+    str=str,
+    org_rows = org_rows,
+    n = 0,
+    start = rep(1, length(str)),
+    df = cp_add_empty_df(df = NULL, size=max(length(str)*20))
+  )
+  if (!is.null(str_part)) {
+    cp = cp_add_part_in_df(cp, seq_along(str),str_part,str,tag="", parent="")
+  }
+
+  cp
+}
+
+cp_add_empty_df = function(df = NULL,min_size=NROW(df), size=max(min_size,NROW(df))) {
+  new_df = tibble(
+    str_row = rep(NA, size),
+    parent = rep("", size),
+    part = rep("", size),
+    content = rep("", size),
+    tag = rep("",size),
+    counter = rep(0, size)
+    #ph = rep("", size)
+  )
+  if (is.null(df)) return(new_df)
+  bind_rows(df, new_df)
+}
+
+cp_add_part_in_df = function(cp, str_rows, part, content, tag=NA, parent="main", counter=rep(0, length(part))) {
+  restore.point("cp_add_part_in_df")
+  n_add = max(length(str_rows), length(part), length(content))
+  if (n_add == 0) return(cp)
+  if (cp$n + n_add >= NROW(cp$df)) {
+    cp$df = cp_add_empty_df(cp$df, n_add*2)
+  }
+  inds = (cp$n+1):(cp$n+n_add)
+
+  cp$df$parent[inds] = parent
+  cp$df$str_row[inds] = str_rows
+  cp$df$part[inds] = part
+  cp$df$content[inds] = content
+  cp$df$tag[inds] = tag
+  cp$df$counter[inds] = counter
+  cp$n = cp$n + n_add
+  cp
+}
+
+# Add extracted parts to cp
+cp_add = function(cp, str_rows, start, end, part, tag=NA, use_counter=FALSE,ignore.right.ws=FALSE, parent="main") {
+  restore.point("cp_add")
+  n_add = length(str_rows)
+  if (n_add==0) return(cp)
+  if (cp$n + n_add >= NROW(cp$df)) {
+    cp$df = cp_add_empty_df(cp$df, n_add*2)
+  }
+
+  inds = (cp$n+1):(cp$n+n_add)
+  if (use_counter) {
+    prev_count_df = cp$df[cp$df$part == part & cp$df$str_row %in% unique(str_rows),] %>%
+      group_by(str_row) %>%
+      summarize(
+        count = n()
+      )
+    count_df = tibble(str_row = str_rows) %>%
+      left_join(prev_count_df, by = "str_row")
+    count_df$count[is.na(count_df$count)] = 0
+    count_df$count = count_df$count+1
+
+
+    counter = count_df$count[match(str_rows, count_df$str_row)]
+    cp$df$counter[inds] = counter
+
+    ph = paste0("{{", part, counter,"}}")
+  } else {
+    counter = rep(0, length(str_rows))
+    ph = paste0("{{", part,"}}")
+  }
+
+  sstr = substring(cp$str[str_rows], start, end)
+  if (ignore.right.ws) {
+    len_ws = nchar(sstr) - nchar(trimws(sstr,"right"))
+    end = end - len_ws
+    sstr = substring(cp$str[str_rows], start, end)
+  }
+
+
+  content = sstr
+  cp$df$parent[inds] = parent
+  cp$df$str_row[inds] = str_rows
+  cp$df$part[inds] = part
+  cp$df$content[inds] = content
+  cp$df$tag[inds] = tag
+  cp$df$counter[inds] = counter
+  #cp$df$ph[inds] = ph
+
+  # Use stringi:stri_sub_replace since substring <- requires replacement
+  # to be of same than original string
+  cp$str[str_rows] = stringi::stri_sub_replace(cp$str[str_rows], from=start, to=end, replacement=ph)
+
+  cp$added_inds = inds
+  cp$start[str_rows] = cp$start[str_rows]+nchar(ph)
+  cp$n = cp$n + n_add
+
+  cp
+}
+
+cp_add_starts_with = function(cp, patterns, part, tag, use_counter = FALSE, ignore.right.ws = TRUE) {
+  restore.point("set_cmdpart_starts_with")
+  cp$did_change = FALSE
+  unused = rep(TRUE, length(cp$str))
+  start = cp$start
+  sstr = substring(cp$str, cp$start)
+
+  s = patterns[1]
+  for (s in patterns) {
+    str_rows = which(startsWith(sstr, s) & unused)
+    if (length(str_rows)>0) {
+      if (ignore.right.ws) {
+        s = trimws(s, "right")
+      }
+      len = nchar(s)
+
+      end = cp$start[str_rows]+len-1
+      cp = cp_add(cp, str_rows = str_rows, start=start[str_rows], end=end, part=part, tag=tag, use_counter=use_counter)
+      unused[str_rows] = FALSE
+      cp$did_change = TRUE
+    }
+  }
+  cp
+}
+
+
+
+find_ws_around = function(txt) {
+  txt2 = trimws(txt,"left")
+  ws_left = nchar(txt) - nchar(txt2)
+  txt3 = trimws(txt2,"right")
+  ws_right = nchar(txt2) - nchar(txt3)
+  list(ws_left = ws_left, ws_right=ws_right, txt = txt3)
+}
+
+# TO DO: Allow to ignore white spaces on the left, but keep them in str
+cp_add_left_of = function(cp, left_of, part, tag, use_counter = FALSE, include_split=FALSE, ignore.right.ws = TRUE, fixed=TRUE) {
+  restore.point("cp_add_left_of")
+  start = cp$start
+  sstr = substring(cp$str, cp$start)
+
+  left = left_of(sstr, left_of, fixed=fixed, not.found = rep(NA, length(sstr)))
+  str_rows = which(!is.na(left))
+
+  if (length(str_rows)==0) {
+    cp$did_change = FALSE
+    return(cp)
+  }
+  start = start[str_rows]
+  left = left[str_rows]
+
+  if (ignore.right.ws) {
+    left = trimws(left, "right")
+  }
+
+  if (include_split) {
+    left = paste0(left, left_of)
+  }
+
+  len = nchar(left)
+  end = start+len-1
+  cp = cp_add(cp, str_rows = str_rows, start=start, end=end, part=part, tag=tag, use_counter=use_counter)
+  cp$did_change = TRUE
+
+  cp
+}
+
+cp_jump_ws = function(cp) {
+  sstr = substring(cp$str, cp$start)
+
+  left_ws = nchar(sstr) - nchar(trimws(sstr,"left"))
+  cp$start = cp$start + left_ws
+  cp
+}
+
+```
+# END OF FILE: cmdpart_create.R
+
+-----------------------------------------------------------
+
+
+# FILE: cmdpart_tests.R
+```
+# FILE: cmdpart_test.R
+
+# Tests for the pure syntactic cmdpart Stata regression parser.
+
+example = function() {
+  cmdpart_unit_tests()
+}
+
+#' Run the test suite for syntactic Stata regression parsing
+cmdpart_unit_tests <- function() {
+
+
+  # Non-trivial Stata regression commands to test syntactic parsing
+  test_cmds <- c(
+    # 1. Basic OLS with if (containing parentheses), in, weights, and options
+    "regress y x1 x2 if (age > 18) | (income == 500) [aw=weight_var] in 1/100, robust cluster(id)",
+
+    # 2. IV regression with subcmd, exogenous vars, and cluster option
+    "ivregress 2sls y x1 x2 (endo1 endo2 = instr1 instr2 instr3) if valid == 1, vce(cluster state)",
+
+    # 3. High-dimensional FE with wildcards, ranges, and multiple options
+    "quietly xi: reghdfe y x1-x5 i.year* i.region#c.income, absorb(id year) vce(hc1)",
+
+    # 4. IV regression without subcmd, no exogenous variables, and probability weights
+    "ivreg2 y (x1 = z1 z2 z3)[pw=prob_wt], cluster(county)"
+  )
+
+  cat("Running cmdpart syntactic parsing tests...\n")
+
+  # Parse all commands at once using the refactored function
+  # (Assumes cmdparts_of_stata_reg and cmdpart_regvar.R functions are loaded)
+  parsed_df <- cmdparts_of_stata_reg(test_cmds)
+
+  # Helper function to extract specific tokens for a given string index
+  get_tokens <- function(df, str_idx, part_name, tag_name = NULL) {
+    sub_df <- df[df$str_row == str_idx & df$part == part_name, ]
+    if (!is.null(tag_name)) {
+      sub_df <- sub_df[sub_df$tag == tag_name, ]
+    }
+    return(sub_df$content)
+  }
+
+  # -------------------------------------------------------------------------
+  # Test Case 1: regress y x1 x2 if (age > 18) | (income == 500)[aw=weight_var] in 1/100, robust cluster(id)
+  # -------------------------------------------------------------------------
+  cat("  Testing Case 1 (OLS + if/in/weights)...\n")
+  stopifnot(get_tokens(parsed_df, 1, "cmd") == "regress")
+  stopifnot(get_tokens(parsed_df, 1, "v", "depvar") == "y")
+  stopifnot(identical(get_tokens(parsed_df, 1, "v", "exo"), c("x1", "x2")))
+  stopifnot(get_tokens(parsed_df, 1, "if_str") == "if (age > 18) | (income == 500)")
+  stopifnot(get_tokens(parsed_df, 1, "in_str") == "in 1/100")
+  stopifnot(get_tokens(parsed_df, 1, "weight_var") == "weight_var")
+  stopifnot(get_tokens(parsed_df, 1, "weight_type") == "aw")
+
+  opt_args <- get_tokens(parsed_df, 1, "opt_arg")
+  opts <- get_tokens(parsed_df, 1, "opt")
+  opts
+  stopifnot("robust" %in% opts)
+  stopifnot("cluster" %in% opts && opt_args[1] == "id")
+
+  # -------------------------------------------------------------------------
+  # Test Case 2: ivregress 2sls y x1 x2 (endo1 endo2 = instr1 instr2 instr3) if valid == 1, vce(cluster state)
+  # -------------------------------------------------------------------------
+  cat("  Testing Case 2 (ivregress with subcmd)...\n")
+  stopifnot(get_tokens(parsed_df, 2, "cmd") == "ivregress")
+  stopifnot(get_tokens(parsed_df, 2, "subcmd") == "2sls")
+  stopifnot(get_tokens(parsed_df, 2, "v", "depvar") == "y")
+  stopifnot(identical(get_tokens(parsed_df, 2, "v", "exo"), c("x1", "x2")))
+  stopifnot(identical(get_tokens(parsed_df, 2, "v", "endo"), c("endo1", "endo2")))
+  stopifnot(identical(get_tokens(parsed_df, 2, "v", "instr"), c("instr1", "instr2", "instr3")))
+  stopifnot(get_tokens(parsed_df, 2, "if_str") == "if valid == 1")
+
+  opts <- get_tokens(parsed_df, 2, "opt")
+  opt_args <- get_tokens(parsed_df, 2, "opt_arg")
+  stopifnot("vce" %in% opts && opt_args[opts == "vce"] == "cluster state")
+
+  # -------------------------------------------------------------------------
+  # Test Case 3: quietly xi: reghdfe y x1-x5 i.year* i.region#c.income, absorb(id year) vce(hc1)
+  # -------------------------------------------------------------------------
+  cat("  Testing Case 3 (reghdfe with prefixes, globs, ranges)...\n")
+
+  # Check prefixes (quietly, xi)
+
+  pre_tags <- parsed_df$tag[parsed_df$str_row == 3 & parsed_df$part == "pre"]
+  stopifnot("quietly" %in% pre_tags && "xi" %in% pre_tags)
+  parsed_df[parsed_df$str_row == 3 & parsed_df$part == "pre",]
+
+  stopifnot(get_tokens(parsed_df, 3, "cmd") == "reghdfe")
+  stopifnot(get_tokens(parsed_df, 3, "v", "depvar") == "y")
+
+  # Ensure globs and ranges are retained natively (no data resolution needed yet)
+  exo_vars <- get_tokens(parsed_df, 3, "v", "exo")
+  stopifnot(identical(exo_vars, c("x1-x5", "i.year*", "i.region#c.income")))
+
+  opts <- get_tokens(parsed_df, 3, "opt")
+  opt_args <- get_tokens(parsed_df, 3, "opt_arg")
+  stopifnot("absorb" %in% opts && opt_args[opts == "absorb"] == "id year")
+  stopifnot("vce" %in% opts && opt_args[opts == "vce"] == "hc1")
+
+  # -------------------------------------------------------------------------
+  # Test Case 4: ivreg2 y (x1 = z1 z2 z3) [pw=prob_wt], cluster(county)
+  # -------------------------------------------------------------------------
+  cat("  Testing Case 4 (ivreg2 without subcmd, pure IV)...\n")
+  stopifnot(get_tokens(parsed_df, 4, "cmd") == "ivreg2")
+  stopifnot(length(get_tokens(parsed_df, 4, "subcmd")) == 0) # No subcmd expected
+  stopifnot(get_tokens(parsed_df, 4, "v", "depvar") == "y")
+
+  # Should have 0 exogenous variables
+  stopifnot(length(get_tokens(parsed_df, 4, "v", "exo")) == 0)
+
+  stopifnot(get_tokens(parsed_df, 4, "v", "endo") == "x1")
+  stopifnot(identical(get_tokens(parsed_df, 4, "v", "instr"), c("z1", "z2", "z3")))
+
+  stopifnot(get_tokens(parsed_df, 4, "weight_var") == "prob_wt")
+  stopifnot(get_tokens(parsed_df, 4, "weight_type") == "pw")
+
+  opts <- get_tokens(parsed_df, 4, "opt")
+  opt_args <- get_tokens(parsed_df, 4, "opt_arg")
+  stopifnot("cluster" %in% opts && opt_args[opts == "cluster"] == "county")
+
+  cat("\nAll syntactic cmdpart tests passed successfully! Phase 1 logic is sound.\n")
+}
+```
+# END OF FILE: cmdpart_tests.R
+
+-----------------------------------------------------------
+
+
+# FILE: cmdpart_use.R
+```
+# Tools for working with command part representations
+# or wrappers that use them under the hood.
+
+cmdpart_parse_stata_opt_str = function(str) {
+  restore.point("cmdpart_of_stata_opt_str")
+
+  # str = c(
+  #   "vce (robust)  opt2(arg2 = fun( funarg )) noarg",
+  #   "absorb(x) robust"
+  # )
+
+
+  # We have examples like absorb(var)r
+  # we need to transform it to absorb(var) r
+  str = stri_replace_all_regex(str,"\\)(?=[a-zA-Z])",") ")
+
+
+  all_opt_str = all_opt = all_opt_arg = vector("list",NROW(str))
+
+
+  i = 221
+  for (i in seq_along(str)) {
+    s = str[i]
+    if (trimws(s)=="") next
+
+    # 1. Find 1st level braces and replace with ph
+    brace_pos = locate_1st_level_braces(s,open="(",close=")")
+
+    if (NROW(brace_pos)==0) {
+      s = shorten.spaces(s) %>% trimws()
+      all_opt[[i]] = strsplit(s, " ", fixed=TRUE)[[1]]
+      all_opt_str[[i]] = paste0("{{opt", seq_along(all_opt[[i]]),"}}")
+      all_opt_arg[[i]] = rep(NA, length(all_opt[[i]]))
+      next
+    }
+
+    # 1. Replace 1st level braces with placeholders
+    brace_content = substring(s, brace_pos[,1], brace_pos[,2])
+    ph = paste0("#~(", seq_len(NROW(brace_pos)),"~#")
+    s = str.replace.at.pos(s, brace_pos, ph)
+
+    # 2. Remove all ws before "#~()~#" and shorten ws
+    s = gsub("[ \t]+#~\\(","#~(", s)
+    s = shorten.spaces(s) %>% trimws()
+
+    # 3. Split by " "
+    opt_str = strsplit(s," ", fixed=TRUE)[[1]]
+
+    # 4. locate argument placeholders
+    arg_start_pos = stringi::stri_locate_first_fixed(opt_str, "#~(")[,1]
+    has_arg = !is.na(arg_start_pos)
+
+    opt_arg = rep(NA, length(opt_str))
+    opt_arg[has_arg] = str.remove.ends(brace_content,1,1)
+
+    opt = ifelse(has_arg,substring(opt_str,1, arg_start_pos-1), opt_str)
+
+    all_opt_str[[i]] = opt_str
+    all_opt[[i]] = opt
+    all_opt_arg[[i]] = opt_arg
+
+    all_opt_str[[i]] = ifelse(has_arg,
+      paste0("{{opt", seq_along(opt),"}}({{opt_arg",seq_along(opt),"}})"),
+      paste0("{{opt", seq_along(opt),"}}")
+    )
+
+  }
+  list(
+    opt_str = all_opt_str,
+    opt = all_opt,
+    opt_arg = all_opt_arg
+  )
+}
+
+cmdpart_get_placeholders = function(cp_df, prefix="{{", postfix="}}") {
+  ifelse(is.true(cp_df$counter > 0),
+    paste0(prefix, cp_df$part, cp_df$counter, postfix),
+    paste0(prefix, cp_df$part, postfix)
+  )
+}
+
+cmdpart_create_cmdline = function(cp_df) {
+
+  main_row = which(cp_df$part == "main")
+  str = cp_df$content[main_row]
+  ph = cmdpart_get_placeholders(cp_df)
+
+  # while(TRUE) {
+  #   str_n = stri_replace_all_fixed(str, ph, cp_df$content, vectorize_all = FALSE)
+  #   if (str_n == str) break
+  #   str = str_n
+  # }
+  stri_replace_all_fixed(str, ph, cp_df$content, vectorize_all = FALSE)
+
+}
+
+cmdpart_find_parent_rows = function(df, rows=seq_along(NROW(df)), remove.na=FALSE) {
+  if ("str_row" %in% colnames(df)) {
+    part.key = paste0(df$str_row,"|", df$part ,"|",df$counter)
+    parent.key = paste0(df$str_row,"|", df$parent,"|",df$counter)
+  } else if ("artid" %in% colnames(df)) {
+    part.key = paste0(df$artid,"|", df$step, "|", df$part,"|",df$counter)
+    parent.key = paste0(df$artid,"|", df$step, "|", df$parent,"|",df$counter)
+  } else {
+    part.key = paste0(df$step, "|", df$part,"|",df$counter)
+    parent.key = paste0(df$step, "|", df$parent,"|",df$counter)
+  }
+  match(parent.key[rows], part.key)
+}
+
+cmdpart_find_child_rows = function(df, rows=seq_along(NROW(df)), child_part) {
+  if ("str_row" %in% colnames(df)) {
+    part.key = paste0(df$str_row,"|", df$part,"|",df$counter)
+    parent.key = paste0(df$str_row,"|", df$parent,"|",df$counter)
+  } else if ("artid" %in% colnames(df)) {
+    part.key = paste0(df$artid,"|", df$step, "|", df$part,"|",df$counter)
+    parent.key = paste0(df$artid,"|", df$step, "|", df$parent,"|",df$counter)
+  } else {
+    part.key = paste0(df$step, "|", df$part,"|",df$counter)
+    parent.key = paste0(df$step, "|", df$parent,"|",df$counter)
+  }
+  parent.key[df$part != child_part] = NA
+
+  match(part.key[rows], parent.key)
+
+}
+
+
+example = function() {
+  cmdpart = readRDS("C:/libraries/repbox/projects_reg/testsupp/repdb/cmdpart.Rds")$cmdpart
+  cmdpart_to_opts_df(cmdpart)
+}
+
+cmdpart_to_opts_df = function(cmdpart) {
+  restore.point("cmdpart_to_opts_df")
+
+
+  opt_df = filter(cmdpart, part=="opt") %>% select(runid, counter, opt=content, tag=tag)
+  opt_arg = filter(cmdpart, part=="opt_arg") %>% select(runid, counter, opt_arg=content)
+  left_join(opt_df, opt_arg, by=c("runid","counter"))
+}
+
+
+
+locate_1st_level_braces = function(txt, open="(", close = ")") {
+  #restore.point("locate_1st_level_braces")
+  if (length(txt)==0) return(NULL)
+  res = try(str.blocks.pos(txt, open, close), silent=TRUE)
+  if (is(res,"try-error")) {
+    cat("\nNon-matching braces in reg options:\n  ", txt)
+    return(NULL)
+  }
+  res$outer[res$levels==1,,drop=FALSE]
+}
+
+
+```
+# END OF FILE: cmdpart_use.R
+
+-----------------------------------------------------------
+
+
+# FILE: detach_all_pkg.R
+```
+example = function() {
+  detach_all_packages()
+}
+detach_all_packages = function(which = loadedNamespaces(), except = c("base","stats","graphics")) {
+  stop("Don't run: does not nicely work yet.")
+  loaded_packages <- setdiff(which,except)
+
+  for (i in 1:10) {
+    # Loop over each package and detach it
+    for (pkg in loaded_packages) {
+      suppressWarnings(try(detach(paste0("package:", pkg), character.only = TRUE, unload = TRUE), silent = TRUE))
+    }
+  }
+  loadedNamespaces()
+}
+```
+# END OF FILE: detach_all_pkg.R
+
+-----------------------------------------------------------
+
+
+# FILE: encoding.R
+```
+guess_encoding_and_read_text <- function(file_path,
+                                         default_guess = "UTF-8",
+                                         only_allow = c("UTF*"),
+                                         raw_data = NULL) {
+  # If raw_data is not already provided, read it from the file
+  if (is.null(raw_data)) {
+    raw_data <- readBin(file_path, what = "raw", n = file.info(file_path)$size)
+  }
+  
+  # Detect encodings using stringi
+  enc_info_list <- stri_enc_detect(raw_data)
+  
+  # If there are no guesses at all, fall back immediately
+  if (length(enc_info_list) == 0 || nrow(enc_info_list[[1]]) == 0) {
+    warning(sprintf("No encoding guess could be made. Defaulting to '%s'.", default_guess))
+    best_enc <- default_guess
+  } else {
+    enc_info <- enc_info_list[[1]]  # data frame with "Encoding" and "Confidence"
+    
+    # Filter encodings only if `only_allow` is not NULL
+    if (!is.null(only_allow)) {
+      # Convert each element of only_allow to a regex via glob2rx()
+      keep_rows <- lapply(only_allow, function(p) {
+        grep(glob2rx(p), enc_info$Encoding, ignore.case = TRUE)
+      })
+      keep_rows <- unique(unlist(keep_rows))
+      
+      enc_info_filtered <- enc_info[keep_rows, ]
+      
+      if (nrow(enc_info_filtered) == 0) {
+        warning(sprintf(
+          "No encodings matched patterns: %s. Defaulting to '%s'.", 
+          paste(only_allow, collapse=", "), default_guess
+        ))
+        best_enc <- default_guess
+      } else {
+        best_row <- which.max(enc_info_filtered$Confidence)
+        best_enc <- enc_info_filtered$Encoding[best_row]
+      }
+    } else {
+      # only_allow is NULL -> allow any encodings
+      best_row <- which.max(enc_info$Confidence)
+      best_enc <- enc_info$Encoding[best_row]
+    }
+  }
+  
+  # Convert the raw bytes to text (best_enc -> UTF-8)
+  text_content <- stri_encode(raw_data, from = best_enc, to = "UTF-8")
+  
+  # Return a list with raw data, text, and final guessed encoding
+  list(
+    raw              = raw_data,
+    text             = text_content,
+    guessed_encoding = best_enc
+  )
+}
+
+
+guess_encoding_and_read_html <- function(file_path, 
+                                         default_guess = "UTF-8", 
+                                         only_allow = c("UTF*")) {
+  restore.point("guess_encoding_and_read_html")
+  library(xml2)
+  # (A) Read raw bytes once
+  raw_data <- readBin(file_path, what = "raw", n = file.info(file_path)$size)
+  
+  # (B) Decode as UTF-8 (the "initial assumption") and parse HTML
+  text_default <- stringi::stri_encode(raw_data, from = "UTF-8", to = "UTF-8")
+  
+  # # Handle any decoding errors gracefully by ignoring invalid bytes:
+  # text_default <- stringi::stri_encode(raw_data, from = "UTF-8", to = "UTF-8", 
+  #                                       to_raw = FALSE, 
+  #                                       ignore_errors = TRUE)
+  
+  doc <- tryCatch(
+    read_html(text_default),
+    error = function(e) {
+      # If decoding as UTF-8 fails badly, fall back to guess_encoding_and_read_text
+      message("Failed to parse as UTF-8: ", e$message)
+      return(NULL)
+    }
+  )
+  
+  # If we couldn't parse it at all, skip meta detection
+  if (is.null(doc)) {
+    # fallback: guess
+    guessed <- guess_encoding_and_read_text(file_path, default_guess, only_allow, raw_data)
+    doc <- read_html(guessed$text)
+    return(list(
+      doc              = doc,
+      text             = guessed$text,
+      guessed_encoding = guessed$guessed_encoding
+    ))
+  }
+  
+  # (C) Check for meta charset
+  # First, try:  <meta charset="...">
+  meta_node <- xml_find_first(doc, "//meta[@charset]")
+  meta_charset <- NA_character_
+  if (!inherits(meta_node, "xml_missing") && !is.na(meta_node)) {
+    meta_charset <- xml_attr(meta_node, "charset")
+  }
+  
+  # If not found, try: <meta http-equiv="Content-Type" content="text/html; charset=...">
+  if (is.na(meta_charset) || meta_charset == "") {
+    meta_node_2 <- xml_find_first(doc, "//meta[@http-equiv='Content-Type'][contains(@content, 'charset=')]")
+    if (!inherits(meta_node_2, "xml_missing") && !is.na(meta_node_2)) {
+      content_val <- xml_attr(meta_node_2, "content")
+      # parse out "charset=..."
+      # e.g. content="text/html; charset=ISO-8859-1"
+      meta_charset <- sub(".*charset=([^;]+).*", "\\1", content_val, ignore.case = TRUE)
+    }
+  }
+  
+  # (D) If we found a declared encoding in the meta tag, re-decode using that
+  if (!is.na(meta_charset) && meta_charset != "") {
+    # Re-decode raw data with meta_charset -> UTF-8
+    new_text <- tryCatch(
+      stringi::stri_encode(raw_data, from = meta_charset, to = "UTF-8"),
+      error = function(e) {
+        message(sprintf("Failed to decode using meta charset '%s': %s", meta_charset, e$message))
+        return(NULL)
+      }
+    )
+    
+    if (is.null(new_text)) {
+      # If decoding with meta_charset fails, fallback to guess_encoding
+      guessed <- guess_encoding_and_read_text(file_path, default_guess, only_allow, raw_data)
+      final_doc <- read_html(guessed$text)
+      return(list(
+        doc              = final_doc,
+        text             = guessed$text,
+        guessed_encoding = guessed$guessed_encoding
+      ))
+    } else {
+      # Successfully re-decoded the data -> parse it
+      final_doc <- read_html(new_text)
+      return(list(
+        doc              = final_doc,
+        text             = new_text,
+        guessed_encoding = meta_charset
+      ))
+    }
+  } else {
+    # (E) No meta charset found -> fallback to heuristics
+    guessed <- guess_encoding_and_read_text(file_path, default_guess, only_allow, raw_data)
+    final_doc <- read_html(guessed$text)
+    return(list(
+      doc              = final_doc,
+      text             = guessed$text,
+      guessed_encoding = guessed$guessed_encoding
+    ))
+  }
+}
+
+```
+# END OF FILE: encoding.R
+
+-----------------------------------------------------------
+
+
+# FILE: encrypted_7z.R
+```
+extract_all_zip = function(dir) {
+  zips = list.files(dir, glob2rx("*.zip"), full.names = TRUE, ignore.case = TRUE)
+  if (length(zips)>0) {
+    for (zip in zips) {
+      unzip(zipfile = zip, exdir=dir)
+    }
+  }
+  
+}
+
+extract_all_encrypted_7z = function(dir) {
+  # Extract possibly compressed article PDF
+  key = Sys.getenv("ENCRYPT_KEY")
+  #print(paste0("Key = ", key))
+  zips = list.files(dir, glob2rx("*.7z"), full.names = TRUE)
+  if (length(zips)>0) {
+    for (zip in zips) {
+      extract.7z(dir, zip = zip, password = key)
+    }
+  }
+}
+
+
+
+to.7z = function(path, zip=paste0(basename(path),".7z"), password = NULL) {
+  switch = ""
+  if (!is.null(password)) {
+    switch = paste0(" -p",password," ")
+  }
+  os =
+  cmd = paste0('7z a ', zip, ' ', path,' ',  switch)
+  cat(cmd)
+  system(cmd)
+}
+
+extract.7z = function(path, zip=paste0(basename(path),".7z"), password = NULL) {
+  setwd(path)
+  switch = ""
+  if (!is.null(password)) {
+    switch = paste0(" -p",password," ")
+  }
+  cmd = paste0('7z x ', zip, ' -y ',  switch)
+  cat("\n", cmd,"\n")
+  system(cmd,ignore.stdout = TRUE)
+}
+
+
+to.7z = function(path, zip=paste0(basename(path),".7z"), password = NULL) {
+  switch = ""
+  if (!is.null(password)) {
+    switch = paste0(" -p",password," ")
+  }
+  cmd = paste0('7z a ', zip, ' ', path,' ',  switch)
+  cat(cmd)
+  system(cmd)
+}
+```
+# END OF FILE: encrypted_7z.R
+
+-----------------------------------------------------------
+
+
+# FILE: problems.R
+```
+repbox_set_problem_options = function(project_dir, fail_action="error", metaid=NA_character_) {
+  options(repbox.problem.options = list(project_dir=project_dir, fail_action=fail_action, metaid=metaid))
+}
+
+repbox_problem_opts = function(project_dir, fail_action="error") {
+  getOption("repbox.problem.options")
+}
+
+repbox_step_problems = function() {
+  getOption("repbox.step.problems")
+}
+
+repbox_problem_set_step = function(step=NA_integer_) {
+  options(repbox.problem.step = step)
+  if (!is.na(step)) {
+    options(repbox.step.problems = list())
+  }
+}
+
+repbox_problem_get_step = function() {
+  step = getOption("repbox.problem.step")
+  if (is.null(step)) step = NA_integer_
+  step
+}
+
+
+
+
+#' A function that deals with failures depending on the on_fail action
+make_fail_fun = function(fail_action) {
+  if (fail_action=="error") {
+    fail_fun = function(...) stop(paste0(...),call. = FALSE)
+  } else if (fail_action=="warn") {
+    fail_fun = function(...) warning(paste0(...), call. = FALSE)
+  } else if (fail_action=="msg") {
+    fail_fun = function(...) cat(paste0("\n",...,"\n"))
+  } else {
+    fail_fun = function(...) {}
+  }
+  fail_fun
+}
+
+repbox_set_current_project_dir = function(project_dir) {
+  options(repbox.current.project.dir = project_dir)
+}
+
+repbox_get_current_project_dir = function() {
+  getOption("repbox.current.project.dir")
+}
+
+#' A function that deals with failures depending on the on_fail action
+repbox_problem = function(msg, type, fail_action=opts$fail_action, project_dir=opts$project_dir,  extra=list(),metaid=opts$metaid, step=repbox_problem_get_step(), opts=repbox_problem_opts()) {
+  restore.point("repbox_problem")
+
+  type = make_valid_filename(type)
+  if (is.null(project_dir)) {
+    stop("project_dir not specfied")
+  }
+  prob = list(type=type,msg=msg, metaid=metaid, step=step, extra=extra)
+
+  hash = digest::digest(prob)
+
+  prob$hash = hash
+  prob$time = Sys.time()
+  if (is.null(metaid)) metaid = NA
+  if (is.na(metaid) | isTRUE(metaid %in% c("base"))) {
+    problem_dir = file.path(project_dir,"problems")
+  } else {
+    problem_dir = file.path(project_dir,"metareg", metaid, "problems")
+  }
+
+  if (!dir.exists(problem_dir)) dir.create(problem_dir,recursive = TRUE)
+
+  short_hash = substr(hash, 1,8)
+  if (is.na(step)) {
+    #num_files = length(list.files(problem_dir))
+    #prob_num = num_files +1
+    saveRDS(prob, paste0(problem_dir,"/problem_", type,"__", short_hash, ".Rds"))
+  } else {
+    saveRDS(prob, paste0(problem_dir,"/step_problem_", step,"__", type,"__", short_hash, ".Rds"))
+  }
+
+  if (!is.na(step)) {
+    step_problems = getOption("repbox.step.problems")
+    if (is.null(step_problems)) {
+      step_problems = list(prob)
+    } else {
+      step_problems = c(step_problems, list(prob))
+    }
+    options(repbox.step.problems = step_problems)
+  }
+
+  if (fail_action=="error") {
+    stop(msg,call. = FALSE)
+  } else if (fail_action=="warn") {
+    warning(msg, call. = FALSE)
+  } else if (fail_action=="msg") {
+    cat(paste0("\n",msg,"\n"))
+  }
+  invisible(prob)
+}
+
+
+try_catch_repbox_problems <- function(expr,project_dir, warn_action="msg", err_action="msg") {
+  warn_li = list()
+  err <- NULL
+  value <- withCallingHandlers(
+    tryCatch(expr, error=function(e) {
+      err <<- paste0(as.character(e), collapse="\n")#captureOutput(print(e))#
+      NULL
+    }), warning=function(w) {
+      warn_li[[length(warn_li)+1]] <<- captureOutput(print(w), collapse="\n")#as.character(w)
+      invokeRestart("muffleWarning")
+    })
+
+  if (!is.null(err)) {
+    repbox_problem(err,"error", fail_action=err_action, project_dir=project_dir)
+  }
+  for (w in warn_li) {
+    repbox_problem(w,"warning", fail_action=warn_action, project_dir=project_dir)
+  }
+
+  list(value=value, warnings=warn_li, error=err)
+}
+
+
+tryCatchWarningsAndError <- function(expr) {
+  warn_li = list()
+  err <- NULL
+  value <- withCallingHandlers(
+    tryCatch(expr, error=function(e) {
+      err <<- e
+      NULL
+    }), warning=function(w) {
+      warn_li[[length(warn_li)+1]] <<- w
+      invokeRestart("muffleWarning")
+    })
+  list(value=value, warnings=warn_li, error=err)
+}
+```
+# END OF FILE: problems.R
+
+-----------------------------------------------------------
+
+
+# FILE: tools.R
+```
+example = function() {
+  make_valid_filename("dh(5/sdh.txt")
+}
+
+is_empty_str = function(x) {
+  is.na(x) | is.true(x=="")
+}
+
+write_utf8 <- function(x, file, bom=F) {
+  x = paste0(x, collapse="\n")
+  con <- file(file, "wb")
+  if(bom) writeBin(BOM, con, endian="little")
+  writeBin(charToRaw(x), con, endian="little")
+  close(con)
+}
+
+#' Read a text file that was saved in UTF-8 format
+#' @export
+read_utf8 <- function(file,sep.lines=FALSE,warn=FALSE,...) {
+  text <- readLines(file,encoding = "UTF-8",warn=warn,...)
+  if (!sep.lines) text = paste0(text, collapse="\n")
+  text
+}
+
+#' Read an RDS file if it exists. Otherwise return NULL
+#' @export
+read_rds_or_null = function (file) {
+    if (!file.exists(file))
+        return(NULL)
+    readRDS(file)
+}
+
+copy_into_list <- function(source = parent.frame(), dest = list(), exclude = NULL) {
+  # Get all objects in the source environment
+  all_vars <- ls(envir = source, all.names = TRUE)
+
+  # Filter out variables to exclude
+  if (length(exclude)>0) {
+    vars_to_copy <- setdiff(all_vars, exclude)
+  } else {
+    vars_to_copy <- all_vars
+  }
+
+  # Vectorized assignment using mget() to get multiple objects at once
+  if (length(vars_to_copy) > 0) {
+    values <- mget(vars_to_copy, envir = source)
+    dest[names(values)] <- values
+  }
+
+  # Return the updated destination list
+  return(dest)
+}
+
+as_integer = function(x) {
+  suppressWarnings(as.integer(x))
+}
+
+make_valid_filename <- function(filename) {
+  # First, convert accented characters to their ASCII equivalents,
+  # then replace any character not matching [A-Za-z0-9_.-] with an underscore.
+  stri_replace_all_regex(stri_trans_general(filename, "Latin-ASCII"), "[^\\w.-]+", "_")
+}
+
+atomic_class = function(val) {
+  val = as.vector(val)
+  cl = class(val)
+  if (length(cl)>1) return(cl[length(cl)])
+  cl
+}
+
+to_utf8 = function(str) {
+  str = iconv(str, to="UTF-8", sub="")
+  str = enc2utf8(str)
+  str
+}
+
+select = dplyr::select
+
+# Checks if x fits a Stat abbreviation
+# E.g. is_stata_abbr("regr","reg","regress")
+# would return TRUE
+is_stata_abbr = function(x, short, long) {
+  nlong = nchar(long)
+  nshort = nchar(short)
+  nx = nchar(x)
+
+  ok = rep(FALSE, NROW(x))
+  rows = which(nx >= nshort & nx <= nlong)
+  if (length(rows)==0) return(ok)
+
+  comp = stringi::stri_sub(long, 1, nx[rows])
+  ok[x == comp] = TRUE
+  ok
+}
+
+locals.vars.as.list = function(source = sys.frame(sys.parent(1))) {
+  as.list(source)
+}
+
+copy.dir = function(from, to, ...) {
+  if (!dir.exists(to)) dir.create(to, recursive = TRUE)
+  res = file.copy(list.files(from, full.names = TRUE), to, recursive = TRUE, ...)
+  invisible(all(res))
+}
+
+# removes all files in
+remove.all.files.in.dir = function(clear.dir, recursive=FALSE) {
+  if (!dir.exists(clear.dir)) return(TRUE)
+  remove.files = list.files(clear.dir,all.files = FALSE,full.names = TRUE,recursive = recursive)
+  file.remove(remove.files)
+}
+
+is_empty = function(x) {
+  if (is.null(x) | all(is.na(x))) return(TRUE)
+  if (isTRUE(x=="")) return(TRUE)
+  return(FALSE)
+}
+
+is.empty = function(x) {
+  if (is.null(x) | all(is.na(x))) return(TRUE)
+  if (isTRUE(x=="")) return(TRUE)
+  return(FALSE)
+}
+
+shorten.str = function(str,len=100, marker = "...") {
+  is.bigger = nchar(str)>len
+  str[is.bigger] = paste0(substring(str[is.bigger],1,len-nchar(marker)),marker)
+  str
+}
+
+
+first.non.null = function(...) {
+  args = list(...)
+  for (val in args) {
+    if (!is.null(val)) return(val)
+  }
+  return(NULL)
+
+}
+
+ws_to_single_space = function(str) {
+  gsub("\t"," ", str) %>%  trimws_around(" ")
+}
+
+trimws_around = function(str, around, whitespace="[\t ]*") {
+  pattern = paste0(whitespace,around,whitespace)
+  str = gsub(pattern, around, str)
+  str
+}
+
+set_missing_fields = function(x, ...) {
+  new_vals = list(...)
+  cols = names(new_vals)
+  use = which(!cols %in% names(x))
+  for (i in use) {
+    x[[cols[i] ]] = new_vals[[i]]
+  }
+  x
+
+}
+
+set.fields = function(x, fields) {
+  x[names(fields)] = fields
+  x
+}
+
+select.cols = function(x, cols, create.missing=TRUE) {
+  if (create.missing) {
+    x = create.missing.cols(x,cols)
+  }
+  x[cols]
+}
+
+
+
+create.missing.cols = function(x, cols, val=NA) {
+  cols = setdiff(cols,names(x))
+  for (col in cols) {
+    x[[col]] = val
+  }
+  x
+}
+
+has_col = function(x, col) {
+  col %in% names(x)
+}
+
+has.col = function(x, col) {
+  col %in% names(x)
+}
+
+rename.col = function(x, old, new) {
+  restore.point("rename.col")
+  pos = match(old,names(x))
+  names(x)[pos] = new
+  x
+}
+
+change_val = function(x, org, new) {
+  if (length(org)==1) {
+    rows = which(x==org)
+  } else {
+    rows = which(x %in% org)
+  }
+  x[rows] = new
+  x
+}
+
+ensure_cols = function(x, cols, default=NA) {
+  new = setdiff(cols, names(x))
+  for (col in new) {
+    x[[col]] = rep(default, NROW(x))
+  }
+  x
+}
+
+str.cutout = function(str, left, right) {
+  paste0(substring(str,1, left-1),substring(str,right+1))
+}
+
+shorten.spaces = function(str) {
+  return(ws_to_single_space(str))
+}
+
+rename.cols = function(x, old.cols, new.cols) {
+  restore.point("rename.cols")
+  inds = match(old.cols, names(x))
+  old.cols = old.cols[!is.na(inds)]
+  new.cols = new.cols[!is.na(inds)]
+  inds = inds[!is.na(inds)]
+  names(x)[inds] = new.cols
+  x
+}
+
+na.if.null = function(x) {
+  if (is.null(x)) return(NA)
+  x
+}
+
+
+left_of = function(str, pattern, fixed=TRUE, not.found = str) {
+  restore.point("left_of")
+  if (length(not.found)==1) not.found = rep(not.found, length(str))
+  if (fixed) {
+    pos = stringi::stri_locate_first_fixed(str, pattern)
+  } else {
+    pos = stringi::stri_locate_first_regex(str, pattern)
+  }
+  res = substring(str, 1, pos[, 1] - 1)
+  rows = is.na(pos[, 1])
+  res[rows] = not.found[rows]
+  res
+}
+
+omit.na.or.similar = function(dat, cols=names(dat)) {
+  if (NROW(dat)==0) return(dat)
+  rem = rep(FALSE, NROW(dat))
+  for (col in cols) {
+    if (is.numeric(dat[[col]])) {
+      rem[!is.finite(dat[[col]])] = TRUE
+    } else {
+      rem[is.na(dat[[col]])] = TRUE
+    }
+  }
+  dat[!rem, ]
+}
+
+standardizePath = function(file, mustWork=FALSE) {
+  file = normalizePath(file, winslash = "/", mustWork=mustWork)
+}
+
+
+seq_rows = function(dat) {
+  seq_len(NROW(dat))
+}
+
+random.string = function (n = 1, nchar = 12) {
+  if (n == 1) {
+    paste0(sample(c(LETTERS, letters), nchar, TRUE), collapse = "")
+  }
+  else {
+    unlist(replicate(n, paste0(sample(c(LETTERS, letters),
+                                      nchar, TRUE), collapse = "")))
+  }
+}
+
+
+# Only adds col values if dat is not NULL
+add_col = function(dat, ...) {
+  if (is.null(dat)) return(dat)
+  cols = list(...)
+  if (NROW(dat)==0) {
+    for (c in names(cols)) {
+      dat[[c]] = rep(cols[[c]],0)
+    }
+  } else {
+    for (c in names(cols)) {
+      dat[[c]] = cols[[c]]
+    }
+  }
+  dat
+}
+
+
+my_rank = function(x) {
+  restore.point("my_rank")
+  if (length(x)==0) return(integer(0))
+  vals = unique(x)
+  match(x, vals)
+}
+
+ensure_empty_types = function(x, cols, type="character") {
+  if (NROW(x)>0) return(x)
+  if (type=="character") {
+    for (col in cols) {
+      x[[col]] = character(0)
+    }
+  }
+  x
+}
+
+rle_table = function(x) {
+  rle = rle(x)
+  start = c(1,cumsum(rle$lengths)+1)
+  end = start[-1]-1
+  start = start[-length(start)]
+  tibble(start=start, end=end, length=rle$lengths, value = rle$values)
+}
+
+rle_block = function(x, ignore_val=NULL) {
+  rle = rle(x)
+  block_vals = seq_along(rle$values)
+  if (length(ignore_val)>0) {
+    zero_rows = rle$values %in% ignore_val
+    block_vals[zero_rows] = 0
+    uni = unique(block_vals[!zero_rows])
+    block_vals[!zero_rows] = match(block_vals[!zero_rows],uni)
+  }
+  rep(block_vals, rle$lengths)
+}
+
+first.non.null = function(...) {
+  args = list(...)
+  for (val in args) {
+    if (!is.null(val)) return(val)
+  }
+  return(NULL)
+
+}
+
+list_find_null_entries = function(li) {
+  which(!is.na(match(li,list(NULL))))
+}
+
+list_remove_null_entries = function(li) {
+  null.rows = which(!is.na(match(li,list(NULL))))
+  if (length(null.rows)>0) {
+    return(li[-null.rows])
+  }
+  li
+}
+bind_rows_with_parent_fields = function(parent.df,df.field,  fields, parent.fields, parent.row.field = "..PARENT.ROW") {
+  restore.point("bind_rows_with_parent_fields")
+  li = parent.df[[df.field]]
+  names(li) = NULL
+
+  null_rows = list_find_null_entries(li)
+
+  if (length(null_rows)>0) {
+    li = li[-null_rows]
+    parent.df = parent.df[-null_rows,]
+  }
+
+  df = bind_rows(li, .id=parent.row.field)
+  df[[parent.row.field]] = as.integer(df[[parent.row.field]])
+  for (field in fields) {
+    df[[field]] = parent.df[[field]][df[[parent.row.field]]]
+  }
+
+  use.cols = setdiff(colnames(df), parent.row.field)
+  df = df[,use.cols]
+}
+
+
+
+readRDS.or.null = function(file) {
+  if (!file.exists(file)) return(NULL)
+  readRDS(file)
+}
+
+na.remove = function(x) {
+  x[!is.na(x)]
+}
+
+na.false = function(x) {
+  na.val(x, FALSE)
+}
+
+na.val = function(x, val=0) {
+  x[is.na(x)] = val
+  x
+}
+
+is.true = function(x) {
+  val = x == TRUE
+  val[is.na(x)] = FALSE
+  val
+}
+
+most.common = function(x) {
+  uniqx <- unique(na.omit(x))
+  uniqx[which.max(tabulate(match(x, uniqx)))]
+}
+
+remove_cols = function(x, cols) {
+  x[,setdiff(colnames(x),cols)]
+}
+
+remove.cols = function(x, cols) {
+  x = x[,setdiff(colnames(x),cols)]
+}
+
+
+# Perform a left join but first drop columns in y or x
+# that also exist in x (y) and are not part of by
+left_join_overwrite = function(x,y,by,..., yfields=NULL, drop_in="y") {
+  if (!is.null(yfields)) {
+    y = y[,intersect(names(y),union(yfields, by)), drop=FALSE]
+  }
+  drop.cols = setdiff(intersect(colnames(x), colnames(y)),by)
+
+  if (length(drop.cols)>0) {
+    if (drop_in=="y") {
+      y = y[, setdiff(colnames(y), drop.cols)]
+    } else {
+      x = x[, setdiff(colnames(x), drop.cols)]
+    }
+  }
+  left_join(x,y,by=by,...)
+}
+
+
+parse_eval = function(cmd, envir=parent.frame()) {
+  if (is.null(cmd)) return(invisible(NULL))
+  eval(parse(text=cmd),envir = envir)
+}
+
+
+
+left_join_overlap = function(x, y, by_x, by_y, mult="all", type="any", nomatch=NA) {
+  dt_x = as.data.table(x)
+  dt_y = as.data.table(y,key = by_y)
+  dt_ol = foverlaps(dt_x, dt_y, mult=mult, type=type, which=FALSE, by.x=by_x)
+  as_tibble(dt_ol)
+}
+
+match_overlap = function(xstart,xend,ystart,yend, mult="all", type="any") {
+  restore.point("match_all_rounded")
+  dt_x = data.table(ind_x = seq_along(xstart), xstart=xstart, xend=xend,key = c("xlow","xhigh"))
+  dt_y = data.table(ind_y = seq_along(ystart), ystart=ystart, yend=yend,key = c("ylow","yhigh"))
+
+  ol = foverlaps(dt_x, dt_y, mult=mult, type=type, which=TRUE, nomatch=NULL)
+  res = tibble(ind_x=dt_x$ind_x[ol[[1]]],ind_y = dt_y$ind_y[ol[[2]]])
+  res
+}
+# Remove from x all locations that overlap with a location in y
+remove.overlapping.loc = function(x, y, by=c("line", "start","end"), mode=c("remove","keep","mark")[1]) {
+  restore.point("remove.overlapping.loc")
+  library(data.table)
+  loc1 = as.data.table(x)
+  setkeyv(loc1, by)
+
+  loc2 = as.data.table(y)
+  setkeyv(loc2, by)
+
+  ol = foverlaps(loc1, loc2, by.x=by, by.y=by, which=TRUE, nomatch=NA)
+  not.ol = sort(unique(ol$xid[is.na(ol$yid)]))
+  if (mode=="mark") {
+    x$overlapping = TRUE
+    x$overlapping[!not.ol] = FALSE
+    return(x)
+  }
+  if (mode =="remove") {
+    x[not.ol,,drop=FALSE]
+  } else if (mode == "keep") {
+    if (length(not.ol)==0) return(x)
+    x[-not.ol,,drop=FALSE]
+  }
+}
+
+keep.overlapping.loc = function(...) {
+  remove.overlapping.loc(..., mode="keep")
+}
+
+locate_all_as_df = function(txt, regexpr.li) {
+  restore.point("locate_all_as_df")
+  locs.li = lapply(regexpr.li, function(regexpr) {
+    str_locate_all(txt, regexpr)
+  })
+
+  loc.df = bind_rows(lapply(seq_along(locs.li), function(i) {
+    type = names(locs.li)[i]
+    locs = bind_rows(lapply(seq_along(locs.li[[i]]), function(row) {
+      loc = locs.li[[i]][[row]]
+      if (NROW(loc)==0) return(NULL)
+      loc = as_tibble(loc)
+      loc$line = row
+      loc$type = type
+      loc$pos = 1:NROW(loc)
+      loc
+    }))
+    locs
+  }))
+  if (NROW(loc.df)==0) {
+    loc.df = tibble(start=integer(0),end=integer(0), line=integer(0), type=character(0), pos=integer(0))
+  }
+
+  loc.df$str = substring(txt[loc.df$line], loc.df$start, loc.df$end)
+  loc.df$nchar = loc.df$end-loc.df$start
+  loc.df
+}
+
+
+ends.with.text = function(txt, end.size=4) {
+  str = trimws(txt)
+  rhs = substring(str, nchar(str)-end.size,nchar(str))
+  grepl("[a-zA-z]",rhs,fixed=FALSE)
+
+}
+
+seq_rows = function(x) {
+  seq_len(NROW(x))
+}
+
+from_to = function(from, to, min=from, max=to) {
+  from = max(from, min)
+  to = min(to, max)
+  if (from > to) return(NULL)
+  from:to
+}
+
+
+remove.start.strings = function(str, starts) {
+  restore.point("remove.start.strings")
+  for (s in starts) {
+    rows = which(startsWith(str, s))
+    if (length(rows)>0) {
+      str[rows] = trimws(str.right.of(str[rows],s))
+    }
+  }
+  str
+}
+
+
+read_lines_from_tail = function(file, n=10) {
+  restore.point("read_lines_from_tail")
+  # Only faster under unix, which has a tail command
+  file = normalizePath(file)
+  if (.Platform$OS.type == "unix") {
+    cmd = paste0("tail -n ", n, ' "', file,'"')
+    res = system(cmd, intern=TRUE)
+  } else {
+    txt = readLines(file)
+    res = tail(txt,n)
+  }
+  res
+}
+
+parse.as.call = function (text, allow.null = TRUE)
+{
+  if (is.null(text)) {
+    if (allow.null)
+      return(NULL)
+    stop("parse.as.call was called with text=NULL")
+  }
+  parse(text = text)[[1]]
+}
+
+find.call.variables = function(call){
+  if (is.name(call))
+    return(as.character(call))
+  if (length(call) <= 1)
+    return(NULL)
+  names = lapply(call[-1], function(e1) {
+    find.call.variables(e1)
+  })
+  names = unique(unlist(names, use.names = FALSE))
+  names
+}
+
+rstudio_job = function(name, expr, libs=NULL, wdir = getwd(), script.dir = tempdir(), importEnv=TRUE) {
+  expr = substitute(expr)
+  restore.point("as_job")
+  code = deparse1(expr)
+
+  #code = paste0('setwd("',wdir,'")\n', code)
+  if (!is.null(libs)) {
+    code = paste0(paste0("library(", libs,")", collapse="\n"), "\n", code)
+  }
+  cat("\nRun \n\n",code,"\n\n")
+
+  script.file = file.path(script.dir, paste0(name,".R"))
+  writeLines(code, script.file)
+  rstudioapi::jobRunScript(path = script.file,workingDir = wdir, name = name,importEnv = importEnv)
+
+}
+
+writeUtf8 = function(x, file, bom=F) {
+  if (length(x)>1) {
+    x = paste0(x, collapse="\n")
+  }
+  con <- file(file, "wb")
+  if(bom) writeBin(BOM, con, endian="little")
+  writeBin(charToRaw(x), con, endian="little")
+  close(con)
+}
+
+
+create_dirs_of_files = function (files, must.have = NULL) {
+  restore.point("create_dirs_of_files")
+  dirs = unique(dirname(files))
+  if (!is.null(must.have)) {
+    if (!all(stringi::stri_detect_fixed(files, must.have))) {
+        stop(paste0("Not all directories contain the pattern ",
+            must.have))
+    }
+
+  }
+  for (dir in dirs) {
+      if (!dir.exists(dir)) {
+          dir.create(dir, recursive = TRUE)
+      }
+  }
+}
+
+file.exists.in.any.dir = function(files, dirs) {
+  exists = rep(FALSE,length(files))
+  for (dir in dirs) {
+    exists = exits | file.exists(file.path(dir,files))
+  }
+  exists
+}
+
+# Get a function but set its enclosing environment
+# by default to the environment of the caller
+fun_with_env = function(fun, env=parent.frame()) {
+  environment(fun) = env
+  fun
+}
+
+
+with_random_seed = function(expr, seed = 1234567890) {
+  old.seed = get(".Random.seed", .GlobalEnv)
+  set.seed(seed)
+  ret = eval(expr)
+  restore.point("with_random_seed")
+  assign(".Random.seed", old.seed, .GlobalEnv)
+  runif(1)
+  return(ret)
+}
+
+is_valid_zip_file <- function(path) {
+
+  ## ---- preliminaries ---------------------------------------------------
+  if (!file.exists(path)) return(FALSE)
+
+  con <- file(path, open = "rb")
+  on.exit(close(con), add = TRUE)
+
+  ## ---- 1) signature check ---------------------------------------------
+  sig <- readBin(con, what = "raw", n = 2L)
+  # legal signatures for local-file header, EOCD for empty archive, or spanned archives
+  if (!identical(sig[1],0x50)) return(FALSE)
+  if (!identical(sig[2],0x4b)) return(FALSE)
+  return(TRUE)
+
+  valid_sig <- list(
+    c(0x50, 0x4b, 0x03, 0x04),  # PK\x03\x04  -> normal archive
+    c(0x50, 0x4b, 0x05, 0x06),  # PK\x05\x06  -> empty archive
+    c(0x50, 0x4b, 0x07, 0x08)   # PK\x07\x08  -> spanned
+  )
+  if (!any(vapply(valid_sig, identical, logical(1), sig)))
+    return(FALSE)
+}
+
+is_valid_pdf_file <- function(path, quick=FALSE) {
+  con  <- file(path, "rb")
+  on.exit(close(con), add = TRUE)
+
+  # Read first 8 bytes for the header
+  header <- rawToChar(readBin(con, "raw", n = 8))
+  starts_ok <- grepl("^%PDF-[12]\\.[0-9]", header)
+  if (!starts_ok) return(FALSE)
+  if (quick) return(starts_ok)
+
+  # Read last ~10 bytes for the EOF marker
+  seek(con, where = -10, origin = "end")
+  tail   <- rawToChar(readBin(con, "raw", n = 10))
+
+  ends_ok   <- grepl("%%EOF", tail)
+
+  starts_ok && ends_ok
+}
+
+zip_dir = function(dir, dest_file, overwrite=TRUE) {
+  if (!dir.exists(dir)) {
+    cat("\nDirectory does not exist: ", dir,"\n")
+    return(FALSE)
+  }
+  if (!overwrite & file.exists(dest_file)) {
+    cat("\nZIP file", dest_file, "already exists.\n")
+    return(FALSE)
+  }
+
+  dir = normalizePath(dir, mustWork = TRUE)
+  dest_file = normalizePath(dest_file, mustWork = FALSE)
+
+  files = list.files(dir, recursive = TRUE, all.files = TRUE, no.. = TRUE)
+
+  old_wd = getwd()
+  on.exit(setwd(old_wd), add = TRUE)
+
+  setwd(dirname(dir))
+  utils::zip(zipfile = dest_file, files = file.path(basename(dir), files))
+  return(TRUE)
+}
+
+```
+# END OF FILE: tools.R
+
+-----------------------------------------------------------
+
+
+# FILE: trash_bin.R
+```
+# Call trash-restore in linux shell to restore trash
+
+example = function() {
+  trash_file = c("~/repbox/test_tab.html","~/repbox/test_table.html")
+  trash_file = "~/repbox/temp/to_trash"
+
+}
+
+dir_to_trash = function(trashed_dir) {
+  trash_put(trashed_dir)
+}
+
+trash_put = function(trashed_file) {
+  trash_file = normalizePath(trashed_file)
+  cmd = paste0('trash-put ', paste0('"', trashed_file,'"', collapse=" "))
+  cat(cmd)
+  system(cmd)
+}
+
+trash_list = function(dir = "~") {
+  cmd = paste0('trash-list')
+  system(cmd)
+}
+
+```
+# END OF FILE: trash_bin.R
+
+-----------------------------------------------------------
+
 
 
 # Package repboxStataReg
@@ -6106,7 +7780,7 @@ capture noisily keep if ",if_str, "
 keep r0W_ox_zA___2G__nUm__
 capture noisily save \"",file, "\", replace
 restore\n",
-    sc_df$pre[row])
+    sc_df$pre[rows])
   sc_df
 }
 
@@ -6284,9 +7958,9 @@ drf_code_adapt = function(code_df, fun, ..., to_col="code", append_mode = c("ove
   if (append_mode=="overwrite") {
     code_df[[to_col]][to_rows] = new_code
   } else if (append_mode == "left") {
-    code_df[[ro_col]][to_rows] = paste0(new_code,code_df[[ro_col]][to_rows])
+    code_df[[to_col]][to_rows] = paste0(new_code,code_df[[to_col]][to_rows])
   } else if (append_mode == "right") {
-    code_df[[ro_col]][to_rows] = paste0(code_df[[ro_col]][to_rows], new_code)
+    code_df[[to_col]][to_rows] = paste0(code_df[[to_col]][to_rows], new_code)
   } else {
     stop(paste0("unknown append_mode = ", appen_mode))
   }
@@ -6968,9 +8642,9 @@ vi_to_lm_iv_formula = function(vi, min_fe_level = Inf, as.character = FALSE) {
   terms = vi_to_lm_felm_terms(vi, min_fe_level = min_fe_level)
 
   # Exogeneous x that are no FE
-  rows = which(terms$role == "exo" & terms$as_fe == FALSE)
-  if (sum(rows)>0) {
-    form = paste0(form, paste0(terms$x_expr[rows], collapse= " + "))
+  exo.rows = which(terms$role == "exo" & terms$as_fe == FALSE)
+  if (sum(exo.rows)>0) {
+    form = paste0(form, paste0(terms$x_expr[exo.rows], collapse= " + "))
   } else {
     form = "0"
   }
@@ -6980,6 +8654,7 @@ vi_to_lm_iv_formula = function(vi, min_fe_level = Inf, as.character = FALSE) {
   if (sum(rows)>0) {
     form = paste0(form, " | ",paste0(terms$x_expr[c(rows, exo.rows)], collapse= " + "))
   }
+
 
   if (as.character) return(form)
   as.formula(form)
@@ -8324,175 +9999,11 @@ tidy.tobit <- function(x, ...) {
 -----------------------------------------------------------
 
 
-###########
-# Test run
-###########
-
-I performed a test run of the pipeline using a project.
-
-Below is the test report generated with `mrb_run_as_test`
-
-
-# FILE: test_report.Rmd
-```
-# Report of test run for project ~/repbox/projects/test
-
-
-```{r setup, include=FALSE}
-knitr::opts_chunk$set(eval = FALSE)
-```
-
-# do files in the project
-
-## /home/rstudio/repbox/projects/test/mod/code/current_test.do
-```{do}
-use ../data/data.dta, clear
-tsset i year
-
-reghdfe y x1, absorb(i1 i2) vce(cluster i year)
-```
-
-# The R test script that is run
-
-## ~/repbox/projects/test/run/run_test.R
-```{R}
-library(repboxRun)
-library(metaregBase)
-
-# Should point to this project dir
-project_dir = rb_get_project_dir("~/repbox/projects/test")
-
-if (FALSE) {
-  options(warn=2)
-  opts=mrb_test_opts(data_head_rows = 30, show_org_data=FALSE, show_pre_reg_data = FALSE, data_width=100, max_cases = 1, data_add_org_row=TRUE)
-  metaregBase::mrb_run_as_test(project_dir = "~/repbox/projects/test","~/repbox/projects/test/run/run_test.R", opts=opts)
-  rstudioapi::filesPaneNavigate(project_dir)
-}
-
-rb = rb_new(project_dir)
-if (!FALSE) {
-  rb = rb_update_file_info_parcel(rb, overwrite=!FALSE,assume_org_complete = TRUE)
-  rb = rb_update_script_parcels(rb, overwrite=!FALSE)
-  rb = rb_update_static_code_analysis(rb, overwrite = !FALSE)
-
-  rb = rb_run_stata_reproduction(rb, overwrite=!FALSE, store_reg_info=TRUE)
-}
-
-
-drf = repboxDRF::drf_load(project_dir)
-mrb = mrb_init(project_dir)
-if (!FALSE) {
-  mrb = mrb_full_stata_script(mrb)
-  mrb = mrb_run_stata_script(mrb)
-  mrb = mrb_agg_stata(mrb)
-
-}
-mrb = mrb_run_r_base(mrb)
-mrb = mrb_run_r_reg(mrb)
-
-```
-
-# Run log of the script
-
-
-### source_with_log start: 2026-03-14 11:49:32 
-### file: /home/rstudio/repbox/projects/test/run/run_test.R 
-
-
-> library(repboxRun)
-
-> library(metaregBase)
-
-> # Should point to this project dir
-> project_dir = rb_get_project_dir("~/repbox/projects/test")
-
-> if (FALSE) {
-+   options(warn=2)
-+   opts=mrb_test_opts(data_head_rows = 30, show_org_data=FALSE, show_pre_reg_data = FALSE, data_width=100, max_cases = 1, data_add_org_row=TRUE)
-+   metaregBase::mrb_run_as_test(project_dir = "~/repbox/projects/test","~/repbox/projects/test/run/run_test.R", opts=opts)
-+   rstudioapi::filesPaneNavigate(project_dir)
-+ }
-
-> rb = rb_new(project_dir)
-
-> if (!FALSE) {
-+   rb = rb_update_file_info_parcel(rb, overwrite=!FALSE,assume_org_complete = TRUE)
-+   rb = rb_update_script_parcels(rb, overwrite=!FALSE)
-+   rb = rb_update_static_code_analysis(rb, overwrite = !FALSE)
-+ 
-+   rb = rb_run_stata_reproduction(rb, overwrite=!FALSE, store_reg_info=TRUE)
-+ }
-
-  Stata static code analysis...
-
-
-  R static code analysis...
-
-
-Replicate  test  with  1  do files.
-
-1 of 1 inject and run
-
-Run  /home/rstudio/repbox/projects/test/mod/code/repbox_current_test.do
-    finished after 0.19 seconds.
-
-> drf = repboxDRF::drf_load(project_dir)
-
-> mrb = mrb_init(project_dir)
-
-> if (!FALSE) {
-+   mrb = mrb_full_stata_script(mrb)
-+   mrb = mrb_run_stata_script(mrb)
-+   mrb = mrb_agg_stata(mrb)
-+ 
-+ }
-
-
-Run  /home/rstudio/repbox/projects/test/metareg/base/stata_code/mrb_stata.do
-    finished after 0.18 seconds.
-
-> mrb = mrb_run_r_base(mrb)
-
-mrb_r_base processing runids: 3 Error: Column cluster does not exist in data set and thus I cannot generate the cterm cluster
-14: (function () 
-    mrb_test_traceback())()
-13: stop(msg, call. = FALSE) at problems.R#94
-12: repbox_problem(type = "regvar_no_match", msg = msg, fail_action = "error") at mrb_cterms.R#292
-11: create_cterm_col(dat, cterm, timevar = timevar, panelvar = panelvar, 
-        tdelta = tdelta) at mrb_cterms.R#261
-10: create_cterm_cols(dat, ct_cterms, timevar = xtvar$timevar, panelvar = xtvar$panelvar, 
-        tdelta = xtvar$tdelta) at mrb_r_base.R#111
-9: mrb_run_r_base_step(mrb, pid) at mrb_r_base.R#50
-8: mrb_run_r_base(mrb) at run_test.R#32
-7: eval(ei, envir)
-6: eval(ei, envir)
-5: withVisible(eval(ei, envir))
-4: source(file = file, local = envir, echo = echo, print.eval = print.eval, 
-       prompt.echo = prompt.echo, max.deparse.length = max.deparse.length, 
-       chdir = chdir, keep.source = keep.source) at debug_tools.R#59
-3: withCallingHandlers(source(file = file, local = envir, echo = echo, 
-       print.eval = print.eval, prompt.echo = prompt.echo, max.deparse.length = max.deparse.length, 
-       chdir = chdir, keep.source = keep.source), warning = function(w) {
-       warnings_seen <<- c(warnings_seen, conditionMessage(w))
-       invokeRestart("muffleWarning")
-   }) at debug_tools.R#59
-2: source_with_log(run_script, log_con = con) at mrb_test.R#62
-1: metaregBase::mrb_run_as_test(project_dir = "~/repbox/projects/test", 
-       "~/repbox/projects/test/run/run_test.R", opts = opts)
-```
-# END OF FILE: test_report.Rmd
-
------------------------------------------------------------
-
-
 
 ##################################
 # Your Task
 ##################################
 
-Please try to find the reason for the errors / problems shown in the test report of an example do file.
-
-Can you find the problem in some code in the provided package? Can you explain the issue and solve it?
-
+The metaregBase & regtranslate framework can deal with abbreviations in variable names by matching them with columns in the data set. Can the stata2r package do the same? Are there also Stata commands outside regression varlist that can use abbreviations or glob expansions? If yes we should add the functionality. Basically all generated translated code calls a function with a data set. We could write code that does the variable expansion during runtime based on the data set. But that makes the generated code harder to read. Can you check whether that is neccessary? If yes propose conceptually, but in detail with concrete examples, how the generated code could look like, and how we would need to change the stata2r package. Ideally stata2r should not depend on metaregBase or regtranslate. In doubt the variable expansion functions from there should be duplicated / adapted. 
 
 
