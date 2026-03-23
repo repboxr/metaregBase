@@ -1,0 +1,230 @@
+
+
+
+An elegant way to fix this issue is to ensure that `stata2r` processes the Stata commands with their full chronological context rather than in isolation. 
+
+As you noted, `stata2r` can now intelligently mark regression commands (like `reghdfe` or `summarize`) as data modifications (`is_mod = TRUE`) if their results (e.g., `e(sample)` or `r(mean)`) are subsequently required by a later command (like `gen byte u_sample = e(sample)` or inside a regression `if` statement). However, when `drf_run_df_create_rcode` and `drf_get_filter_code` pass individual lines to `stata2r`, the latter loses the context to resolve macros.
+
+Here are the specific updates to `repboxDRF` that solve this:
+
+### 1. `repboxDRF/R/drf_paths.R`
+In `find_data_run_path`, use the new `stata2r::s2r_check_mod()` function to inspect the full contiguous path block. It guarantees that `e()`-producing regression commands and `r()`-producing summary commands are preserved in the path if they are relied upon later.
+
+```r
+# FILE: repboxDRF/R/drf_paths.R
+# Replace the existing find_data_run_path function:
+
+# srun_df is a part of run_df with a single node
+find_data_run_path = function(pid_row, srun_df, pid=NULL) {
+  restore.point("find_data_run_path")
+
+  # All runid in same load block until
+  # pid
+  path = which(srun_df$load_block == srun_df$load_block[pid_row] & srun_df$.ROW <= pid_row)
+
+  # If we start with a restore command
+  # then jump to previous preserve and then
+  # add all rows with the same load_block
+  while (TRUE) {
+    if (srun_df$cmd[path[1]] == "restore") {
+      pr_row = srun_df$preserve_row[path[1]]
+      new_path = which(srun_df$load_block == srun_df$load_block[pr_row] & srun_df$.ROW < pr_row)
+      path = c(new_path, path[-1])
+      next
+    }
+    break
+  }
+
+  # Adapt path: Use stata2r to accurately determine which commands have data 
+  # manipulation side effects or are relied upon by later commands.
+  stata_code = srun_df$cmdline[path]
+  cmd_df = stata2r::s2r_check_mod(stata_code)
+
+  cmd_types = drf_stata_cmd_types()
+  allow = c(cmd_types$scalar, cmd_types$xtset)
+
+  keep = seq_along(path) %in% c(1, length(path)) |
+    cmd_df$is_mod |
+    srun_df$cmd[path] %in% allow |
+    srun_df$runid[path] %in% pid
+
+  path = path[keep]
+
+  return( tibble(pid=srun_df$runid[pid_row], runid=srun_df$runid[path]))
+}
+```
+
+### 2. `repboxDRF/R/drf_r_code.R`
+Modify `drf_run_df_create_rcode` to pass the execution sequence starting from the script's beginning to maintain correct execution state inside `stata2r::do_to_r`. We also manually re-inject `has_original_order_idx` tracking to properly integrate `repbox`'s custom `drf_load_data` with `stata2r`.
+
+```r
+# FILE: repboxDRF/R/drf_r_code.R
+# Replace the existing drf_run_df_create_rcode function:
+
+drf_run_df_create_rcode = function(run_df=drf$run_df, runids=drf_runids(drf), overwrite=TRUE, drf=NULL) {
+  restore.point("drf_run_df_create_rcode")
+
+  if (!has_col(run_df, "rcode")) {
+    run_df$rcode = rep("", NROW(run_df))
+  }
+  if (!is.null(runids)) {
+    rows = match(runids, run_df$runid)
+  } else {
+    rows = seq_len(NROW(run_df))
+  }
+  rows = sort(unique(rows[!is.na(rows)]))
+
+  update_rows = rows
+  if (!overwrite) {
+    update_rows = rows[run_df$rcode[rows] == ""]
+  }
+
+  if (length(update_rows)==0) return(run_df)
+
+  # Translate the execution trace up to the max row so `stata2r` maintains full context
+  max_row = max(update_rows)
+  stata_code = run_df$cmdline[1:max_row]
+  r_df = stata2r::do_to_r(stata_code, return_df = TRUE)
+  
+  translated_code = r_df$r_code[update_rows]
+  run_df$rcode[update_rows] = ifelse(is.na(translated_code), "", translated_code)
+
+  # Overwrite 'load' commands with repbox's own data loading logic
+  inds = update_rows[run_df$cmd_type[update_rows] %in% c("load")]
+  if (length(inds)>0) {
+    code = paste0(
+      'data = drf_load_data(project_dir, "', file.path(run_df$found_path[inds]) ,'")\n',
+      'data$stata2r_original_order_idx = seq_len(nrow(data))\n',
+      'assign("has_original_order_idx", TRUE, envir = stata2r_env)'
+    )
+    run_df$rcode[inds] = code
+  }
+  run_df$rcode = na.val(run_df$rcode, "")
+
+  run_df
+}
+```
+
+### 3. `repboxDRF/R/drf_run_r.R`
+In `drf_get_data`, make sure we create the `rcode` for the *entire path block up to the pid* rather than stopping strictly short of it. This ensures that if the regression command uses an `e()`/`r()` evaluation in its arguments or `if` expression, `stata2r` sees it.
+
+```r
+# FILE: repboxDRF/R/drf_run_r.R
+# Replace the existing drf_get_data function:
+
+drf_get_data = function(runid=pid, drf, filtered=TRUE, before=TRUE, update_rcode=FALSE, exec_env = new.env(parent = globalenv()), pid=NULL) {
+  restore.point("drf_get_data")
+  if (is.null(runid)) {
+    stop("Specify a runid (or pid as synonym).")
+  }
+  runids = drf_runids(drf)
+  if (!runid %in% runids) {
+    stop("runid is not part of any DRF path. We only build paths that lead to a successfully run regression.")
+  }
+  path_df = drf$path_df
+  pid = first(path_df$pid[path_df$runid == runid])
+
+  path_df_full = path_df[path_df$pid == pid,]
+  
+  if (before) {
+    path_df_sub = path_df_full[path_df_full$runid < runid,]
+  } else {
+    path_df_sub = path_df_full[path_df_full$runid <= runid,]
+  }
+
+  exec_runids = path_df_sub$runid
+  run_df = drf$run_df
+  if (!has_col(run_df, "rcode") | update_rcode) {
+    # Ensure full context is passed to rcode generation, including the target `pid`
+    run_df = drf_run_df_create_rcode(run_df, runids=path_df_full$runid, overwrite=TRUE)
+  }
+  rows = match(exec_runids, run_df$runid)
+  rows = rows[run_df$rcode[rows] != ""]
+
+  rcode = run_df$rcode[rows]
+
+  if (length(rcode)==0) {
+    stop("No R code found for getting data. That looks like a bug.")
+  }
+
+  if (filtered) {
+    filter_code = drf_get_filter_code(pid, drf)
+    if (length(filter_code) > 0) {
+      rcode = c(rcode, filter_code)
+    }
+  }
+
+  # Simple execution of R code
+  rcode_call = parse(text = paste0(rcode, collapse="\n"))
+  exec_env$project_dir = drf$project_dir
+  res = eval(rcode_call,envir = exec_env)
+  res
+}
+```
+
+### 4. `repboxDRF/R/drf_filter_code.R`
+When we construct the isolated filter code (`if/in` commands), it is dangerous to construct fake commands string like `keep if...` since `stata2r` might fail to resolve macros correctly without history. Instead, we can translate the raw `if_str` utilizing `stata2r::translate_stata_expression_with_r_values` bound to the chronological context of the pipeline block.
+
+```r
+# FILE: repboxDRF/R/drf_filter_code.R
+# Replace the existing drf_get_filter_code function:
+
+drf_get_filter_code = function(runid, drf, parcels=drf$parcels) {
+  restore.point("drf_get_filter_code")
+
+  parcels = repboxDB::repdb_load_parcels(drf$project_dir, "reg_cmdpart", parcels=drf$parcels)
+  cmdpart = parcels$reg_cmdpart
+
+  cp = cmdpart[cmdpart$runid == runid, ]
+  if (NROW(cp) == 0) {
+    cat("\nNot any existing cmdpart stored for runid=", runid, ". Cannot get if and in conditions.")
+    return(character(0))
+  }
+  if_str = cp$content[cp$part == "if_str"]
+  in_str = cp$content[cp$part == "in_str"]
+
+  filter_code = character(0)
+
+  if (length(if_str) > 0 && nzchar(if_str[1])) {
+    # Get the context to accurately translate the if expression natively via stata2r
+    path_df = drf$path_df
+    pid = first(path_df$pid[path_df$runid == runid])
+    if (is.na(pid)) pid = runid
+    
+    path_df_full = path_df[path_df$pid == pid & path_df$runid <= runid,]
+    stata_code = drf$run_df$cmdline[match(path_df_full$runid, drf$run_df$runid)]
+    
+    cmd_df = stata2r::do_parse(stata_code)
+    cmd_df = stata2r::mark_data_manip_cmd(cmd_df)
+    
+    line_num = NROW(cmd_df)
+    
+    r_if_cond = stata2r::translate_stata_expression_with_r_values(
+      if_str[1], line_num, cmd_df, list(is_by_group = FALSE)
+    )
+    
+    if (!is.na(r_if_cond)) {
+      r_if_cond_quoted = encodeString(r_if_cond, quote = '"')
+      filter_code = c(filter_code, paste0("data = stata2r::scmd_keep(data, r_if_cond = ", r_if_cond_quoted, ")"))
+    } else {
+      repboxUtils::repbox_problem(
+        msg = paste0("Failed to translate if condition for runid ", runid),
+        type = "filter_translation_error",
+        project_dir = drf$project_dir,
+        fail_action = "warn"
+      )
+    }
+  }
+
+  if (length(in_str) > 0 && nzchar(in_str[1])) {
+    r_in_range = stata2r::s2r_in_str_to_r_range_str(in_str[1])
+    if (!is.na(r_in_range)) {
+      r_in_range_quoted = encodeString(r_in_range, quote = '"')
+      in_code = paste0("data = stata2r::scmd_keep(data, r_in_range = ", r_in_range_quoted, ")")
+      filter_code = c(filter_code, in_code)
+    }
+  }
+
+  return(filter_code)
+}
+```
