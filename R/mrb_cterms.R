@@ -349,7 +349,7 @@ create_cterm_col = function(dat, cterm, timevar=NA, panelvar=NA, tdelta=NA, chec
 # Replace the existing create_prefix_nolevel_cterm_col function:
 
 create_prefix_nolevel_cterm_col = function(dat,cterm, panelvar=NA, timevar=NA, tdelta=NA) {
-  restore.point("create_numeric_cterm_col")
+  restore.point("create_prefix_nolevel_cterm_col")
 
   prefix  = cterm_extract_prefix(cterm)
   basevar = cterm_extract_base(cterm)
@@ -377,6 +377,7 @@ create_prefix_nolevel_cterm_col = function(dat,cterm, panelvar=NA, timevar=NA, t
   baseval = dat[[basevar]]
   if (prefix=="log") {
     dat[[cterm]] = log(baseval)
+    return(dat)
   }
 
   prefix.type = toupper(substring(prefix,1,1))
@@ -432,6 +433,14 @@ create_prefix_nolevel_cterm_col = function(dat,cterm, panelvar=NA, timevar=NA, t
     args$n = args$n * tdelta
   }
 
+  # Explicit length check to satisfy collapse's requirement
+  n_val = if (!is.null(args$n)) abs(args$n) else 1
+  diff_val = if (!is.null(args$diff)) abs(args$diff) else 1
+
+  if (prefix.type %in% c("L", "F", "D", "S") && length(args$x) <= n_val * diff_val) {
+    dat[[cterm]] = rep(NA_real_, length(args$x))
+    return(dat)
+  }
 
   dat[[cterm]] = do.call(fun, args)
   dat

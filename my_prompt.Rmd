@@ -4697,37 +4697,55 @@ require_drf_dir = function(drf_dir) {
 
 # At some point we may want to generalize it to non regression commands
 
+# FILE: repboxDRF/R/drf_filter_code.R
+
 drf_get_filter_code = function(runid, drf, parcels=drf$parcels) {
   restore.point("drf_get_filter_code")
 
-  # Load cmdpart parcel to get the stored if/in strings for this runid
   parcels = repboxDB::repdb_load_parcels(drf$project_dir, "reg_cmdpart", parcels=drf$parcels)
   cmdpart = parcels$reg_cmdpart
 
   cp = cmdpart[cmdpart$runid == runid, ]
   if (NROW(cp) == 0) {
-    cat("\nNot any existing cmdpart stored for runid=", runid, ". Try to parse again to get if and in conditions")
-    library(repboxStataReg)
-    cp = cmdparts_of_stata_reg(cmdline)
+    cat("\nNot any existing cmdpart stored for runid=", runid, ". Cannot get if and in conditions.")
+    return(character(0))
   }
   if_str = cp$content[cp$part == "if_str"]
   in_str = cp$content[cp$part == "in_str"]
 
   filter_code = character(0)
 
-  # 1. Translate `if_str` via stata2r dummy keep command
   if (length(if_str) > 0 && nzchar(if_str[1])) {
-    fake_cmd = paste0("keep ", if_str[1])
-    restore.point("drf_get_filter_code_if")
+    # Get the context to accurately translate the if expression natively via stata2r
+    path_df = drf$path_df
+    pid = first(path_df$pid[path_df$runid == runid])
+    if (is.na(pid)) pid = runid
 
-    # stata2r natively translates `keep if...` to `dat <- dat %>% filter(...)`
-    r_df = try(stata2r::do_to_r(fake_cmd)$r_df, silent = TRUE)
+    path_df_full = path_df[path_df$pid == pid & path_df$runid <= runid,]
+    stata_code = drf$run_df$cmdline[match(path_df_full$runid, drf$run_df$runid)]
 
-    if (!inherits(r_df, "try-error") && !is.null(r_df) && NROW(r_df) > 0) {
-      filter_code = c(filter_code, r_df$r_code[1])
+    # Protect newlines to avoid row index shifting
+    stata_code = gsub("\n", " ", stata_code, fixed = TRUE)
+
+    cmd_df = stata2r::do_parse(stata_code)
+    cmd_df = stata2r::mark_data_manip_cmd(cmd_df)
+
+    line_num = NROW(cmd_df)
+
+    # STRIP 'if' KEYWORD
+    # The 'if_str' from cmdpart includes the 'if' keyword, e.g. "if u_sample == 1".
+    # Strip it before passing to translation.
+    if_expr = sub("^\\s*if\\s+", "", if_str[1], ignore.case = TRUE)
+
+    r_if_cond = stata2r::translate_stata_expression_with_r_values(
+      if_expr, line_num, cmd_df, list(is_by_group = FALSE)
+    )
+
+    if (!is.na(r_if_cond)) {
+      r_if_cond_quoted = encodeString(r_if_cond, quote = '"')
+      filter_code = c(filter_code, paste0("data = stata2r::scmd_keep(data, r_if_cond = ", r_if_cond_quoted, ")"))
     } else {
-      restore.point("drf_get_filter_code_if_error")
-      repbox_problem(
+      repboxUtils::repbox_problem(
         msg = paste0("Failed to translate if condition for runid ", runid),
         type = "filter_translation_error",
         project_dir = drf$project_dir,
@@ -4736,19 +4754,17 @@ drf_get_filter_code = function(runid, drf, parcels=drf$parcels) {
     }
   }
 
-  # 2. Translate `in_str` natively (since it's just basic row subsetting)
   if (length(in_str) > 0 && nzchar(in_str[1])) {
-    in_val = trimws(sub("^in\\s+", "", in_str[1]))
-    if (grepl("/", in_val)) {
-      parts = strsplit(in_val, "/")[[1]]
-      start = trimws(parts[1])
-      end = trimws(parts[2])
-      if (tolower(end) == "l") end = "NROW(dat)" # Stata's 'L' means last row
-      in_code = paste0("dat <- dat[", start, ":", end, ", , drop=FALSE]")
-    } else {
-      in_code = paste0("dat <- dat[", in_val, ", , drop=FALSE]")
+    # STRIP 'in' KEYWORD
+    # The 'in_str' includes 'in', e.g. "in 1/100". Strip it!
+    in_expr = sub("^\\s*in\\s+", "", in_str[1], ignore.case = TRUE)
+
+    r_in_range = stata2r::s2r_in_str_to_r_range_str(in_expr)
+    if (!is.na(r_in_range)) {
+      r_in_range_quoted = encodeString(r_in_range, quote = '"')
+      in_code = paste0("data = stata2r::scmd_keep(data, r_in_range = ", r_in_range_quoted, ")")
+      filter_code = c(filter_code, in_code)
     }
-    filter_code = c(filter_code, in_code)
   }
 
   return(filter_code)
@@ -4829,18 +4845,19 @@ extract_run_tree_from_path_df = function(root, path_df) {
     select(-step_ind, root_ind, del)
 }
 
-# srun_df is a part of run_df with a single node
+
+
+# FILE: repboxDRF/R/drf_paths.R
+# Replace the existing find_data_run_path function:
+
 find_data_run_path = function(pid_row, srun_df, pid=NULL) {
   restore.point("find_data_run_path")
 
-
-  # All runid in same load block until
-  # pid
+  # All runid in same load block until pid
   path = which(srun_df$load_block == srun_df$load_block[pid_row] & srun_df$.ROW <= pid_row)
 
-  # If we start with a restore command
-  # then jump to previous preserve and then
-  # add all rows with the same load_block
+  # If we start with a restore command then jump to previous preserve
+  # and then add all rows with the same load_block
   while (TRUE) {
     if (srun_df$cmd[path[1]] == "restore") {
       pr_row = srun_df$preserve_row[path[1]]
@@ -4850,32 +4867,24 @@ find_data_run_path = function(pid_row, srun_df, pid=NULL) {
     }
     break
   }
-  #return(path)
 
-  # Adapt path: only keep load, mod, merge, xtset, scalar, or other analysis rows
+  # Adapt path: Use stata2r to accurately determine which commands have data
+  # manipulation side effects or are relied upon by later commands.
+  stata_code = srun_df$cmdline[path]
+  stata_code = gsub("\n", " ", stata_code, fixed = TRUE)
+  cmd_df = stata2r::s2r_check_mod(stata_code)
+
   cmd_types = drf_stata_cmd_types()
+  allow = c(cmd_types$scalar, cmd_types$xtset)
 
-  allow = c(cmd_types$merge, cmd_types$mod,cmd_types$scalar, cmd_types$xtset, pid)
   keep = seq_along(path) %in% c(1, length(path)) |
+    cmd_df$is_mod |
     srun_df$cmd[path] %in% allow |
     srun_df$runid[path] %in% pid
 
   path = path[keep]
 
-  # Check in more detail whether possible mods
-  # candiate indeed modifies
-  pos_keep = pide_possible_mod_cmd_real_mod(srun_df[path,]) |
-    srun_df$cmd[path] %in% allow |
-    srun_df$runid[path] %in% pid
-
-  path = path[pos_keep]
-
   return( tibble(pid=srun_df$runid[pid_row], runid=srun_df$runid[path]))
-
-}
-
-estimate_path_time = function(run_df, path_rows) {
-
 }
 
 
@@ -5113,9 +5122,10 @@ drf_make_r_trans_parcel = function(drf) {
 # They are currently always included in path since
 # later regressions may need them if r() or something is used from it.
 
+
+
 drf_run_df_create_rcode = function(run_df=drf$run_df, runids=drf_runids(drf), overwrite=TRUE, drf=NULL) {
   restore.point("drf_run_df_create_rcode")
-
 
   if (!has_col(run_df, "rcode")) {
     run_df$rcode = rep("", NROW(run_df))
@@ -5125,28 +5135,42 @@ drf_run_df_create_rcode = function(run_df=drf$run_df, runids=drf_runids(drf), ov
   } else {
     rows = seq_len(NROW(run_df))
   }
+  rows = sort(unique(rows[!is.na(rows)]))
 
+  update_rows = rows
   if (!overwrite) {
-    rows = rows[run_df$rcode[rows] == ""]
+    update_rows = rows[run_df$rcode[rows] == ""]
   }
 
-  if (length(rows)==0) return(run_df)
+  if (length(update_rows)==0) return(run_df)
 
-  inds = rows[run_df$cmd_type[rows] %in% c("mod")]
-  if (length(inds)>0) {
-    mod_df = stata2r::do_to_r(run_df$cmdline[inds])$r_df
-    run_df$rcode[inds] = mod_df$r_code
-  }
+  # Translate the execution trace up to the max row so `stata2r` maintains full context
+  max_row = max(update_rows)
+  stata_code = run_df$cmdline[1:max_row]
 
-  inds = rows[run_df$cmd_type[rows] %in% c("load")]
+  # IMPORTANT: Replace internal newlines with spaces to keep 1-to-1 mapping with rows
+  stata_code = gsub("\n", " ", stata_code, fixed = TRUE)
+
+  r_df = stata2r::do_to_r(stata_code, return_df = TRUE)
+
+  translated_code = r_df$r_code[update_rows]
+  run_df$rcode[update_rows] = ifelse(is.na(translated_code), "", translated_code)
+
+  # Overwrite 'load' commands with repbox's own data loading logic
+  inds = update_rows[run_df$cmd_type[update_rows] %in% c("load")]
   if (length(inds)>0) {
-    code = paste0('data = drf_load_data(project_dir, "', file.path(run_df$found_path[inds]) ,'")')
+    code = paste0(
+      'data = drf_load_data(project_dir, "', file.path(run_df$found_path[inds]) ,'")\n',
+      'data$stata2r_original_order_idx = seq_len(nrow(data))\n',
+      'assign("has_original_order_idx", TRUE, envir = stata2r::stata2r_env)'
+    )
     run_df$rcode[inds] = code
   }
   run_df$rcode = na.val(run_df$rcode, "")
 
   run_df
 }
+
 
 drf_rcode_df = function(drf,runids=NULL, path_merge = c("none", "load", "natural", "load_natural")[4], update_rcode = FALSE) {
   restore.point("drf_rcode_df")
@@ -5267,7 +5291,8 @@ example = function() {
 #' @param update_rcode Set TRUE if the repbox code for R translation has been updated and the old R code is no longer up-to-date. Mostly relevant during development of the repbox package.
 #' @param exec_env in which environment shall the R code that loads and modifies the data be evaluated, default a new env.
 #' @param pid Alias for runid in this command (pid stands for path ID which is the runid of the final command in a path from path_df)
-drf_get_data = function(runid=pid, drf, filtered=TRUE,before=TRUE, update_rcode=FALSE, exec_env = new.env(parent = globalenv()), pid=NULL) {
+
+drf_get_data = function(runid=pid, drf, filtered=TRUE, before=TRUE, update_rcode=FALSE, exec_env = new.env(parent = globalenv()), pid=NULL) {
   restore.point("drf_get_data")
   if (is.null(runid)) {
     stop("Specify a runid (or pid as synonym).")
@@ -5279,23 +5304,22 @@ drf_get_data = function(runid=pid, drf, filtered=TRUE,before=TRUE, update_rcode=
   path_df = drf$path_df
   pid = first(path_df$pid[path_df$runid == runid])
 
-  path_df = path_df[path_df$pid == pid,]
+  path_df_full = path_df[path_df$pid == pid,]
+
   if (before) {
-    path_df = path_df[path_df$runid < runid,]
+    path_df_sub = path_df_full[path_df_full$runid < runid,]
   } else {
-    path_df = path_df[path_df$runid <= runid,]
+    path_df_sub = path_df_full[path_df_full$runid <= runid,]
   }
 
-  runids = path_df$runid
+  exec_runids = path_df_sub$runid
   run_df = drf$run_df
   if (!has_col(run_df, "rcode") | update_rcode) {
-    run_df = drf_run_df_create_rcode(run_df, runids=runids, overwrite=TRUE)
+    # Ensure full context is passed to rcode generation, including the target `pid`
+    run_df = drf_run_df_create_rcode(run_df, runids=path_df_full$runid, overwrite=TRUE)
   }
-  rows = match(runids,run_df$runid)
+  rows = match(exec_runids, run_df$runid)
   rows = rows[run_df$rcode[rows] != ""]
-
-  # TO DO: possible shorten code if we can load some runid cache inbetween
-
 
   rcode = run_df$rcode[rows]
 
@@ -5311,13 +5335,13 @@ drf_get_data = function(runid=pid, drf, filtered=TRUE,before=TRUE, update_rcode=
   }
 
   # Simple execution of R code
-  # We may change to something more sophisticated later
   rcode_call = parse(text = paste0(rcode, collapse="\n"))
   exec_env$project_dir = drf$project_dir
-  res = eval(rcode_call,envir = exec_env)
-  res
-}
+  eval(rcode_call, envir = exec_env)
 
+  # Crucial: Always return the manipulated data frame explicitly
+  exec_env$data
+}
 ```
 # END OF FILE: drf_run_r.R
 
@@ -5898,7 +5922,7 @@ sec_since_start = function(time_str, start_time_str) {
 -----------------------------------------------------------
 
 
-# Package stata2R
+# Package stata2r
 
 
 # FILE: DESCRIPTION
@@ -9585,8 +9609,6 @@ scmd_duplicates = function(data, subcommand, varlist_str = NA_character_, gen_va
 
 # FILE: t_egen.R
 ```
-# FILE: R/t_egen.R
-
 # 1. Parsing Phase
 s2r_p_egen = function(rest_of_cmd) {
   restore.point("s2r_p_egen")
@@ -9638,6 +9660,8 @@ t_egen = function(rest_of_cmd, cmd_obj, cmd_df, line_num, context) {
   if (parsed$func_name == "mean") calc_expr = paste0("mean(", r_args_cond, ", na.rm = TRUE)")
   else if (parsed$func_name %in% c("total", "sum")) calc_expr = paste0("collapse::fsum(", r_args_cond, ", na.rm = TRUE)")
   else if (parsed$func_name == "count") calc_expr = paste0("sum(!is.na(", r_args_cond, "))")
+  else if (parsed$func_name == "min") calc_expr = paste0("collapse::fmin(", r_args_cond, ", na.rm = TRUE)")
+  else if (parsed$func_name == "max") calc_expr = paste0("collapse::fmax(", r_args_cond, ", na.rm = TRUE)")
   else if (parsed$func_name == "rank") {
     needs_temp_sort = !cmd_obj$is_by_prefix
     if (is_ftm) val = paste0("as.numeric(dplyr::if_else(is.na(", r_args_cond, "), Inf, ", r_args_cond, "))") else val = r_args_cond
@@ -9729,6 +9753,7 @@ scmd_egen = function(data, new_var, func_name, calc_expr, group_vars = character
 
   return(data)
 }
+
 ```
 # END OF FILE: t_egen.R
 
@@ -10712,7 +10737,7 @@ translate_stata_expression_with_r_values = function(stata_expr, line_num, cmd_df
 
 # FILE: t_recode.R
 ```
-# FILE: R/t_recode.R
+# FILE: stata2r/R/t_recode.R
 
 # 1. Parsing Phase: Extract Stata syntax components
 s2r_p_recode = function(rest_of_cmd) {
@@ -10763,15 +10788,17 @@ translate_recode_rule_template = function(rule_str, final_r_var_type_is_string) 
     r_condition = "sfun_missing(.VAR.)"
   } else if (old_part_raw == "nonmissing") {
     r_condition = "!sfun_missing(.VAR.)"
-  } else if (grepl("\\s+thru\\s+", old_part_raw)) {
-    range_parts = stringi::stri_split_regex(old_part_raw, "\\s+thru\\s+", n=2)[[1]]
-    val1 = translate_stata_expression_to_r(stringi::stri_trim_both(range_parts[1]))
-    val2 = translate_stata_expression_to_r(stringi::stri_trim_both(range_parts[2]))
-    r_condition = paste0(".VAR. >= ", val1, " & .VAR. <= ", val2)
-  } else if (grepl("/", old_part_raw)) {
-    range_parts = stringi::stri_split_regex(old_part_raw, "/", n=2)[[1]]
-    val1 = translate_stata_expression_to_r(stringi::stri_trim_both(range_parts[1]))
-    val2 = translate_stata_expression_to_r(stringi::stri_trim_both(range_parts[2]))
+  } else if (grepl("\\s+thru\\s+", old_part_raw) || grepl("/", old_part_raw)) {
+    sep_token = if (grepl("\\s+thru\\s+", old_part_raw)) "\\s+thru\\s+" else "/"
+    range_parts = stringi::stri_split_regex(old_part_raw, sep_token, n=2)[[1]]
+
+    v1 = stringi::stri_trim_both(range_parts[1])
+    v2 = stringi::stri_trim_both(range_parts[2])
+
+    # Translate `min` and `max` natively to -Inf and Inf
+    val1 = if (tolower(v1) == "min") "-Inf" else translate_stata_expression_to_r(v1)
+    val2 = if (tolower(v2) == "max") "Inf" else translate_stata_expression_to_r(v2)
+
     r_condition = paste0(".VAR. >= ", val1, " & .VAR. <= ", val2)
   } else {
     old_values = stringi::stri_split_regex(old_part_raw, "\\s+")[[1]]
@@ -13574,6 +13601,159 @@ tidy.tobit <- function(x, ...) {
 -----------------------------------------------------------
 
 
+
+## Format of proposed changes to code or text files
+
+When you suggest changes to code or text files or completely new files, you MUST use the following format for each modification. Each change must be enclosed in a `!MODIFICATION` block.
+
+### Overall Structure
+
+Each modification block has three parts:
+1.  Start and end markers: `!MODIFICATION {{what}}` and `!END_MODIFICATION {{what}}`, where {{what}} is just a short reference to what is modified, file name or function name with with file. It will not be parsed but makes it easier for a human to understand blocks.
+2.  A metadata block in **TOML format**. This block ends with a `---` separator line.
+3.  A code payload block, which is a standard markdown code fence.
+
+```
+!MODIFICATION {{what}}
+# TOML metadata goes here
+# ...
+---
+```language
+# New code payload goes here
+```
+!END_MODIFICATION {{what}}
+```
+
+### Modification Scope
+
+Each modification is of one of the following two scopes:
+
+* `file` (re-)writes a complete file
+
+* `function` (re-)writes a complete function (including comments above).
+
+
+
+If more than two functions or more than two line edits will be performed in the same file, better rewrite the whole file using a `file` scope. For extremely long files also more smaller edits are ok.
+
+Function scope only works for R code files, but in R files it is preferred if one or two functions in a larger file are changed.
+
+The metadata block **MUST** contain a `scope` field, which can be `"file"`, `"function"`, or `"lines"`.
+
+---
+
+### **Scope 1: `file`**
+
+Use this to create a new file or to completely rewrite an existing one.
+
+**Required Fields:**
+*   `scope = "file"`
+*   `file` (string): The relative path to the file.
+*   `is_new_file` (boolean): `true` if you are creating a new file, `false` if you are rewriting an existing one.
+*   `description` (string): A brief explanation of the change in quotes ""
+
+#### **Example 1.1: Creating a new file**
+!MODIFICATION new_helpers.R
+scope = "file"
+file = "R/new_helpers.R"
+is_new_file = true
+description = "Create a new file for helper functions."
+---
+```r
+# A new helper function
+say_hello = function(name) {
+  paste0("Hello, ", name)
+}
+```
+!END_MODIFICATION new_helpers.R
+
+#### **Example 1.2: Rewriting an existing file**
+!MODIFICATION README.md
+scope = "file"
+file = "README.md"
+is_new_file = false
+description = "Rewrite the README to add installation instructions."
+---
+```md
+# My Awesome Project
+
+## Installation
+
+Run `remotes::install_github("user/repo")` to install.
+```
+!END_MODIFICATION README.md
+
+---
+
+### **Scope 2: `function`**
+
+Use this to replace an existing function or to insert a new function. The new code payload should contain the complete function, including any preceding comments.
+
+#### **Fields for replacing an existing function:**
+*   `scope = "function"`
+*   `file` (string): The relative path to the file.
+*   `function_name` (string): The name of the function to be replaced.
+*   `description` (string): A brief explanation of the change in quotes.
+
+#### **Fields for inserting a new function:**
+*   `scope = "function"`
+*   `file` (string): The relative path to the file.
+*   `description` (string): A brief explanation of the change, enclose in quotes.
+*   **One of** the following fields to specify the insertion point. They are mutually exclusive.
+    *   `insert_top = true`: Insert at the top of the file.
+    *   `insert_bottom = true`: Insert at the bottom of the file.
+    *   `insert_before_fun = "function_name"`: Insert before the specified function.
+    *   `insert_after_fun = "function_name"`: Insert after the specified function.
+
+
+#### **Example 2.1: Replacing an existing function**
+!MODIFICATION calculate_sum utils.R
+scope = "function"
+file = "R/utils.R"
+function_name = "calculate_sum"
+description = "Update `calculate_sum` to handle NA values correctly.""
+---
+```r
+#' Calculate the sum of a vector, ignoring NAs
+calculate_sum = function(vec) {
+  sum(vec, na.rm = TRUE)
+}
+```
+!END_MODIFICATION calculate_sum utils.R
+
+#### **Example 2.2: Inserting a new function at the bottom of a file**
+!MODIFICATION is_positive in R/utils.R
+scope = "function"
+file = "R/utils.R"
+insert_bottom = true
+description = "Add a new helper function to check for positivity."
+---
+```r
+
+#' Check if a number is positive
+is_positive = function(n) {
+  n > 0
+}
+```
+!END_MODIFICATION is_positive in R/utils.R
+
+#### **Example 2.3: Inserting a new function after a specific function**
+!MODIFICATION is_negative in R/utils.R
+scope = "function"
+file = "R/utils.R"
+insert_after_fun = "is_positive"
+description = "Add a new helper function `is_negative` after `is_positive`."
+---
+```r
+
+#' Check if a number is negative
+is_negative = function(n) {
+  n < 0
+}
+```
+!END_MODIFICATION is_negative in R/utils.R
+
+
 ###########
 # Test run
 ###########
@@ -13603,6 +13783,159 @@ reghdfe y x i1 i2
 gen byte u_sample = e(sample)
 reg y x1 if u_sample == 1
 
+```
+## /home/rstudio/repbox/projects/test/mod/code/data_manip.do
+```{do}
+use ../data/data.dta, clear
+tsset i year
+
+* 1. Test Recode with labels and generation of new variable
+* Checks if `stata2r` maps rule translations and preserves factor levels
+recode i1 (1/2 = 1 "Low") (3/max = 2 "High"), gen(i1_cat)
+
+* 2. Test egen group-by operations
+egen mean_x1 = mean(x1), by(i1_cat)
+egen max_y = max(y), by(year)
+
+* 3. Test missing value handling and conditional replacement
+* Checks sfun_missing() and sfun_stata_cond()
+gen adj_x1 = cond(missing(x1), mean_x1, x1)
+
+* 4. Regression using the newly generated labels and manipulated columns
+reg y adj_x1 max_y i.i1_cat
+```
+## /home/rstudio/repbox/projects/test/mod/code/ex1.do
+```{do}
+use ../data/data.dta, clear
+tsset i year
+
+* 1. Data Modifications
+* Tests: standard 'gen', 'egen' with group-bys, and TS operators outside of regressions
+egen mean_y = mean(y), by(i)
+gen sq_x1 = x1^2 - mean_y
+gen dx1 = d.x1
+reg y sq_x1 dx1
+
+* 2a simple reghdfe
+
+reghdfe y x1, absorb(i1 i2) vce(cluster i year)
+
+
+/*
+* 2. reghdfe with Time-Series Interactions and Multi-way Clustering
+* Tests: reghdfe translation, continuous TS operators in interactions, and 2-way clusters
+reghdfe y c.x1#c.L.x1, absorb(i1 i2) vce(cluster i year)
+
+* 3. Filter using the exact sample from the previous regression
+* Tests: extraction of e(sample) into a variable and 'if' condition filtering in R
+gen byte u_sample = e(sample)
+reg y sq_x1 dx1 if u_sample == 1
+
+* 4. xi: prefix and subsequent wildcard usage
+* Tests: 'xi:' creating '_I' dummies and interaction terms (using '|'),
+* followed by globbing/wildcard expansion ('_I*') in the next step.
+xi: reg y i.i2|x1
+reghdfe y mean_y _I*, absorb(i1)
+*/
+
+/*
+* 5. 3-way interaction with mixed continuous and factor variables
+* Tests: 3-way sorting & splitting, omitting 'c.' on a continuous variable (Stata assumes 'c.' if not 'i.')
+reg y x1#i.i1#i.i2
+
+* 6. reghdfe with a 3-way pure factor interaction and robust SEs
+* Tests: High-dimensional factor interactions parsed via feols/fixest
+reghdfe y i.i1#i.i2#i.year, absorb(i) vce(robust)
+*/
+
+```
+## /home/rstudio/repbox/projects/test/mod/code/probit_logit.do
+```{do}
+use ../data/data.dta, clear
+
+* 1. Standard probit with robust SE and factor interactions
+probit y x1 c.x#i.i1, vce(robust)
+
+* 2. Extract e(sample) to use it as a filter condition later
+gen byte probit_sample = e(sample)
+
+* 3. Standard logit using the extracted sample and clustered SE
+logit y x1 x if probit_sample == 1, vce(cluster i)
+
+* 4. Legacy dprobit (marginal effects)
+* Tests whether the pipeline maps this correctly to R's mfx::probitmfx
+dprobit y x1 x i.i1 i.i2
+```
+## /home/rstudio/repbox/projects/test/mod/code/reghdfe.do
+```{do}
+use ../data/data.dta, clear
+tsset i year
+
+* 1. reghdfe with multi-way clustering
+reghdfe y x1 x, absorb(i1 i2) vce(cluster i year)
+
+* 2. reghdfe with factor interactions inside the absorb() option
+* Tests if the formula generator can parse absorb(i1#year)
+reghdfe y x1, absorb(i1 i2#year) vce(robust)
+
+* 3. Extracting estimation results from reghdfe
+gen nobs_reg = e(N)
+gen r2_reg = e(r2)
+
+* 4. reghdfe with time-series operators
+* Tests whether d.y and L.d.x1 translate correctly into the fixest formula
+reghdfe d.y d.x1 L.d.x1 if nobs_reg > 100, absorb(i) vce(cluster i)
+```
+## /home/rstudio/repbox/projects/test/mod/code/scalars.do
+```{do}
+use ../data/data.dta, clear
+
+* 1. Test summarize and extraction of r() macros
+sum x1, detail
+gen byte is_above_median = (x1 > r(p50))
+gen mean_x1 = r(mean)
+
+* 2. Test defining scalars and using them in data modifications
+scalar cutoff = 10.5
+gen x1_capped = cond(x1 > cutoff, cutoff, x1)
+
+* 3. Test filtering using a scalar directly in a regression command
+scalar min_year = 1995
+reg y x1 x2 if year > min_year
+
+* 4. Test filtering using the previously generated macro-based dummy
+reghdfe y x1_capped if is_above_median == 1, absorb(i1) vce(cluster i)
+```
+## /home/rstudio/repbox/projects/test/mod/code/ts_op.do
+```{do}
+use ../data/data.dta, clear
+
+tsset i year
+
+reg y c.x#i.i2#i.i1
+
+reg y x
+
+reg y x if i1==2, robust
+
+* The following expressions cannot be correctly parsed
+reg y L(0/3).x1 S2.i1
+reg L1.S2.y cL.x1
+
+reg y cL.x1#i2
+
+reg y iL.i1
+
+reg L1.S2.y x1
+
+
+reg y L(0/3).x1
+reg y i.L(0/3).i1#i2
+
+
+reg y L1.x1
+
+reg d.y d.x1 i.i1, robust
 ```
 
 # The R test script that is run
@@ -13648,7 +13981,7 @@ mrb = mrb_run_r_reg(mrb)
 # Run log of the script
 
 
-### source_with_log start: 2026-03-23 08:16:41 
+### source_with_log start: 2026-03-24 07:48:50 
 ### file: /home/rstudio/repbox/projects/test/run/run_test.R 
 
 
@@ -13682,12 +14015,44 @@ mrb = mrb_run_r_reg(mrb)
   R static code analysis...
 
 
-Replicate  test  with  1  do files.
+Replicate  test  with  7  do files.
 
-1 of 1 inject and run
+1 of 7 inject and run
 
 Run  /home/rstudio/repbox/projects/test/mod/code/repbox_current_test.do
     finished after 0.19 seconds.
+
+2 of 7 inject and run
+
+Run  /home/rstudio/repbox/projects/test/mod/code/repbox_data_manip.do
+    finished after 0.08 seconds.
+
+3 of 7 inject and run
+
+Run  /home/rstudio/repbox/projects/test/mod/code/repbox_ex1.do
+    finished after 0.19 seconds.
+
+4 of 7 inject and run
+
+Run  /home/rstudio/repbox/projects/test/mod/code/repbox_probit_logit.do
+    finished after 0.04 seconds.
+
+5 of 7 inject and run
+
+Run  /home/rstudio/repbox/projects/test/mod/code/repbox_reghdfe.do
+    finished after 0.2 seconds.
+
+6 of 7 inject and run
+
+Run  /home/rstudio/repbox/projects/test/mod/code/repbox_scalars.do
+    finished after 0.18 seconds.
+
+7 of 7 inject and run
+
+Run  /home/rstudio/repbox/projects/test/mod/code/repbox_ts_op.do
+    finished after 0.16 seconds.
+
+4 of the 54 run commands without missing data threw an error.
 
 > drf = repboxDRF::drf_load(project_dir)
 
@@ -13702,57 +14067,117 @@ Run  /home/rstudio/repbox/projects/test/mod/code/repbox_current_test.do
 
 
 Run  /home/rstudio/repbox/projects/test/metareg/base/stata_code/mrb_stata.do
-    finished after 0.18 seconds.
+    finished after 0.33 seconds.
 
 > mrb = mrb_run_r_base(mrb)
 
-mrb_r_base processing runids: 3 5 Error in `dplyr::mutate()`:
-ℹ In argument: `u_sample = as.integer(e(sample))`.
-Caused by error in `e()`:
-! could not find function "e"
+mrb_r_base processing runids: 3 5 12 18 19 27 28 31 Error in `data[, all_vars, drop = FALSE]` at stata2r/R/t_estimation_cmd.R:158:5:
+! Can't subset columns that don't exist.
+✖ Column `i2#year` doesn't exist.
 Run `rlang::last_trace()` to see where the error occurred.
-30: (function () 
+31: (function () 
     mrb_test_traceback())()
-29: stop(fallback)
-28: signal_abort(cnd, .file)
-27: abort(message, class = error_class, parent = parent, call = error_call)
-26: h(simpleError(msg, call))
-25: .handleSimpleError(function (cnd) 
+30: stop(fallback)
+29: signal_abort(cnd)
+28: cnd_signal(cnd)
+27: (function (cnd) 
     {
-        local_error_context(dots, i = frame[[i_sym]], mask = mask)
-        if (inherits(cnd, "dplyr:::internal_error")) {
-            parent <- error_cnd(message = bullets(cnd))
+        cnd$subscript_arg <- j_arg
+        cnd$subscript_elt <- "column"
+        if (isTRUE(assign) && !isTRUE(cnd$subscript_action %in% c("negate"))) {
+            cnd$subscript_action <- "assign"
         }
-        else {
-            parent <- cnd
+        cnd_signal(cnd)
+    })(list(message = "", trace = list(call = list(metaregBase::mrb_run_as_test(project_dir = "~/repbox/projects/test", 
+        "~/repbox/projects/test/run/run_test.R", opts = opts), source_with_log(run_script, 
+        log_con = con), withCallingHandlers(source(file = file, local = envir, 
+        echo = echo, print.eval = print.eval, prompt.echo = prompt.echo, 
+        max.deparse.length = max.deparse.length, chdir = chdir, keep.source = keep.source), 
+        warning = function(w) {
+            warnings_seen <<- c(warnings_seen, conditionMessage(w))
+            invokeRestart("muffleWarning")
+        }), source(file = file, local = envir, echo = echo, print.eval = print.eval, 
+        prompt.echo = prompt.echo, max.deparse.length = max.deparse.length, 
+        chdir = chdir, keep.source = keep.source), withVisible(eval(ei, 
+        envir)), eval(ei, envir), eval(ei, envir), mrb_run_r_base(mrb), 
+        mrb_run_r_base_step(mrb, pid), repboxDRF::drf_get_data(pid, 
+            drf = mrb$drf), eval(rcode_call, envir = exec_env), eval(rcode_call, 
+            envir = exec_env), scmd_estimation_effects(data = data, 
+            dep_var = "y", model_vars = c("x1", "i1", "i2#year"), 
+            needed_e = c("e(N)", "e(r2)"), estimator = "reghdfe", 
+            formula_terms = c("x1")), stats::complete.cases(data[, 
+            all_vars, drop = FALSE]), data[, all_vars, drop = FALSE], 
+        `[.tbl_df`(data, , all_vars, drop = FALSE), vectbl_as_col_location(j, 
+            length(x), names(x), j_arg = j_arg, assign = FALSE), 
+        subclass_col_index_errors(vec_as_location(j, n, names, missing = "error", 
+            call = call), j_arg = j_arg, assign = assign), withCallingHandlers(expr, 
+            vctrs_error_subscript = function(cnd) {
+                cnd$subscript_arg <- j_arg
+                cnd$subscript_elt <- "column"
+                if (isTRUE(assign) && !isTRUE(cnd$subscript_action %in% 
+                    c("negate"))) {
+                    cnd$subscript_action <- "assign"
+                }
+                cnd_signal(cnd)
+            }), vec_as_location(j, n, names, missing = "error", call = call), 
+        `<fn>`(), stop_subscript_oob(i = i, subscript_type = subscript_type, 
+            names = names, subscript_action = subscript_action, subscript_arg = subscript_arg, 
+            call = call), stop_subscript(class = "vctrs_error_subscript_oob", 
+            i = i, subscript_type = subscript_type, ..., call = call), 
+        abort(class = c(class, "vctrs_error_subscript"), i = i, ..., 
+            call = call)), parent = c(0L, 1L, 2L, 2L, 4L, 4L, 6L, 
+    1L, 8L, 9L, 10L, 11L, 12L, 13L, 13L, 13L, 16L, 17L, 18L, 17L, 
+    0L, 21L, 22L, 23L), visible = c(TRUE, TRUE, TRUE, TRUE, TRUE, 
+    TRUE, TRUE, TRUE, TRUE, TRUE, TRUE, TRUE, TRUE, TRUE, TRUE, TRUE, 
+    FALSE, FALSE, FALSE, FALSE, FALSE, FALSE, FALSE, FALSE), namespace = c("metaregBase", 
+    "metaregBase", "base", "base", "base", "base", "base", "metaregBase", 
+    "metaregBase", "repboxDRF", "base", "base", "stata2r", "stats", 
+    NA, "tibble", "tibble", "tibble", "base", "vctrs", "vctrs", "vctrs", 
+    "vctrs", "rlang"), scope = c("::", "::", "::", "::", "::", "::", 
+    "::", "::", "::", "::", "::", "::", "::", "::", NA, ":::", ":::", 
+    ":::", "::", "::", "local", ":::", ":::", "::"), error_frame = c(FALSE, 
+    FALSE, FALSE, FALSE, FALSE, FALSE, FALSE, FALSE, FALSE, FALSE, 
+    FALSE, FALSE, FALSE, FALSE, FALSE, TRUE, FALSE, FALSE, FALSE, 
+    FALSE, FALSE, FALSE, FALSE, FALSE)), parent = NULL, i = c("y", 
+    "x1", "i1", "i2#year"), subscript_type = "character", names = c("year", 
+    "date", "i", "y", "x1", "d1", "d2", "i1", "i2", "f1", "my_long_factor", 
+    "my_long_integer", "key", "stata2r_original_order_idx"), subscript_action = NULL, 
+        subscript_arg = "j", rlang = list(inherit = TRUE), call = data[, 
+            all_vars, drop = FALSE]))
+26: signalCondition(cnd)
+25: signal_abort(cnd, .file)
+24: abort(class = c(class, "vctrs_error_subscript"), i = i, ..., 
+        call = call)
+23: stop_subscript(class = "vctrs_error_subscript_oob", i = i, subscript_type = subscript_type, 
+        ..., call = call)
+22: stop_subscript_oob(i = i, subscript_type = subscript_type, names = names, 
+        subscript_action = subscript_action, subscript_arg = subscript_arg, 
+        call = call)
+21: (function () 
+    stop_subscript_oob(i = i, subscript_type = subscript_type, names = names, 
+        subscript_action = subscript_action, subscript_arg = subscript_arg, 
+        call = call))()
+20: vec_as_location(j, n, names, missing = "error", call = call)
+19: withCallingHandlers(expr, vctrs_error_subscript = function(cnd) {
+        cnd$subscript_arg <- j_arg
+        cnd$subscript_elt <- "column"
+        if (isTRUE(assign) && !isTRUE(cnd$subscript_action %in% c("negate"))) {
+            cnd$subscript_action <- "assign"
         }
-        message <- c(cnd_bullet_header(action), i = if (has_active_group_context(mask)) cnd_bullet_cur_group_label())
-        abort(message, class = error_class, parent = parent, call = error_call)
-    }, "could not find function \"e\"", base::quote(e(sample)))
-24: .Call(dplyr_mask_eval_all_mutate, quo, private)
-23: eval()
-22: mask$eval_all_mutate(quo)
-21: mutate_col(dots[[i]], data, mask, new_columns)
-20: withCallingHandlers(for (i in seq_along(dots)) {
-        poke_error_context(dots, i, mask = mask)
-        context_poke("column", old_current_column)
-        new_columns <- mutate_col(dots[[i]], data, mask, new_columns)
-    }, error = dplyr_error_handler(dots = dots, mask = mask, bullets = mutate_bullets, 
-        error_call = error_call, error_class = "dplyr:::mutate_error"), 
-        warning = dplyr_warning_handler(state = warnings_state, mask = mask, 
-            error_call = error_call))
-19: mutate_cols(.data, dplyr_quosures(...), by)
-18: mutate.data.frame(., u_sample = as.integer(e(sample)))
-17: dplyr::mutate(., u_sample = as.integer(e(sample)))
-16: data %>% dplyr::mutate(u_sample = as.integer(e(sample))) at <text>#1
-15: eval(parse(text = paste(pipe_el, collapse = " %>% ")), envir = list(data = data), 
-        enclos = parent.frame())
-14: eval(parse(text = paste(pipe_el, collapse = " %>% ")), envir = list(data = data), 
-        enclos = parent.frame()) at t_generate.R#79
-13: scmd_generate(data = data, new_var = "u_sample", r_expr_str = "e(`sample`)", 
-        is_string = FALSE, force_integer = TRUE) at <text>#3
+        cnd_signal(cnd)
+    })
+18: subclass_col_index_errors(vec_as_location(j, n, names, missing = "error", 
+        call = call), j_arg = j_arg, assign = assign)
+17: vectbl_as_col_location(j, length(x), names(x), j_arg = j_arg, 
+        assign = FALSE)
+16: `[.tbl_df`(data, , all_vars, drop = FALSE) at t_estimation_cmd.R#158
+15: data[, all_vars, drop = FALSE] at t_estimation_cmd.R#158
+14: stats::complete.cases(data[, all_vars, drop = FALSE]) at t_estimation_cmd.R#158
+13: scmd_estimation_effects(data = data, dep_var = "y", model_vars = c("x1", 
+        "i1", "i2#year"), needed_e = c("e(N)", "e(r2)"), estimator = "reghdfe", 
+        formula_terms = c("x1")) at <text>#5
 12: eval(rcode_call, envir = exec_env)
-11: eval(rcode_call, envir = exec_env) at drf_run_r.R#86
+11: eval(rcode_call, envir = exec_env) at drf_run_r.R#85
 10: repboxDRF::drf_get_data(pid, drf = mrb$drf) at mrb_r_base.R#96
 9: mrb_run_r_base_step(mrb, pid) at mrb_r_base.R#50
 8: mrb_run_r_base(mrb) at run_test.R#32
@@ -13782,22 +14207,13 @@ Run `rlang::last_trace()` to see where the error occurred.
 # Your Task
 ##################################
 
-I just recently updated stata2r. E.g. it has now a function that marks regression commands that perform data manipulation or generate e() variables that are later required, it is e.g. called in main.R
+Please try to find the reason for the errors / problems noted in the test report.
 
-  # transforms do_code to a dataframe with
-  # one row for each code line possible
-  # perform some preparsing
-  # the field do_code can contain the original code
-  cmd_df = do_parse(do_code)
+Can you find the problem in some code in the provided package. How to solve it?
 
-  # will add field "do_translate"
-  # if FALSE the stata command does not modify the data set
-  # and can be ignored
-  cmd_df = mark_data_manip_cmd(cmd_df)
+Would additional information be helpful to pinpoint the bug? Yes, what?
 
-but I think there is also an external function that can be directly called.
+How would you improve the code that generates the test report?
 
-Propose how to update repboxDRF and metaregBase to account for it, e.g.
-when deciding which regression commands need to be added when Stata code that prepares the data is generated.
 
-I also thought stata2r performs the translation of e() functions, I am not completely sure why the error in the test report still arises. Propose a solution.
+
