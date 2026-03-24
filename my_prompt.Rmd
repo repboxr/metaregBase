@@ -4,7 +4,7 @@ Below is code from selected R projects from my repbox / metareg toolbox.
 # Package metaregBase
 
 
-# FILE: DESCRIPTION
+# FILE: /home/rstudio/repbox/metaregBase/DESCRIPTION
 ```
 Package: metaregBase
 Type: Package
@@ -24,12 +24,12 @@ Encoding: UTF-8
 LazyData: true
 Depends: repboxDB, repboxUtils, repboxDRF, repboxStataReg, regtranslate
 ```
-# END OF FILE: DESCRIPTION
+# END OF FILE: /home/rstudio/repbox/metaregBase/DESCRIPTION
 
 -----------------------------------------------------------
 
 
-# FILE: colstat.R
+# FILE: /home/rstudio/repbox/metaregBase/R/colstat.R
 ```
 make_cols_small_info = function(df, cols = colnames(df)) {
   restore.point("make_cols_small_info")
@@ -244,12 +244,12 @@ colstat_dummy = function(col,df, reg_df=df, val = as_integer(df[[col]]), reg_val
   )
 }
 ```
-# END OF FILE: colstat.R
+# END OF FILE: /home/rstudio/repbox/metaregBase/R/colstat.R
 
 -----------------------------------------------------------
 
 
-# FILE: debug_tools.R
+# FILE: /home/rstudio/repbox/metaregBase/R/debug_tools.R
 ```
 set_debug_mode = function(debug_mode=TRUE) {
   options(repbox.debug_mode = debug_mode)
@@ -362,12 +362,12 @@ mrb_test_traceback = function() {
   #print(str)
 }
 ```
-# END OF FILE: debug_tools.R
+# END OF FILE: /home/rstudio/repbox/metaregBase/R/debug_tools.R
 
 -----------------------------------------------------------
 
 
-# FILE: mrb_agg_stata.R
+# FILE: /home/rstudio/repbox/metaregBase/R/mrb_agg_stata.R
 ```
 
 # TO DO: Transform to parcels
@@ -525,12 +525,12 @@ read_var_equal_val_file = function(file, as.numeric=FALSE, wide = FALSE) {
   res
 }
 ```
-# END OF FILE: mrb_agg_stata.R
+# END OF FILE: /home/rstudio/repbox/metaregBase/R/mrb_agg_stata.R
 
 -----------------------------------------------------------
 
 
-# FILE: mrb_cmd_types.R
+# FILE: /home/rstudio/repbox/metaregBase/R/mrb_cmd_types.R
 ```
 stata_cmds_with_margin = function() {
   #cmds = readLines("~/repbox/repboxReg/inst/misc/reg_margin_cmds.txt")
@@ -546,12 +546,12 @@ stata_cmds_with_exp_coef = function() {
   c("nbreg", "poisson", "gnbreg","etpoisson", "tnbreg","tpoisson", "zinb", "zip", "expoisson")
 }
 ```
-# END OF FILE: mrb_cmd_types.R
+# END OF FILE: /home/rstudio/repbox/metaregBase/R/mrb_cmd_types.R
 
 -----------------------------------------------------------
 
 
-# FILE: mrb_col_info.R
+# FILE: /home/rstudio/repbox/metaregBase/R/mrb_col_info.R
 ```
 # Store information about all columns in data set
 # (not only those used in the regression)
@@ -693,12 +693,12 @@ recompute_colinfo_groups = function(colinfo) {
   df
 }
 ```
-# END OF FILE: mrb_col_info.R
+# END OF FILE: /home/rstudio/repbox/metaregBase/R/mrb_col_info.R
 
 -----------------------------------------------------------
 
 
-# FILE: mrb_cterms.R
+# FILE: /home/rstudio/repbox/metaregBase/R/mrb_cterms.R
 ```
 # Parse and map the shown coefficient names (terms) in regression
 # ouputs of different stata and r functions.
@@ -1051,7 +1051,7 @@ create_cterm_col = function(dat, cterm, timevar=NA, panelvar=NA, tdelta=NA, chec
 # Replace the existing create_prefix_nolevel_cterm_col function:
 
 create_prefix_nolevel_cterm_col = function(dat,cterm, panelvar=NA, timevar=NA, tdelta=NA) {
-  restore.point("create_numeric_cterm_col")
+  restore.point("create_prefix_nolevel_cterm_col")
 
   prefix  = cterm_extract_prefix(cterm)
   basevar = cterm_extract_base(cterm)
@@ -1079,6 +1079,7 @@ create_prefix_nolevel_cterm_col = function(dat,cterm, panelvar=NA, timevar=NA, t
   baseval = dat[[basevar]]
   if (prefix=="log") {
     dat[[cterm]] = log(baseval)
+    return(dat)
   }
 
   prefix.type = toupper(substring(prefix,1,1))
@@ -1134,6 +1135,14 @@ create_prefix_nolevel_cterm_col = function(dat,cterm, panelvar=NA, timevar=NA, t
     args$n = args$n * tdelta
   }
 
+  # Explicit length check to satisfy collapse's requirement
+  n_val = if (!is.null(args$n)) abs(args$n) else 1
+  diff_val = if (!is.null(args$diff)) abs(args$diff) else 1
+
+  if (prefix.type %in% c("L", "F", "D", "S") && length(args$x) <= n_val * diff_val) {
+    dat[[cterm]] = rep(NA_real_, length(args$x))
+    return(dat)
+  }
 
   dat[[cterm]] = do.call(fun, args)
   dat
@@ -1183,12 +1192,12 @@ sort_interaction_terms = function(terms) {
 }
 
 ```
-# END OF FILE: mrb_cterms.R
+# END OF FILE: /home/rstudio/repbox/metaregBase/R/mrb_cterms.R
 
 -----------------------------------------------------------
 
 
-# FILE: mrb.R
+# FILE: /home/rstudio/repbox/metaregBase/R/mrb.R
 ```
 # runs a complete metaregBase analysis
 
@@ -1226,12 +1235,12 @@ mrb_init = function(project_dir=drf$project_dir, drf=NULL) {
 
 
 ```
-# END OF FILE: mrb.R
+# END OF FILE: /home/rstudio/repbox/metaregBase/R/mrb.R
 
 -----------------------------------------------------------
 
 
-# FILE: mrb_r_base.R
+# FILE: /home/rstudio/repbox/metaregBase/R/mrb_r_base.R
 ```
 # metaregBase R run that
 # aggregates all information from Stata base run
@@ -1525,12 +1534,12 @@ mrb_make_r_base_parcels = function(mrb, save=TRUE) {
   return(mrb)
 }
 ```
-# END OF FILE: mrb_r_base.R
+# END OF FILE: /home/rstudio/repbox/metaregBase/R/mrb_r_base.R
 
 -----------------------------------------------------------
 
 
-# FILE: mrb_regcoef.R
+# FILE: /home/rstudio/repbox/metaregBase/R/mrb_regcoef.R
 ```
 # Helper function for regcoef (repdb table)
 
@@ -1781,12 +1790,12 @@ max_empty_na = function(x, na.rm=TRUE) {
 }
 
 ```
-# END OF FILE: mrb_regcoef.R
+# END OF FILE: /home/rstudio/repbox/metaregBase/R/mrb_regcoef.R
 
 -----------------------------------------------------------
 
 
-# FILE: mrb_reg_tools.R
+# FILE: /home/rstudio/repbox/metaregBase/R/mrb_reg_tools.R
 ```
 # ==============================================================================
 # PART 1: Rescued & Adapted Variable Expansion (Globbing, Ranges, Abbreviations)
@@ -2191,12 +2200,12 @@ vi_add_ia_type = function(vi) {
 }
 
 ```
-# END OF FILE: mrb_reg_tools.R
+# END OF FILE: /home/rstudio/repbox/metaregBase/R/mrb_reg_tools.R
 
 -----------------------------------------------------------
 
 
-# FILE: mrb_regxvar.R
+# FILE: /home/rstudio/repbox/metaregBase/R/mrb_regxvar.R
 ```
 # Store information about expanded interaction terms and factors
 # This will allow to rebuild regressions in a way that drops exactly
@@ -2357,12 +2366,12 @@ make_regxvar_cols = function(dat, regxvar) {
 }
 
 ```
-# END OF FILE: mrb_regxvar.R
+# END OF FILE: /home/rstudio/repbox/metaregBase/R/mrb_regxvar.R
 
 -----------------------------------------------------------
 
 
-# FILE: mrb_r_reg.R
+# FILE: /home/rstudio/repbox/metaregBase/R/mrb_r_reg.R
 ```
 # metaregBase R run that
 # runs regressions in R
@@ -2657,12 +2666,12 @@ extract_reg_stats_from_regscalar = function(regscalar) {
 
 
 ```
-# END OF FILE: mrb_r_reg.R
+# END OF FILE: /home/rstudio/repbox/metaregBase/R/mrb_r_reg.R
 
 -----------------------------------------------------------
 
 
-# FILE: mrb_se.R
+# FILE: /home/rstudio/repbox/metaregBase/R/mrb_se.R
 ```
 # Parses SE information from a Stata regression and
 # returns the relevant SE info stored in the repdb reg table
@@ -2815,12 +2824,12 @@ repdb_parse_se_args = function(se_args, as_df=FALSE) {
   tibble(arg_name=var, arg_val=val)
 }
 ```
-# END OF FILE: mrb_se.R
+# END OF FILE: /home/rstudio/repbox/metaregBase/R/mrb_se.R
 
 -----------------------------------------------------------
 
 
-# FILE: mrb_stata.R
+# FILE: /home/rstudio/repbox/metaregBase/R/mrb_stata.R
 ```
 # New attempt metareg base: compute Stata code
 # for repboxDRF generated Stata file
@@ -2936,12 +2945,12 @@ repbox_write_dprobit_coef_se "',outdir, "/dprobit_", runid, ".csv\n")
   code
 }
 ```
-# END OF FILE: mrb_stata.R
+# END OF FILE: /home/rstudio/repbox/metaregBase/R/mrb_stata.R
 
 -----------------------------------------------------------
 
 
-# FILE: mrb_test_code_path.R
+# FILE: /home/rstudio/repbox/metaregBase/R/mrb_test_code_path.R
 ```
 # For a given runid=pid
 # create a text that shows the complete path including Stata data modification steps,
@@ -2999,12 +3008,12 @@ mrb_test_code_path = function(project_dir, runid, parcels, drf, opts=mrb_test_op
   paste0(txt_lines, collapse = "\n")
 }
 ```
-# END OF FILE: mrb_test_code_path.R
+# END OF FILE: /home/rstudio/repbox/metaregBase/R/mrb_test_code_path.R
 
 -----------------------------------------------------------
 
 
-# FILE: mrb_test_coef.R
+# FILE: /home/rstudio/repbox/metaregBase/R/mrb_test_coef.R
 ```
 mrb_test_regcoef_diff_text = function(
   diff_tab,
@@ -3213,12 +3222,12 @@ mrb_test_fmt_num = function(x, digits = 4) {
   formatC(as.numeric(x), digits = digits, format = "fg", flag = "#")
 }
 ```
-# END OF FILE: mrb_test_coef.R
+# END OF FILE: /home/rstudio/repbox/metaregBase/R/mrb_test_coef.R
 
 -----------------------------------------------------------
 
 
-# FILE: mrb_test_data.R
+# FILE: /home/rstudio/repbox/metaregBase/R/mrb_test_data.R
 ```
 
 mrb_test_data_preview_text = function(runid, drf, parcels, n = 5, opts=mrb_test_opts()) {
@@ -3320,12 +3329,12 @@ mrb_test_data_preview_text = function(runid, drf, parcels, n = 5, opts=mrb_test_
 
 
 ```
-# END OF FILE: mrb_test_data.R
+# END OF FILE: /home/rstudio/repbox/metaregBase/R/mrb_test_data.R
 
 -----------------------------------------------------------
 
 
-# FILE: mrb_test.R
+# FILE: /home/rstudio/repbox/metaregBase/R/mrb_test.R
 ```
 # Tools for systematic testing the metaregBase pipeline
 # Will be used for specific test projects
@@ -3553,12 +3562,12 @@ mrb_test_generate_flags = function(project_dir, parcels, drf = NULL,  opts=mrb_t
   return(res)
 }
 ```
-# END OF FILE: mrb_test.R
+# END OF FILE: /home/rstudio/repbox/metaregBase/R/mrb_test.R
 
 -----------------------------------------------------------
 
 
-# FILE: stata_util.R
+# FILE: /home/rstudio/repbox/metaregBase/R/stata_util.R
 ```
 expand_stata_abbr_one_val = function(val, abbr.li) {
   for (i in seq_along(abbr.li)) {
@@ -3572,12 +3581,12 @@ in_stata_abbr = function(val, abbr.li) {
   val %in% all.abbr
 }
 ```
-# END OF FILE: stata_util.R
+# END OF FILE: /home/rstudio/repbox/metaregBase/R/stata_util.R
 
 -----------------------------------------------------------
 
 
-# FILE: static_reg.R
+# FILE: /home/rstudio/repbox/metaregBase/R/static_reg.R
 ```
 # Static code analysis of regression commands
 # Note that the static code can still contain Stata macros
@@ -3644,12 +3653,12 @@ static_reg_cmd_to_reg_df = function(reg_cmd) {
 
 }
 ```
-# END OF FILE: static_reg.R
+# END OF FILE: /home/rstudio/repbox/metaregBase/R/static_reg.R
 
 -----------------------------------------------------------
 
 
-# FILE: utils.R
+# FILE: /home/rstudio/repbox/metaregBase/R/utils.R
 ```
 parcel_for_runid = function(parcel, runid) {
   parcel[parcel$runid==runid, ]
@@ -3745,7 +3754,7 @@ files_to_md_fences = function(files, path=NULL) {
 }
 
 ```
-# END OF FILE: utils.R
+# END OF FILE: /home/rstudio/repbox/metaregBase/R/utils.R
 
 -----------------------------------------------------------
 
@@ -3759,7 +3768,7 @@ files_to_md_fences = function(files, path=NULL) {
 # Package repboxStataReg
 
 
-# FILE: DESCRIPTION
+# FILE: /home/rstudio/repbox/repboxStataReg/DESCRIPTION
 ```
 Package: repboxStataReg
 Type: Package
@@ -3780,12 +3789,12 @@ Encoding: UTF-8
 LazyData: true
 Depends: repboxDB, repboxUtils, repboxDRF, repboxStata
 ```
-# END OF FILE: DESCRIPTION
+# END OF FILE: /home/rstudio/repbox/repboxStataReg/DESCRIPTION
 
 -----------------------------------------------------------
 
 
-# FILE: extract_reg_stata.R
+# FILE: /home/rstudio/repbox/repboxStataReg/R/extract_reg_stata.R
 ```
 # Will be called from repboxStata
 #
@@ -3920,12 +3929,12 @@ parse.ereturn.injection = function(str) {
 
 
 ```
-# END OF FILE: extract_reg_stata.R
+# END OF FILE: /home/rstudio/repbox/repboxStataReg/R/extract_reg_stata.R
 
 -----------------------------------------------------------
 
 
-# FILE: inject_reg_stata.R
+# FILE: /home/rstudio/repbox/repboxStataReg/R/inject_reg_stata.R
 ```
 # Will be called from repboxStata
 #
@@ -3955,12 +3964,12 @@ display "#~# END INJECT REG_ERETURN ',do$donum,' ', lines,' `repbox_local_cmd_co
 
 
 ```
-# END OF FILE: inject_reg_stata.R
+# END OF FILE: /home/rstudio/repbox/repboxStataReg/R/inject_reg_stata.R
 
 -----------------------------------------------------------
 
 
-# FILE: rsr.R
+# FILE: /home/rstudio/repbox/repboxStataReg/R/rsr.R
 ```
 example = function() {
   library(repboxStataReg)
@@ -4119,12 +4128,12 @@ rsr_make_stata_reg_run_info_parcel = function(project_dir, parcels=list(), repbo
   invisible(parcels)
 }
 ```
-# END OF FILE: rsr.R
+# END OF FILE: /home/rstudio/repbox/repboxStataReg/R/rsr.R
 
 -----------------------------------------------------------
 
 
-# FILE: static_reg.R
+# FILE: /home/rstudio/repbox/repboxStataReg/R/static_reg.R
 ```
 # Static code analysis of regression commands
 # Note that the static code can still contain Stata macros
@@ -4191,12 +4200,12 @@ static_reg_cmd_to_reg_df = function(reg_cmd) {
 
 }
 ```
-# END OF FILE: static_reg.R
+# END OF FILE: /home/rstudio/repbox/repboxStataReg/R/static_reg.R
 
 -----------------------------------------------------------
 
 
-# FILE: utils.R
+# FILE: /home/rstudio/repbox/repboxStataReg/R/utils.R
 ```
 touchFile = function (pathname, ...) {
   if (!exists("Sys.setFileTime", mode = "function")) {
@@ -4274,7 +4283,7 @@ df.rows.to.list = function(df) {
 }
 
 ```
-# END OF FILE: utils.R
+# END OF FILE: /home/rstudio/repbox/repboxStataReg/R/utils.R
 
 -----------------------------------------------------------
 
@@ -4282,7 +4291,7 @@ df.rows.to.list = function(df) {
 # Package repboxDRF
 
 
-# FILE: DESCRIPTION
+# FILE: /home/rstudio/repbox/repboxDRF/DESCRIPTION
 ```
 Package: repboxDRF
 Type: Package
@@ -4303,12 +4312,12 @@ Encoding: UTF-8
 LazyData: true
 Depends: repboxUtils, repboxDB, stata2r
 ```
-# END OF FILE: DESCRIPTION
+# END OF FILE: /home/rstudio/repbox/repboxDRF/DESCRIPTION
 
 -----------------------------------------------------------
 
 
-# FILE: cmd_types.R
+# FILE: /home/rstudio/repbox/repboxDRF/R/cmd_types.R
 ```
 # Helper function to make vector function
 
@@ -4385,12 +4394,12 @@ pide_possible_mod_cmd_real_mod = function(run.df) {
 
 
 ```
-# END OF FILE: cmd_types.R
+# END OF FILE: /home/rstudio/repbox/repboxDRF/R/cmd_types.R
 
 -----------------------------------------------------------
 
 
-# FILE: drf_cache.R
+# FILE: /home/rstudio/repbox/repboxDRF/R/drf_cache.R
 ```
 drf_cache_info = function() {
   cache = getOption("repboxDRF.mcache")
@@ -4591,12 +4600,12 @@ drf_path_df_to_split_df = function(path_df) {
 
 
 ```
-# END OF FILE: drf_cache.R
+# END OF FILE: /home/rstudio/repbox/repboxDRF/R/drf_cache.R
 
 -----------------------------------------------------------
 
 
-# FILE: drf_create.R
+# FILE: /home/rstudio/repbox/repboxDRF/R/drf_create.R
 ```
 # Creates a new DRF
 # can be run after a reproduction run
@@ -4685,12 +4694,12 @@ require_drf_dir = function(drf_dir) {
 
 }
 ```
-# END OF FILE: drf_create.R
+# END OF FILE: /home/rstudio/repbox/repboxDRF/R/drf_create.R
 
 -----------------------------------------------------------
 
 
-# FILE: drf_filter_code.R
+# FILE: /home/rstudio/repbox/repboxDRF/R/drf_filter_code.R
 ```
 # Code to filter the data set according to an if or in condition
 # in a regression command
@@ -4770,12 +4779,12 @@ drf_get_filter_code = function(runid, drf, parcels=drf$parcels) {
   return(filter_code)
 }
 ```
-# END OF FILE: drf_filter_code.R
+# END OF FILE: /home/rstudio/repbox/repboxDRF/R/drf_filter_code.R
 
 -----------------------------------------------------------
 
 
-# FILE: drf_paths.R
+# FILE: /home/rstudio/repbox/repboxDRF/R/drf_paths.R
 ```
 # part of DAP function
 #
@@ -4971,12 +4980,12 @@ add_load_blocks_to_run_df = function(run_df) {
 #
 # }
 ```
-# END OF FILE: drf_paths.R
+# END OF FILE: /home/rstudio/repbox/repboxDRF/R/drf_paths.R
 
 -----------------------------------------------------------
 
 
-# FILE: drf.R
+# FILE: /home/rstudio/repbox/repboxDRF/R/drf.R
 ```
 example = function() {
   # Should point to this project dir
@@ -5079,12 +5088,12 @@ drf_require = function(cond, msg, drf) {
 }
 
 ```
-# END OF FILE: drf.R
+# END OF FILE: /home/rstudio/repbox/repboxDRF/R/drf.R
 
 -----------------------------------------------------------
 
 
-# FILE: drf_r_code.R
+# FILE: /home/rstudio/repbox/repboxDRF/R/drf_r_code.R
 ```
 example = function() {
   # Should point to this project dir
@@ -5196,12 +5205,12 @@ drf_rcode_df = function(drf,runids=NULL, path_merge = c("none", "load", "natural
 
 
 ```
-# END OF FILE: drf_r_code.R
+# END OF FILE: /home/rstudio/repbox/repboxDRF/R/drf_r_code.R
 
 -----------------------------------------------------------
 
 
-# FILE: drf_r_data.R
+# FILE: /home/rstudio/repbox/repboxDRF/R/drf_r_data.R
 ```
 # Data loading and cache for R metareg analysis
 
@@ -5246,12 +5255,12 @@ drf_load_data = function(project_dir, rel_path, ..., add_org_row=isTRUE(getOptio
   data
 }
 ```
-# END OF FILE: drf_r_data.R
+# END OF FILE: /home/rstudio/repbox/repboxDRF/R/drf_r_data.R
 
 -----------------------------------------------------------
 
 
-# FILE: drf_run_r.R
+# FILE: /home/rstudio/repbox/repboxDRF/R/drf_run_r.R
 ```
 example = function() {
   # Should point to this project dir
@@ -5343,12 +5352,12 @@ drf_get_data = function(runid=pid, drf, filtered=TRUE, before=TRUE, update_rcode
   exec_env$data
 }
 ```
-# END OF FILE: drf_run_r.R
+# END OF FILE: /home/rstudio/repbox/repboxDRF/R/drf_run_r.R
 
 -----------------------------------------------------------
 
 
-# FILE: drf_stata_code.R
+# FILE: /home/rstudio/repbox/repboxDRF/R/drf_stata_code.R
 ```
 example = function() {
   # Should point to this project dir
@@ -5601,12 +5610,12 @@ drf_code_stata_path_header = function(sc_df, header_tpl = "\n***** Path for runi
 
 }
 ```
-# END OF FILE: drf_stata_code.R
+# END OF FILE: /home/rstudio/repbox/repboxDRF/R/drf_stata_code.R
 
 -----------------------------------------------------------
 
 
-# FILE: drf_stata_data.R
+# FILE: /home/rstudio/repbox/repboxDRF/R/drf_stata_data.R
 ```
 # Functions related to data set
 # already needed when generating Stata code
@@ -5713,12 +5722,12 @@ drf_copy_org_data = function(project_dir=drf$project_dir, run_df=drf$run_df, run
   return()
 }
 ```
-# END OF FILE: drf_stata_data.R
+# END OF FILE: /home/rstudio/repbox/repboxDRF/R/drf_stata_data.R
 
 -----------------------------------------------------------
 
 
-# FILE: drf_tools.R
+# FILE: /home/rstudio/repbox/repboxDRF/R/drf_tools.R
 ```
 
 drf_code_adapt = function(code_df, fun, ..., to_col="code", append_mode = c("overwrite", "left", "right")[1], vectorized=FALSE, just_cmd_types=NULL,just_runids=NULL, just_path_pos = c("start","end")[2], once_per_runid=TRUE){
@@ -5834,12 +5843,12 @@ replace_stata_cmdline_path = function(cmdline, replacement = '"`r(my_custom_path
 
 
 ```
-# END OF FILE: drf_tools.R
+# END OF FILE: /home/rstudio/repbox/repboxDRF/R/drf_tools.R
 
 -----------------------------------------------------------
 
 
-# FILE: io.R
+# FILE: /home/rstudio/repbox/repboxDRF/R/io.R
 ```
 
 
@@ -5890,12 +5899,12 @@ drf_save_path_df = function(project_dir=drf$project_dir, path_df=drf$path_df, dr
 
 }
 ```
-# END OF FILE: io.R
+# END OF FILE: /home/rstudio/repbox/repboxDRF/R/io.R
 
 -----------------------------------------------------------
 
 
-# FILE: tools.R
+# FILE: /home/rstudio/repbox/repboxDRF/R/tools.R
 ```
 sec_since_start = function(time_str, start_time_str) {
   restore.point("sec_since_start")
@@ -5917,7 +5926,7 @@ sec_since_start = function(time_str, start_time_str) {
   dt
 }
 ```
-# END OF FILE: tools.R
+# END OF FILE: /home/rstudio/repbox/repboxDRF/R/tools.R
 
 -----------------------------------------------------------
 
@@ -5925,7 +5934,7 @@ sec_since_start = function(time_str, start_time_str) {
 # Package stata2r
 
 
-# FILE: DESCRIPTION
+# FILE: /home/rstudio/aicoder/stata2r/DESCRIPTION
 ```
 Package: stata2r
 Type: Package
@@ -5939,12 +5948,12 @@ Encoding: UTF-8
 LazyData: true
 Depends: stringi, collapse, dplyr, restorepoint, repboxUtils
 ```
-# END OF FILE: DESCRIPTION
+# END OF FILE: /home/rstudio/aicoder/stata2r/DESCRIPTION
 
 -----------------------------------------------------------
 
 
-# FILE: aic_do_test.R
+# FILE: /home/rstudio/aicoder/stata2r/R/aic_do_test.R
 ```
 examples = function() {
   library(aicoder)
@@ -6270,12 +6279,12 @@ compare_df = function(df1, df2,
 
 
 ```
-# END OF FILE: aic_do_test.R
+# END OF FILE: /home/rstudio/aicoder/stata2r/R/aic_do_test.R
 
 -----------------------------------------------------------
 
 
-# FILE: aic_stata2r.R
+# FILE: /home/rstudio/aicoder/stata2r/R/aic_stata2r.R
 ```
 example = function() {
   library(aicoder)
@@ -6460,12 +6469,12 @@ aic_stata2r_deploy_tests = function(test_dir) {
 }
 
 ```
-# END OF FILE: aic_stata2r.R
+# END OF FILE: /home/rstudio/aicoder/stata2r/R/aic_stata2r.R
 
 -----------------------------------------------------------
 
 
-# FILE: aic_stata_ex.R
+# FILE: /home/rstudio/aicoder/stata2r/R/aic_stata_ex.R
 ```
 # Tools to make Stata example
 
@@ -6687,13 +6696,15 @@ is.true = function (x)
   val
 }
 ```
-# END OF FILE: aic_stata_ex.R
+# END OF FILE: /home/rstudio/aicoder/stata2r/R/aic_stata_ex.R
 
 -----------------------------------------------------------
 
 
-# FILE: do_cmd_to_r.R
+# FILE: /home/rstudio/aicoder/stata2r/R/do_cmd_to_r.R
 ```
+# r_obj will be a single row tibble
+# at least with the field r_code
 # r_obj will be a single row tibble
 # at least with the field r_code
 do_cmd_to_r = function(cmd_obj, line, cmd_df) {
@@ -6764,6 +6775,8 @@ do_cmd_to_r = function(cmd_obj, line, cmd_df) {
       "logit" = t_logit(rest_of_cmd_clean, cmd_obj, cmd_df, line, translation_context),
       "ivregress" = t_ivregress(rest_of_cmd_clean, cmd_obj, cmd_df, line, translation_context),
       "xi" = t_xi(rest_of_cmd_clean, cmd_obj, cmd_df, line, translation_context),
+      "scalar" = t_scalar(rest_of_cmd_clean, cmd_obj, cmd_df, line),
+      "sc" = t_scalar(rest_of_cmd_clean, cmd_obj, cmd_df, line),
       paste0("# Stata command '", cmd_obj$stata_cmd_original, " ", rest_of_cmd_clean, "' not yet fully translated.")
     )
 
@@ -6813,12 +6826,12 @@ do_cmd_to_r = function(cmd_obj, line, cmd_df) {
   return(r_obj)
 }
 ```
-# END OF FILE: do_cmd_to_r.R
+# END OF FILE: /home/rstudio/aicoder/stata2r/R/do_cmd_to_r.R
 
 -----------------------------------------------------------
 
 
-# FILE: do_parse.R
+# FILE: /home/rstudio/aicoder/stata2r/R/do_parse.R
 ```
 do_parse = function(do_code) {
   if (is.list(do_code)) {
@@ -6895,12 +6908,12 @@ do_parse = function(do_code) {
   return(cmd_df)
 }
 ```
-# END OF FILE: do_parse.R
+# END OF FILE: /home/rstudio/aicoder/stata2r/R/do_parse.R
 
 -----------------------------------------------------------
 
 
-# FILE: if_in.R
+# FILE: /home/rstudio/aicoder/stata2r/R/if_in.R
 ```
 # FILE: R/if_in.R
 
@@ -7037,12 +7050,12 @@ s2r_in_str_to_r_range_str = function(in_str) {
   r_in_range
 }
 ```
-# END OF FILE: if_in.R
+# END OF FILE: /home/rstudio/aicoder/stata2r/R/if_in.R
 
 -----------------------------------------------------------
 
 
-# FILE: main.R
+# FILE: /home/rstudio/aicoder/stata2r/R/main.R
 ```
 # This R file shall not be changed by the AI coding agent
 
@@ -7083,12 +7096,12 @@ do_to_r = function(do_code, return_df = FALSE, timevar = NULL, panelvar = NULL, 
 }
 
 ```
-# END OF FILE: main.R
+# END OF FILE: /home/rstudio/aicoder/stata2r/R/main.R
 
 -----------------------------------------------------------
 
 
-# FILE: mark_data_manip_cmd.R
+# FILE: /home/rstudio/aicoder/stata2r/R/mark_data_manip_cmd.R
 ```
 s2r_cmd_resets_row_order_compare = function(cmd_obj) {
   stata_cmd = cmd_obj$stata_cmd[1]
@@ -7158,12 +7171,12 @@ mark_data_manip_cmd = function(cmd_df) {
   return(cmd_df)
 }
 ```
-# END OF FILE: mark_data_manip_cmd.R
+# END OF FILE: /home/rstudio/aicoder/stata2r/R/mark_data_manip_cmd.R
 
 -----------------------------------------------------------
 
 
-# FILE: s2r_check_mod.R
+# FILE: /home/rstudio/aicoder/stata2r/R/s2r_check_mod.R
 ```
 # Public helper and internal engine for identifying commands that matter for later data preparation
 
@@ -7298,12 +7311,12 @@ s2r_check_mod_df = function(cmd_df) {
   return(cmd_df)
 }
 ```
-# END OF FILE: s2r_check_mod.R
+# END OF FILE: /home/rstudio/aicoder/stata2r/R/s2r_check_mod.R
 
 -----------------------------------------------------------
 
 
-# FILE: s2r_estimation_utils.R
+# FILE: /home/rstudio/aicoder/stata2r/R/s2r_estimation_utils.R
 ```
 # Shared helpers for estimation commands and xi-prefixed estimation side effects
 
@@ -7382,16 +7395,30 @@ s2r_p_estimation_cmd = function(rest_of_cmd, estimator = NA_character_) {
   indep_terms = if (length(tokens) > 1) tokens[-1] else character(0)
 
   absorb_vars = character(0)
+  cluster_vars = character(0)
   if (!is.na(options_part) && options_part != "") {
     absorb_match = stringi::stri_match_first_regex(options_part, "\\babsorb\\s*\\(([^)]+)\\)")
     if (!is.na(absorb_match[1,1])) {
       absorb_vars = stringi::stri_split_regex(stringi::stri_trim_both(absorb_match[1,2]), "\\s+")[[1]]
       absorb_vars = absorb_vars[absorb_vars != ""]
     }
+
+    vce_match = stringi::stri_match_first_regex(options_part, "\\bvce\\s*\\(([^)]+)\\)")
+    if (!is.na(vce_match[1,1])) {
+      vce_opts = stringi::stri_split_regex(stringi::stri_trim_both(vce_match[1,2]), "\\s+")[[1]]
+      vce_opts = vce_opts[vce_opts != ""]
+      if (length(vce_opts) > 1 && vce_opts[1] == "cluster") {
+        cluster_vars = vce_opts[-1]
+      }
+    }
   }
 
   xi_specs = s2r_extract_xi_specs(indep_terms)
-  model_vars = unique(unlist(c(lapply(indep_terms, s2r_model_term_to_vars), list(absorb_vars))))
+  model_vars = unique(unlist(c(
+    lapply(indep_terms, s2r_model_term_to_vars),
+    lapply(absorb_vars, s2r_model_term_to_vars),
+    lapply(cluster_vars, s2r_model_term_to_vars)
+  )))
 
   list(
     estimator = estimator,
@@ -7435,12 +7462,12 @@ s2r_line_uses_xi_prefixes = function(line_text, xi_prefixes) {
   }, logical(1)))
 }
 ```
-# END OF FILE: s2r_estimation_utils.R
+# END OF FILE: /home/rstudio/aicoder/stata2r/R/s2r_estimation_utils.R
 
 -----------------------------------------------------------
 
 
-# FILE: s2r_ts_op.R
+# FILE: /home/rstudio/aicoder/stata2r/R/s2r_ts_op.R
 ```
 # FILE: stata2r/R/s2r_ts_op.R
 
@@ -7511,7 +7538,6 @@ s2r_parse_xtset = function(cmd, timevar, panelvar, tdelta) {
   list(timevar = timevar, panelvar = panelvar, tdelta = tdelta)
 }
 
-
 #' Find TS operators (like d.x1) and replace with collapse calls
 s2r_replace_ts_in_string = function(rc, timevar, panelvar, tdelta) {
   rx = "\\b([LlFfDdSsOo])([0-9]*)\\.([a-zA-Z0-9_]+)\\b"
@@ -7534,17 +7560,17 @@ s2r_replace_ts_in_string = function(rc, timevar, panelvar, tdelta) {
     tdelta_val = if (!is.null(tdelta) && !is.na(tdelta)) as.numeric(tdelta) else 1
 
     if (op_type == "L") {
-      fun = "collapse::flag"
+      fun = "sfun_flag"
       n_val = op_num
     } else if (op_type == "F") {
-      fun = "collapse::flag"
+      fun = "sfun_flag"
       n_val = -op_num
     } else if (op_type == "D") {
-      fun = "collapse::fdiff"
+      fun = "sfun_fdiff"
       diff_val = op_num
       n_val = 1
     } else if (op_type == "S") {
-      fun = "collapse::fdiff"
+      fun = "sfun_fdiff"
       n_val = op_num
     } else if (op_type == "O") {
       # O. means omitted. Just fallback to the base variable
@@ -7583,12 +7609,12 @@ s2r_replace_ts_in_string = function(rc, timevar, panelvar, tdelta) {
   rc
 }
 ```
-# END OF FILE: s2r_ts_op.R
+# END OF FILE: /home/rstudio/aicoder/stata2r/R/s2r_ts_op.R
 
 -----------------------------------------------------------
 
 
-# FILE: sfun_compress_col_type.R
+# FILE: /home/rstudio/aicoder/stata2r/R/sfun_compress_col_type.R
 ```
 # Custom R implementation for Stata's compress logic for numeric types.
 # Attempts to convert numeric vectors to integer if all non-NA values are integers
@@ -7607,12 +7633,12 @@ sfun_compress_col_type = function(x) {
 }
 
 ```
-# END OF FILE: sfun_compress_col_type.R
+# END OF FILE: /home/rstudio/aicoder/stata2r/R/sfun_compress_col_type.R
 
 -----------------------------------------------------------
 
 
-# FILE: sfun_date_utils.R
+# FILE: /home/rstudio/aicoder/stata2r/R/sfun_date_utils.R
 ```
 # Custom R implementation for utility functions related to Stata date formats.
 
@@ -7626,12 +7652,12 @@ is_stata_fmt_allowing_2_digit_year = function(fmt) {
 
 
 ```
-# END OF FILE: sfun_date_utils.R
+# END OF FILE: /home/rstudio/aicoder/stata2r/R/sfun_date_utils.R
 
 -----------------------------------------------------------
 
 
-# FILE: sfun_day.R
+# FILE: /home/rstudio/aicoder/stata2r/R/sfun_day.R
 ```
 # Custom R implementation for Stata's day() behavior
 # Stata: day(date_value) returns the day of the month (1-31) of a Stata date value.
@@ -7650,12 +7676,12 @@ sfun_day = function(stata_date_values) {
 
 
 ```
-# END OF FILE: sfun_day.R
+# END OF FILE: /home/rstudio/aicoder/stata2r/R/sfun_day.R
 
 -----------------------------------------------------------
 
 
-# FILE: sfun_dow.R
+# FILE: /home/rstudio/aicoder/stata2r/R/sfun_dow.R
 ```
 # Custom R implementation for Stata's dow() behavior
 # Stata: dow(date_value) returns the day of the week (0-6) of a Stata date value.
@@ -7675,12 +7701,12 @@ sfun_dow = function(stata_date_values) {
 
 
 ```
-# END OF FILE: sfun_dow.R
+# END OF FILE: /home/rstudio/aicoder/stata2r/R/sfun_dow.R
 
 -----------------------------------------------------------
 
 
-# FILE: sfun_is_stata_expression_string_typed.R
+# FILE: /home/rstudio/aicoder/stata2r/R/sfun_is_stata_expression_string_typed.R
 ```
 sfun_is_stata_expression_string_typed = function(stata_expr_original) {
   restore.point("sfun_is_stata_expression_string_typed")
@@ -7766,12 +7792,12 @@ sfun_is_stata_expression_string_typed = function(stata_expr_original) {
 
 
 ```
-# END OF FILE: sfun_is_stata_expression_string_typed.R
+# END OF FILE: /home/rstudio/aicoder/stata2r/R/sfun_is_stata_expression_string_typed.R
 
 -----------------------------------------------------------
 
 
-# FILE: sfun_missing.R
+# FILE: /home/rstudio/aicoder/stata2r/R/sfun_missing.R
 ```
 # Custom R implementation of Stata function missing
 
@@ -7794,12 +7820,12 @@ sfun_missing = function(x) {
 # However, direct translation to is.na() is preferred in generated code for simplicity.
 
 ```
-# END OF FILE: sfun_missing.R
+# END OF FILE: /home/rstudio/aicoder/stata2r/R/sfun_missing.R
 
 -----------------------------------------------------------
 
 
-# FILE: sfun_month.R
+# FILE: /home/rstudio/aicoder/stata2r/R/sfun_month.R
 ```
 # Custom R implementation for Stata's month() behavior
 # Stata: month(date_value) returns the month (1-12) of a Stata date value.
@@ -7818,12 +7844,12 @@ sfun_month = function(stata_date_values) {
 
 
 ```
-# END OF FILE: sfun_month.R
+# END OF FILE: /home/rstudio/aicoder/stata2r/R/sfun_month.R
 
 -----------------------------------------------------------
 
 
-# FILE: sfun_normalize_string_nas.R
+# FILE: /home/rstudio/aicoder/stata2r/R/sfun_normalize_string_nas.R
 ```
 # Custom R implementation to normalize string NAs to empty strings ""
 # This is to match Stata's behavior where missing string values are empty strings.
@@ -7841,12 +7867,12 @@ sfun_normalize_string_nas = function(df) {
 }
 
 ```
-# END OF FILE: sfun_normalize_string_nas.R
+# END OF FILE: /home/rstudio/aicoder/stata2r/R/sfun_normalize_string_nas.R
 
 -----------------------------------------------------------
 
 
-# FILE: sfun_qofd.R
+# FILE: /home/rstudio/aicoder/stata2r/R/sfun_qofd.R
 ```
 # Custom R implementation for Stata's qofd() behavior
 # Stata: qofd(date_value) returns the quarter of the year (1-4) of a Stata date value.
@@ -7876,12 +7902,12 @@ sfun_qofd = function(stata_date_values) {
 
 
 ```
-# END OF FILE: sfun_qofd.R
+# END OF FILE: /home/rstudio/aicoder/stata2r/R/sfun_qofd.R
 
 -----------------------------------------------------------
 
 
-# FILE: sfun_stata_add.R
+# FILE: /home/rstudio/aicoder/stata2r/R/sfun_stata_add.R
 ```
 # Custom R implementation for Stata's polymorphic '+' operator.
 # Stata's '+' operator performs numeric addition if both operands are numeric.
@@ -7918,12 +7944,12 @@ sfun_stata_add = function(x, y) {
 }
 
 ```
-# END OF FILE: sfun_stata_add.R
+# END OF FILE: /home/rstudio/aicoder/stata2r/R/sfun_stata_add.R
 
 -----------------------------------------------------------
 
 
-# FILE: sfun_stata_cond.R
+# FILE: /home/rstudio/aicoder/stata2r/R/sfun_stata_cond.R
 ```
 # Custom R implementation for Stata's cond() function.
 # Stata: cond(x, a, b) returns a if x is true (non-zero and non-missing), otherwise returns b.
@@ -7960,12 +7986,12 @@ sfun_stata_cond = function(condition_val, true_val, false_val) {
 
 
 ```
-# END OF FILE: sfun_stata_cond.R
+# END OF FILE: /home/rstudio/aicoder/stata2r/R/sfun_stata_cond.R
 
 -----------------------------------------------------------
 
 
-# FILE: sfun_stata_date.R
+# FILE: /home/rstudio/aicoder/stata2r/R/sfun_stata_date.R
 ```
 sfun_stata_date = function(s, fmt, century_pivot = NULL) {
   restore.point("sfun_stata_date")
@@ -7977,12 +8003,12 @@ sfun_stata_date = function(s, fmt, century_pivot = NULL) {
 }
 
 ```
-# END OF FILE: sfun_stata_date.R
+# END OF FILE: /home/rstudio/aicoder/stata2r/R/sfun_stata_date.R
 
 -----------------------------------------------------------
 
 
-# FILE: sfun_stata_date_single.R
+# FILE: /home/rstudio/aicoder/stata2r/R/sfun_stata_date_single.R
 ```
 # Helper function for sfun_stata_date (non-vectorized core logic)
 sfun_stata_date_single = function(s, fmt, century_pivot = NULL) {
@@ -8054,12 +8080,12 @@ sfun_stata_date_single = function(s, fmt, century_pivot = NULL) {
 }
 
 ```
-# END OF FILE: sfun_stata_date_single.R
+# END OF FILE: /home/rstudio/aicoder/stata2r/R/sfun_stata_date_single.R
 
 -----------------------------------------------------------
 
 
-# FILE: sfun_stata_mdy.R
+# FILE: /home/rstudio/aicoder/stata2r/R/sfun_stata_mdy.R
 ```
 # Custom R implementation for Stata's mdy() behavior
 # Stata: mdy(M,D,Y) returns the number of days since 01jan1960.
@@ -8082,12 +8108,12 @@ sfun_stata_mdy = function(M, D, Y) {
 }
 
 ```
-# END OF FILE: sfun_stata_mdy.R
+# END OF FILE: /home/rstudio/aicoder/stata2r/R/sfun_stata_mdy.R
 
 -----------------------------------------------------------
 
 
-# FILE: sfun_stata_round.R
+# FILE: /home/rstudio/aicoder/stata2r/R/sfun_stata_round.R
 ```
 # Custom R implementation for Stata's round() behavior
 # Stata: round(x) is equivalent to round(x,1)
@@ -8112,12 +8138,12 @@ sfun_stata_round = function(x, unit = 1) {
 # sfun_stata_round(c(2.5, -2.5, NA, 5.25), 0.5) # Expected: c(2.5, -2.5, NA, 5.5) # Stata: round(5.25, .5) is 5.5. My formula: sign(5.25)*floor(abs(5.25)/.5 + .5)*.5 = 1*floor(10.5+0.5)*.5 = 1*11*.5 = 5.5
 
 ```
-# END OF FILE: sfun_stata_round.R
+# END OF FILE: /home/rstudio/aicoder/stata2r/R/sfun_stata_round.R
 
 -----------------------------------------------------------
 
 
-# FILE: sfun_string.R
+# FILE: /home/rstudio/aicoder/stata2r/R/sfun_string.R
 ```
 # Custom R implementation for Stata's string() behavior
 # Stata: string(x) converts numeric x to string.
@@ -8141,12 +8167,12 @@ sfun_string = function(x) {
 }
 
 ```
-# END OF FILE: sfun_string.R
+# END OF FILE: /home/rstudio/aicoder/stata2r/R/sfun_string.R
 
 -----------------------------------------------------------
 
 
-# FILE: sfun_strip_stata_attributes.R
+# FILE: /home/rstudio/aicoder/stata2r/R/sfun_strip_stata_attributes.R
 ```
 sfun_strip_stata_attributes = function(x) {
   restore.point("sfun_strip_stata_attributes")
@@ -8199,12 +8225,12 @@ sfun_strip_stata_attributes = function(x) {
 }
 
 ```
-# END OF FILE: sfun_strip_stata_attributes.R
+# END OF FILE: /home/rstudio/aicoder/stata2r/R/sfun_strip_stata_attributes.R
 
 -----------------------------------------------------------
 
 
-# FILE: sfun_stritrim.R
+# FILE: /home/rstudio/aicoder/stata2r/R/sfun_stritrim.R
 ```
 # Custom R implementation for Stata's stritrim() behavior
 # Stata: stritrim(s) removes leading/trailing spaces and replaces multiple internal spaces with one.
@@ -8219,12 +8245,12 @@ sfun_stritrim = function(s) {
 }
 
 ```
-# END OF FILE: sfun_stritrim.R
+# END OF FILE: /home/rstudio/aicoder/stata2r/R/sfun_stritrim.R
 
 -----------------------------------------------------------
 
 
-# FILE: sfun_strpos.R
+# FILE: /home/rstudio/aicoder/stata2r/R/sfun_strpos.R
 ```
 # Custom R implementation for Stata's strpos() behavior
 # Stata: strpos(haystack, needle) returns the first position of needle in haystack.
@@ -8245,12 +8271,12 @@ sfun_strpos = function(haystack, needle) {
 # sfun_strpos(c("apple", "banana", "apricot"), "ap") # Expected: c(1, 0, 1)
 
 ```
-# END OF FILE: sfun_strpos.R
+# END OF FILE: /home/rstudio/aicoder/stata2r/R/sfun_strpos.R
 
 -----------------------------------------------------------
 
 
-# FILE: sfun_subinstr.R
+# FILE: /home/rstudio/aicoder/stata2r/R/sfun_subinstr.R
 ```
 # Custom R implementation for Stata's subinstr() behavior
 # Stata: subinstr(s1, s2, s3, n) replaces n occurrences of s2 with s3 in s1.
@@ -8282,12 +8308,32 @@ sfun_subinstr = function(s1, s2, s3, n) {
 }
 
 ```
-# END OF FILE: sfun_subinstr.R
+# END OF FILE: /home/rstudio/aicoder/stata2r/R/sfun_subinstr.R
 
 -----------------------------------------------------------
 
 
-# FILE: sfun_year.R
+# FILE: /home/rstudio/aicoder/stata2r/R/sfun_ts_utils.R
+```
+
+#' Safe wrapper for collapse::flag explicitly checking vector length
+sfun_flag = function(x, n = 1, ...) {
+  if (length(x) <= abs(n)) return(rep(NA_real_, length(x)))
+  collapse::flag(x, n = n, ...)
+}
+
+#' Safe wrapper for collapse::fdiff explicitly checking vector length constraint
+sfun_fdiff = function(x, n = 1, diff = 1, ...) {
+  if (length(x) <= abs(n * diff)) return(rep(NA_real_, length(x)))
+  collapse::fdiff(x, n = n, diff = diff, ...)
+}
+```
+# END OF FILE: /home/rstudio/aicoder/stata2r/R/sfun_ts_utils.R
+
+-----------------------------------------------------------
+
+
+# FILE: /home/rstudio/aicoder/stata2r/R/sfun_year.R
 ```
 # Custom R implementation for Stata's year() behavior
 # Stata: year(date_value) returns the year of a Stata date value.
@@ -8306,23 +8352,23 @@ sfun_year = function(stata_date_values) {
 
 
 ```
-# END OF FILE: sfun_year.R
+# END OF FILE: /home/rstudio/aicoder/stata2r/R/sfun_year.R
 
 -----------------------------------------------------------
 
 
-# FILE: stata2r_globals.R
+# FILE: /home/rstudio/aicoder/stata2r/R/stata2r_globals.R
 ```
 # Global environment to store package-wide settings, e.g., data directory
 stata2r_env = new.env(parent=globalenv())
 
 ```
-# END OF FILE: stata2r_globals.R
+# END OF FILE: /home/rstudio/aicoder/stata2r/R/stata2r_globals.R
 
 -----------------------------------------------------------
 
 
-# FILE: stata_cmd_utils.R
+# FILE: /home/rstudio/aicoder/stata2r/R/stata_cmd_utils.R
 ```
 # Stata command utilities
 
@@ -8420,6 +8466,16 @@ get_stata_full_cmd_name = function(cmd_token) {
   if (isTRUE(cmd_token_lower %in% names(stata_cmd_abbreviations))) {
     return(stata_cmd_abbreviations[[cmd_token_lower]])
   }
+
+  # Check if it matches a prefix of a known full command,
+  # AND is longer than the minimum abbreviation
+  for (abbr in names(stata_cmd_abbreviations)) {
+    full_cmd = stata_cmd_abbreviations[[abbr]]
+    if (startsWith(full_cmd, cmd_token_lower) && startsWith(cmd_token_lower, abbr)) {
+      return(full_cmd)
+    }
+  }
+
   return(cmd_token_lower)
 }
 
@@ -8436,7 +8492,7 @@ stata_data_manip_cmds = c(
   "tempfile", "tempvar", "tempname",
   "total",
   "use", "xtile", "xi",
-  "replace", "clear"
+  "replace", "clear", "scalar", "sc"
 )
 
 # Commands that primarily display info or control program flow, and never
@@ -8446,7 +8502,7 @@ stata_non_data_manip_cmds = c(
   "exit", "findit", "format", "graph", "gr", "help", "h", "if", "inspect", "i", "list", "l", "log", "lookup", "marksample",
   "matrix", "mat", "memory", "mem", "mkdir", "more", "mo", "notes", "n", "outfile", "outsheet", "ou", "pause", "plot",
   "print", "program", "pwd", "query",
-  "return", "ret", "rmdir", "run", "ru", "scalar", "sc", "search", "shell", "sh", "signestim", "sleep",
+  "return", "ret", "rmdir", "run", "ru", "search", "shell", "sh", "signestim", "sleep",
   "stata", "st", "tabdisp", "table", "test", "te", "timer", "translate", "truncate",
   "tutorials", "type", "ty", "view", "version", "v", "webuse", "w", "which", "while", "window", "winexec", "xmlsav"
 )
@@ -8671,12 +8727,12 @@ get_xi_interaction_basename = function(var1, var2) {
   return(paste0(short_var1, "X", short_var2))
 }
 ```
-# END OF FILE: stata_cmd_utils.R
+# END OF FILE: /home/rstudio/aicoder/stata2r/R/stata_cmd_utils.R
 
 -----------------------------------------------------------
 
 
-# FILE: stata_expression_translator.R
+# FILE: /home/rstudio/aicoder/stata2r/R/stata_expression_translator.R
 ```
 translate_stata_expression_to_r = function(stata_expr, context = list(is_by_group = FALSE), r_value_mappings = NULL) {
   restore.point("translate_stata_expression_to_r")
@@ -8795,7 +8851,7 @@ translate_stata_expression_to_r = function(stata_expr, context = list(is_by_grou
     "sfun_strpos", "sfun_subinstr", "sfun_stata_mdy", "sfun_stata_date", "sfun_day",
     "sfun_month", "sfun_qofd", "sfun_dow", "sfun_normalize_string_nas", "sfun_strip_stata_attributes",
     "sfun_compress_col_type", "sfun_is_stata_expression_string_typed", "as.logical",
-    "sfun_stata_cond", "sfun_year", "sfun_stata_date_single", "e",
+    "sfun_stata_cond", "sfun_year", "sfun_stata_date_single", "e", "sfun_flag", "sfun_fdiff",
     "NROW", "length", "unique", "sapply", "vapply", "c", "list", "intersect", "setdiff",
     "warning", "stop", "paste0", "grepl", "as.logical", "ifelse", "exists", "rm",
     "is.null", "lapply", "is.na", "is.character", "is.numeric", "is.logical", "is.factor",
@@ -8872,12 +8928,12 @@ translate_stata_expression_to_r = function(stata_expr, context = list(is_by_grou
   return(r_expr)
 }
 ```
-# END OF FILE: stata_expression_translator.R
+# END OF FILE: /home/rstudio/aicoder/stata2r/R/stata_expression_translator.R
 
 -----------------------------------------------------------
 
 
-# FILE: stata_na_handling.R
+# FILE: /home/rstudio/aicoder/stata2r/R/stata_na_handling.R
 ```
 # FILE: R/stata_na.R
 
@@ -8925,12 +8981,12 @@ s2r_eval_reserved_words = function() {
   c("NA_real_", "NA_integer_", "NA_character_", "NA", "sfun_missing")
 }
 ```
-# END OF FILE: stata_na_handling.R
+# END OF FILE: /home/rstudio/aicoder/stata2r/R/stata_na_handling.R
 
 -----------------------------------------------------------
 
 
-# FILE: stata_xi.R
+# FILE: /home/rstudio/aicoder/stata2r/R/stata_xi.R
 ```
 # FILE: R/stata_xi.R
 
@@ -9006,12 +9062,12 @@ scmd_xi = function(data, var1, var2 = NA_character_) {
   return(data)
 }
 ```
-# END OF FILE: stata_xi.R
+# END OF FILE: /home/rstudio/aicoder/stata2r/R/stata_xi.R
 
 -----------------------------------------------------------
 
 
-# FILE: t_append.R
+# FILE: /home/rstudio/aicoder/stata2r/R/t_append.R
 ```
 # FILE: R/t_append.R
 
@@ -9077,12 +9133,12 @@ scmd_append = function(data, file_path, gen_var = NA_character_) {
   return(data)
 }
 ```
-# END OF FILE: t_append.R
+# END OF FILE: /home/rstudio/aicoder/stata2r/R/t_append.R
 
 -----------------------------------------------------------
 
 
-# FILE: t_areg.R
+# FILE: /home/rstudio/aicoder/stata2r/R/t_areg.R
 ```
 # FILE: R/t_areg.R
 
@@ -9091,12 +9147,12 @@ t_areg = function(rest_of_cmd, cmd_obj, cmd_df, line_num, context) {
   t_estimation_cmd(rest_of_cmd, cmd_obj, cmd_df, line_num, context, estimator = "areg")
 }
 ```
-# END OF FILE: t_areg.R
+# END OF FILE: /home/rstudio/aicoder/stata2r/R/t_areg.R
 
 -----------------------------------------------------------
 
 
-# FILE: t_collapse.R
+# FILE: /home/rstudio/aicoder/stata2r/R/t_collapse.R
 ```
 # FILE: R/t_collapse.R
 
@@ -9195,12 +9251,12 @@ scmd_collapse = function(data, agg_exprs_list, group_vars = character(0), r_if_c
   return(data)
 }
 ```
-# END OF FILE: t_collapse.R
+# END OF FILE: /home/rstudio/aicoder/stata2r/R/t_collapse.R
 
 -----------------------------------------------------------
 
 
-# FILE: t_compress.R
+# FILE: /home/rstudio/aicoder/stata2r/R/t_compress.R
 ```
 # FILE: R/t_compress.R
 
@@ -9242,12 +9298,12 @@ scmd_compress = function(data, varlist_str = NA_character_) {
   return(data)
 }
 ```
-# END OF FILE: t_compress.R
+# END OF FILE: /home/rstudio/aicoder/stata2r/R/t_compress.R
 
 -----------------------------------------------------------
 
 
-# FILE: t_decode.R
+# FILE: /home/rstudio/aicoder/stata2r/R/t_decode.R
 ```
 # FILE: R/t_decode.R
 
@@ -9312,12 +9368,12 @@ scmd_decode = function(data, varname, gen_var, r_if_cond = NA_character_, r_in_r
   return(data)
 }
 ```
-# END OF FILE: t_decode.R
+# END OF FILE: /home/rstudio/aicoder/stata2r/R/t_decode.R
 
 -----------------------------------------------------------
 
 
-# FILE: t_destring.R
+# FILE: /home/rstudio/aicoder/stata2r/R/t_destring.R
 ```
 # FILE: R/t_destring.R
 
@@ -9402,12 +9458,12 @@ scmd_destring = function(data, varlist_str, is_replace, gen_vars_str = NA_charac
   return(data)
 }
 ```
-# END OF FILE: t_destring.R
+# END OF FILE: /home/rstudio/aicoder/stata2r/R/t_destring.R
 
 -----------------------------------------------------------
 
 
-# FILE: t_drop.R
+# FILE: /home/rstudio/aicoder/stata2r/R/t_drop.R
 ```
 # FILE: R/t_drop.R
 
@@ -9507,12 +9563,12 @@ scmd_drop = function(data, varlist_str = NA_character_, r_if_cond = NA_character
   return(data)
 }
 ```
-# END OF FILE: t_drop.R
+# END OF FILE: /home/rstudio/aicoder/stata2r/R/t_drop.R
 
 -----------------------------------------------------------
 
 
-# FILE: t_duplicates.R
+# FILE: /home/rstudio/aicoder/stata2r/R/t_duplicates.R
 ```
 # FILE: R/t_duplicates.R
 
@@ -9602,12 +9658,12 @@ scmd_duplicates = function(data, subcommand, varlist_str = NA_character_, gen_va
   return(data)
 }
 ```
-# END OF FILE: t_duplicates.R
+# END OF FILE: /home/rstudio/aicoder/stata2r/R/t_duplicates.R
 
 -----------------------------------------------------------
 
 
-# FILE: t_egen.R
+# FILE: /home/rstudio/aicoder/stata2r/R/t_egen.R
 ```
 # 1. Parsing Phase
 s2r_p_egen = function(rest_of_cmd) {
@@ -9755,12 +9811,12 @@ scmd_egen = function(data, new_var, func_name, calc_expr, group_vars = character
 }
 
 ```
-# END OF FILE: t_egen.R
+# END OF FILE: /home/rstudio/aicoder/stata2r/R/t_egen.R
 
 -----------------------------------------------------------
 
 
-# FILE: t_encode.R
+# FILE: /home/rstudio/aicoder/stata2r/R/t_encode.R
 ```
 # FILE: R/t_encode.R
 
@@ -9828,12 +9884,12 @@ scmd_encode = function(data, varname, gen_var, r_if_cond = NA_character_, r_in_r
   return(data)
 }
 ```
-# END OF FILE: t_encode.R
+# END OF FILE: /home/rstudio/aicoder/stata2r/R/t_encode.R
 
 -----------------------------------------------------------
 
 
-# FILE: t_estimation_cmd.R
+# FILE: /home/rstudio/aicoder/stata2r/R/t_estimation_cmd.R
 ```
 # Shared estimation-side-effects translation and runtime helpers
 
@@ -9979,13 +10035,14 @@ scmd_estimation_effects = function(data, dep_var, model_vars, needed_e, r_if_con
     mask = mask & s2r_eval_cond(data, r_if_cond)
   }
 
-  dep_actual = expand_varlist(dep_var, names(data))[1]
+  dep_actual = expand_varlist(dep_var, names(data))
+  if (length(dep_actual) > 0) dep_actual = dep_actual[1] else dep_actual = character(0)
 
   model_vars_actual = character(0)
   if (length(model_vars) > 0) {
     model_vars_actual = unlist(lapply(model_vars, function(v) {
       expanded = expand_varlist(v, names(data))
-      if (length(expanded) > 0) expanded[1] else character(0)
+      if (length(expanded) > 0) expanded else character(0)
     }))
   }
   model_vars_actual = unique(model_vars_actual)
@@ -10011,6 +10068,7 @@ scmd_estimation_effects = function(data, dep_var, model_vars, needed_e, r_if_con
       all(stringi::stri_detect_regex(formula_terms, "^[A-Za-z_][A-Za-z0-9_]*$"))
 
     if (can_fit_lm && sum(e_sample) > 0) {
+      # Use only the first matched column for the dependent variable in formula
       formula_str = paste0("`", dep_actual, "` ~ ", paste(paste0("`", formula_terms, "`"), collapse = " + "))
       mod = stats::lm(stats::as.formula(formula_str), data = data[e_sample == 1, , drop = FALSE])
       sm = summary(mod)
@@ -10028,12 +10086,12 @@ scmd_estimation_effects = function(data, dep_var, model_vars, needed_e, r_if_con
   return(res)
 }
 ```
-# END OF FILE: t_estimation_cmd.R
+# END OF FILE: /home/rstudio/aicoder/stata2r/R/t_estimation_cmd.R
 
 -----------------------------------------------------------
 
 
-# FILE: t_expand.R
+# FILE: /home/rstudio/aicoder/stata2r/R/t_expand.R
 ```
 # FILE: R/t_expand.R
 
@@ -10089,12 +10147,12 @@ scmd_expand = function(data, r_n_expr_str, r_if_cond = NA_character_, r_in_range
   return(dplyr::as_tibble(data))
 }
 ```
-# END OF FILE: t_expand.R
+# END OF FILE: /home/rstudio/aicoder/stata2r/R/t_expand.R
 
 -----------------------------------------------------------
 
 
-# FILE: t_format.R
+# FILE: /home/rstudio/aicoder/stata2r/R/t_format.R
 ```
 # FILE: R/t_format.R
 
@@ -10108,12 +10166,12 @@ t_format = function(rest_of_cmd, cmd_obj, cmd_df, line_num) {
   return("")
 }
 ```
-# END OF FILE: t_format.R
+# END OF FILE: /home/rstudio/aicoder/stata2r/R/t_format.R
 
 -----------------------------------------------------------
 
 
-# FILE: t_generate.R
+# FILE: /home/rstudio/aicoder/stata2r/R/t_generate.R
 ```
 # FILE: R/t_generate.R
 
@@ -10196,12 +10254,12 @@ scmd_generate = function(data, new_var, r_expr_str, r_if_cond = NA_character_, g
   eval(parse(text = paste(pipe_el, collapse = " %>% ")), envir = list(data = data), enclos = parent.frame())
 }
 ```
-# END OF FILE: t_generate.R
+# END OF FILE: /home/rstudio/aicoder/stata2r/R/t_generate.R
 
 -----------------------------------------------------------
 
 
-# FILE: t_ivregress.R
+# FILE: /home/rstudio/aicoder/stata2r/R/t_ivregress.R
 ```
 # FILE: R/t_ivregress.R
 
@@ -10210,12 +10268,12 @@ t_ivregress = function(rest_of_cmd, cmd_obj, cmd_df, line_num, context) {
   t_estimation_cmd(rest_of_cmd, cmd_obj, cmd_df, line_num, context, estimator = "ivregress")
 }
 ```
-# END OF FILE: t_ivregress.R
+# END OF FILE: /home/rstudio/aicoder/stata2r/R/t_ivregress.R
 
 -----------------------------------------------------------
 
 
-# FILE: t_keep.R
+# FILE: /home/rstudio/aicoder/stata2r/R/t_keep.R
 ```
 # FILE: R/t_keep.R
 
@@ -10304,12 +10362,12 @@ scmd_keep = function(data, varlist_str = NA_character_, r_if_cond = NA_character
 }
 
 ```
-# END OF FILE: t_keep.R
+# END OF FILE: /home/rstudio/aicoder/stata2r/R/t_keep.R
 
 -----------------------------------------------------------
 
 
-# FILE: t_label.R
+# FILE: /home/rstudio/aicoder/stata2r/R/t_label.R
 ```
 # FILE: R/t_label.R
 
@@ -10420,12 +10478,12 @@ scmd_label = function(data, subcmd, lblname=NA, rules_map=NULL, option=NA, varli
   return(data)
 }
 ```
-# END OF FILE: t_label.R
+# END OF FILE: /home/rstudio/aicoder/stata2r/R/t_label.R
 
 -----------------------------------------------------------
 
 
-# FILE: t_logit.R
+# FILE: /home/rstudio/aicoder/stata2r/R/t_logit.R
 ```
 # FILE: R/t_logit.R
 
@@ -10434,12 +10492,12 @@ t_logit = function(rest_of_cmd, cmd_obj, cmd_df, line_num, context) {
   t_estimation_cmd(rest_of_cmd, cmd_obj, cmd_df, line_num, context, estimator = "logit")
 }
 ```
-# END OF FILE: t_logit.R
+# END OF FILE: /home/rstudio/aicoder/stata2r/R/t_logit.R
 
 -----------------------------------------------------------
 
 
-# FILE: t_merge.R
+# FILE: /home/rstudio/aicoder/stata2r/R/t_merge.R
 ```
 # FILE: R/t_merge.R
 
@@ -10533,12 +10591,12 @@ scmd_merge = function(data, merge_type, varlist, file_path, keep_opt = NA_charac
   return(data)
 }
 ```
-# END OF FILE: t_merge.R
+# END OF FILE: /home/rstudio/aicoder/stata2r/R/t_merge.R
 
 -----------------------------------------------------------
 
 
-# FILE: t_order.R
+# FILE: /home/rstudio/aicoder/stata2r/R/t_order.R
 ```
 # FILE: R/t_order.R
 
@@ -10593,12 +10651,12 @@ scmd_order = function(data, varlist_str) {
   return(data)
 }
 ```
-# END OF FILE: t_order.R
+# END OF FILE: /home/rstudio/aicoder/stata2r/R/t_order.R
 
 -----------------------------------------------------------
 
 
-# FILE: t_preserve_restore.R
+# FILE: /home/rstudio/aicoder/stata2r/R/t_preserve_restore.R
 ```
 # FILE: R/t_preserve_restore.R
 
@@ -10642,12 +10700,12 @@ scmd_restore = function() {
   return(restored_data)
 }
 ```
-# END OF FILE: t_preserve_restore.R
+# END OF FILE: /home/rstudio/aicoder/stata2r/R/t_preserve_restore.R
 
 -----------------------------------------------------------
 
 
-# FILE: t_probit.R
+# FILE: /home/rstudio/aicoder/stata2r/R/t_probit.R
 ```
 # FILE: R/t_probit.R
 
@@ -10656,12 +10714,12 @@ t_probit = function(rest_of_cmd, cmd_obj, cmd_df, line_num, context) {
   t_estimation_cmd(rest_of_cmd, cmd_obj, cmd_df, line_num, context, estimator = "probit")
 }
 ```
-# END OF FILE: t_probit.R
+# END OF FILE: /home/rstudio/aicoder/stata2r/R/t_probit.R
 
 -----------------------------------------------------------
 
 
-# FILE: translate_stata_expression_with_r_values.R
+# FILE: /home/rstudio/aicoder/stata2r/R/translate_stata_expression_with_r_values.R
 ```
 translate_stata_expression_with_r_values = function(stata_expr, line_num, cmd_df, context) {
   restore.point("translate_stata_expression_with_r_values")
@@ -10730,12 +10788,12 @@ translate_stata_expression_with_r_values = function(stata_expr, line_num, cmd_df
   return(translated_expr)
 }
 ```
-# END OF FILE: translate_stata_expression_with_r_values.R
+# END OF FILE: /home/rstudio/aicoder/stata2r/R/translate_stata_expression_with_r_values.R
 
 -----------------------------------------------------------
 
 
-# FILE: t_recode.R
+# FILE: /home/rstudio/aicoder/stata2r/R/t_recode.R
 ```
 # FILE: stata2r/R/t_recode.R
 
@@ -10969,12 +11027,12 @@ scmd_recode = function(data, varlist_str, rules_templates, gen_vars_str = NA_cha
   return(data)
 }
 ```
-# END OF FILE: t_recode.R
+# END OF FILE: /home/rstudio/aicoder/stata2r/R/t_recode.R
 
 -----------------------------------------------------------
 
 
-# FILE: t_reghdfe.R
+# FILE: /home/rstudio/aicoder/stata2r/R/t_reghdfe.R
 ```
 # FILE: R/t_reghdfe.R
 
@@ -10983,12 +11041,12 @@ t_reghdfe = function(rest_of_cmd, cmd_obj, cmd_df, line_num, context) {
   t_estimation_cmd(rest_of_cmd, cmd_obj, cmd_df, line_num, context, estimator = "reghdfe")
 }
 ```
-# END OF FILE: t_reghdfe.R
+# END OF FILE: /home/rstudio/aicoder/stata2r/R/t_reghdfe.R
 
 -----------------------------------------------------------
 
 
-# FILE: t_regress.R
+# FILE: /home/rstudio/aicoder/stata2r/R/t_regress.R
 ```
 # FILE: R/t_regress.R
 
@@ -11010,12 +11068,12 @@ scmd_regress = function(data, dep_var, indep_vars, needed_e, r_if_cond = NA_char
   )
 }
 ```
-# END OF FILE: t_regress.R
+# END OF FILE: /home/rstudio/aicoder/stata2r/R/t_regress.R
 
 -----------------------------------------------------------
 
 
-# FILE: t_rename.R
+# FILE: /home/rstudio/aicoder/stata2r/R/t_rename.R
 ```
 # FILE: R/t_rename.R
 
@@ -11065,12 +11123,12 @@ scmd_rename = function(data, old_var, new_var) {
   return(data)
 }
 ```
-# END OF FILE: t_rename.R
+# END OF FILE: /home/rstudio/aicoder/stata2r/R/t_rename.R
 
 -----------------------------------------------------------
 
 
-# FILE: t_replace.R
+# FILE: /home/rstudio/aicoder/stata2r/R/t_replace.R
 ```
 # FILE: R/t_replace.R
 
@@ -11153,12 +11211,12 @@ scmd_replace = function(data, var_to_replace, r_expr_str, r_if_cond = NA_charact
   eval(parse(text = paste(pipe_el, collapse = " %>% ")), envir = list(data = data), enclos = parent.frame())
 }
 ```
-# END OF FILE: t_replace.R
+# END OF FILE: /home/rstudio/aicoder/stata2r/R/t_replace.R
 
 -----------------------------------------------------------
 
 
-# FILE: t_reshape.R
+# FILE: /home/rstudio/aicoder/stata2r/R/t_reshape.R
 ```
 # FILE: R/t_reshape.R
 
@@ -11232,12 +11290,12 @@ scmd_reshape = function(data, type, stubs_str, j_var, j_is_string) {
   return(data)
 }
 ```
-# END OF FILE: t_reshape.R
+# END OF FILE: /home/rstudio/aicoder/stata2r/R/t_reshape.R
 
 -----------------------------------------------------------
 
 
-# FILE: t_save.R
+# FILE: /home/rstudio/aicoder/stata2r/R/t_save.R
 ```
 # FILE: R/t_save.R
 
@@ -11284,12 +11342,12 @@ scmd_save = function(data, file_path) {
   return(data)
 }
 ```
-# END OF FILE: t_save.R
+# END OF FILE: /home/rstudio/aicoder/stata2r/R/t_save.R
 
 -----------------------------------------------------------
 
 
-# FILE: t_sort.R
+# FILE: /home/rstudio/aicoder/stata2r/R/t_sort.R
 ```
 # FILE: R/t_sort.R
 
@@ -11363,12 +11421,12 @@ scmd_sort = function(data, varlist_str, type = "sort") {
   return(data)
 }
 ```
-# END OF FILE: t_sort.R
+# END OF FILE: /home/rstudio/aicoder/stata2r/R/t_sort.R
 
 -----------------------------------------------------------
 
 
-# FILE: t_summarize.R
+# FILE: /home/rstudio/aicoder/stata2r/R/t_summarize.R
 ```
 # FILE: R/t_summarize.R
 
@@ -11528,12 +11586,12 @@ scmd_summarize = function(data, needed_r, var_for_r = NA_character_, r_if_cond =
   return(res)
 }
 ```
-# END OF FILE: t_summarize.R
+# END OF FILE: /home/rstudio/aicoder/stata2r/R/t_summarize.R
 
 -----------------------------------------------------------
 
 
-# FILE: t_tempfile.R
+# FILE: /home/rstudio/aicoder/stata2r/R/t_tempfile.R
 ```
 # FILE: R/t_tempfile.R
 
@@ -11557,12 +11615,12 @@ t_tempfile = function(rest_of_cmd, cmd_obj, cmd_df, line_num) {
   return(paste(r_code, collapse="\n"))
 }
 ```
-# END OF FILE: t_tempfile.R
+# END OF FILE: /home/rstudio/aicoder/stata2r/R/t_tempfile.R
 
 -----------------------------------------------------------
 
 
-# FILE: t_use.R
+# FILE: /home/rstudio/aicoder/stata2r/R/t_use.R
 ```
 # FILE: R/t_use.R
 
@@ -11609,12 +11667,12 @@ scmd_use = function(file_path, clear = FALSE) {
   return(data)
 }
 ```
-# END OF FILE: t_use.R
+# END OF FILE: /home/rstudio/aicoder/stata2r/R/t_use.R
 
 -----------------------------------------------------------
 
 
-# FILE: t_xi.R
+# FILE: /home/rstudio/aicoder/stata2r/R/t_xi.R
 ```
 # FILE: R/t_xi.R
 
@@ -11638,12 +11696,12 @@ t_xi = function(rest_of_cmd, cmd_obj, cmd_df, line_num, context) {
   return(paste0("data = scmd_xi(", paste(args, collapse = ", "), ")"))
 }
 ```
-# END OF FILE: t_xi.R
+# END OF FILE: /home/rstudio/aicoder/stata2r/R/t_xi.R
 
 -----------------------------------------------------------
 
 
-# FILE: t_xtreg.R
+# FILE: /home/rstudio/aicoder/stata2r/R/t_xtreg.R
 ```
 # FILE: R/t_xtreg.R
 
@@ -11652,12 +11710,12 @@ t_xtreg = function(rest_of_cmd, cmd_obj, cmd_df, line_num, context) {
   t_estimation_cmd(rest_of_cmd, cmd_obj, cmd_df, line_num, context, estimator = "xtreg")
 }
 ```
-# END OF FILE: t_xtreg.R
+# END OF FILE: /home/rstudio/aicoder/stata2r/R/t_xtreg.R
 
 -----------------------------------------------------------
 
 
-# FILE: varlist.R
+# FILE: /home/rstudio/aicoder/stata2r/R/varlist.R
 ```
 # Runtime helper functions for Stata variable list expansion
 
@@ -11714,7 +11772,7 @@ expand_varlist = function(varlist_str, data_cols) {
   return(unique(expanded_vars))
 }
 ```
-# END OF FILE: varlist.R
+# END OF FILE: /home/rstudio/aicoder/stata2r/R/varlist.R
 
 -----------------------------------------------------------
 
@@ -11722,7 +11780,7 @@ expand_varlist = function(varlist_str, data_cols) {
 # Package regtranslate
 
 
-# FILE: DESCRIPTION
+# FILE: /home/rstudio/repbox/regtranslate/DESCRIPTION
 ```
 Package: regtranslate
 Type: Package
@@ -11736,12 +11794,12 @@ Depends: dplyr, restorepoint, stringtools, fixest, broom, stringi
 Encoding: UTF-8
 LazyData: true
 ```
-# END OF FILE: DESCRIPTION
+# END OF FILE: /home/rstudio/repbox/regtranslate/DESCRIPTION
 
 -----------------------------------------------------------
 
 
-# FILE: cterms_r.R
+# FILE: /home/rstudio/repbox/regtranslate/R/cterms_r.R
 ```
 replace_cterm_special_symbols = function(cterms) {
   cterms = gsub("@",".__.", cterms, fixed=TRUE)
@@ -11833,12 +11891,12 @@ cterm_of_r_coefs_fixest = function(terms, regvar, dot_to_at=FALSE) {
 #   terms
 # }
 ```
-# END OF FILE: cterms_r.R
+# END OF FILE: /home/rstudio/repbox/regtranslate/R/cterms_r.R
 
 -----------------------------------------------------------
 
 
-# FILE: investigate.R
+# FILE: /home/rstudio/repbox/regtranslate/R/investigate.R
 ```
 # Helper functions for investigation
 
@@ -11932,12 +11990,12 @@ load_parcel = function(project.dir, metaid, parcel) {
   readRDS(parcel.file)
 }
 ```
-# END OF FILE: investigate.R
+# END OF FILE: /home/rstudio/repbox/regtranslate/R/investigate.R
 
 -----------------------------------------------------------
 
 
-# FILE: mr_s2r.R
+# FILE: /home/rstudio/repbox/regtranslate/R/mr_s2r.R
 ```
 s2r_example = function() {
   library(regtranslate)
@@ -12113,12 +12171,12 @@ s2r_study_agg_fun = function(mr, ...) {
   mr
 }
 ```
-# END OF FILE: mr_s2r.R
+# END OF FILE: /home/rstudio/repbox/regtranslate/R/mr_s2r.R
 
 -----------------------------------------------------------
 
 
-# FILE: reg2r.R
+# FILE: /home/rstudio/repbox/regtranslate/R/reg2r.R
 ```
 # Convert to calls from lm and iv and general helper function
 # to create R regression commands and execute them
@@ -12363,12 +12421,12 @@ make_mfx_call = function(reg,...) {
 
 
 ```
-# END OF FILE: reg2r.R
+# END OF FILE: /home/rstudio/repbox/regtranslate/R/reg2r.R
 
 -----------------------------------------------------------
 
 
-# FILE: regvar_expand.R
+# FILE: /home/rstudio/repbox/regtranslate/R/regvar_expand.R
 ```
 example = function() {
   library(repboxReg)
@@ -12556,12 +12614,12 @@ make_factor_level_vars = function(var,dat, levels = level_li[[var]],level_li) {
   #list(info=tibble(cterm=cterm), dat=vals)
 }
 ```
-# END OF FILE: regvar_expand.R
+# END OF FILE: /home/rstudio/repbox/regtranslate/R/regvar_expand.R
 
 -----------------------------------------------------------
 
 
-# FILE: repbox.R
+# FILE: /home/rstudio/repbox/regtranslate/R/repbox.R
 ```
 # These functions provide more direct interfaces usable in connection with
 # repbox projects
@@ -12610,12 +12668,12 @@ repbox_reg_stata_to_r_code = function(project_dir, steps=NULL, parcels, prefer="
 
 
 ```
-# END OF FILE: repbox.R
+# END OF FILE: /home/rstudio/repbox/regtranslate/R/repbox.R
 
 -----------------------------------------------------------
 
 
-# FILE: s2r_repex.R
+# FILE: /home/rstudio/repbox/regtranslate/R/s2r_repex.R
 ```
 # Helper functions for investigation
 
@@ -12721,12 +12779,12 @@ navigate_to_repex("',project.dir,'")
 }
 
 ```
-# END OF FILE: s2r_repex.R
+# END OF FILE: /home/rstudio/repbox/regtranslate/R/s2r_repex.R
 
 -----------------------------------------------------------
 
 
-# FILE: se.R
+# FILE: /home/rstudio/repbox/regtranslate/R/se.R
 ```
 
 # Old code: possible can be replaced sometime using
@@ -12749,12 +12807,12 @@ regdb_parse_se_args = function(se_args, as_df=FALSE) {
   tibble(arg_name=var, arg_val=val)
 }
 ```
-# END OF FILE: se.R
+# END OF FILE: /home/rstudio/repbox/regtranslate/R/se.R
 
 -----------------------------------------------------------
 
 
-# FILE: split_n_sort.R
+# FILE: /home/rstudio/repbox/regtranslate/R/split_n_sort.R
 ```
 sort2_chr = function(a, b, ..., sep=NULL) {
   swap = stringi::stri_cmp_gt(a, b, ...)
@@ -12819,12 +12877,12 @@ split_and_sort = function(terms, split = "#", ..., k = NULL) {
   )
 }
 ```
-# END OF FILE: split_n_sort.R
+# END OF FILE: /home/rstudio/repbox/regtranslate/R/split_n_sort.R
 
 -----------------------------------------------------------
 
 
-# FILE: to_r_fixest.R
+# FILE: /home/rstudio/repbox/regtranslate/R/to_r_fixest.R
 ```
 
 # Replace stata_to_r_code_fixest and fixest_vcov_code_from_regdb
@@ -13133,12 +13191,12 @@ stata_to_r_code_fixest_fit.old = function(reg, regvar, regxvar, cmdpart, opts=co
 }
 
 ```
-# END OF FILE: to_r_fixest.R
+# END OF FILE: /home/rstudio/repbox/regtranslate/R/to_r_fixest.R
 
 -----------------------------------------------------------
 
 
-# FILE: to_r_lm.R
+# FILE: /home/rstudio/repbox/regtranslate/R/to_r_lm.R
 ```
 # TO DO: VCOV
 stata_to_r_code_lm = function(reg, regvar, regxvar, cmdpart, opts=code_options(), parts = list()) {
@@ -13208,12 +13266,12 @@ regvar_to_formula_lm = function(regvar, regxvar, cmdpart) {
   regvar_to_formula_fixest(regvar, regxvar, cmdpart)
 }
 ```
-# END OF FILE: to_r_lm.R
+# END OF FILE: /home/rstudio/repbox/regtranslate/R/to_r_lm.R
 
 -----------------------------------------------------------
 
 
-# FILE: to_r_mfx.R
+# FILE: /home/rstudio/repbox/regtranslate/R/to_r_mfx.R
 ```
 example = function() {
 
@@ -13284,12 +13342,12 @@ library(mfx)
   code_df
 }
 ```
-# END OF FILE: to_r_mfx.R
+# END OF FILE: /home/rstudio/repbox/regtranslate/R/to_r_mfx.R
 
 -----------------------------------------------------------
 
 
-# FILE: to_r_quantreg.R
+# FILE: /home/rstudio/repbox/regtranslate/R/to_r_quantreg.R
 ```
 
 stata_to_r_code_quantreg = function(reg, regvar,regxvar, cmdpart, opts=code_options(), parts = list()) {
@@ -13358,12 +13416,12 @@ tidy.tobit <- function(x, ...) {
   tidy(x, ...)
 }
 ```
-# END OF FILE: to_r_quantreg.R
+# END OF FILE: /home/rstudio/repbox/regtranslate/R/to_r_quantreg.R
 
 -----------------------------------------------------------
 
 
-# FILE: to_r.R
+# FILE: /home/rstudio/repbox/regtranslate/R/to_r.R
 ```
 # Translate to R code
 example = function() {
@@ -13528,12 +13586,12 @@ extract_clustervar_from_se_args = function(se_args) {
   clustervar
 }
 ```
-# END OF FILE: to_r.R
+# END OF FILE: /home/rstudio/repbox/regtranslate/R/to_r.R
 
 -----------------------------------------------------------
 
 
-# FILE: to_r_tobit.R
+# FILE: /home/rstudio/repbox/regtranslate/R/to_r_tobit.R
 ```
 
 stata_to_r_code_tobit = function(reg, regvar, regxvar, cmdpart, opts=code_options(), parts = list()) {
@@ -13596,7 +13654,7 @@ tidy.tobit <- function(x, ...) {
   tidy(x, ...)
 }
 ```
-# END OF FILE: to_r_tobit.R
+# END OF FILE: /home/rstudio/repbox/regtranslate/R/to_r_tobit.R
 
 -----------------------------------------------------------
 
@@ -13648,15 +13706,13 @@ Use this to create a new file or to completely rewrite an existing one.
 
 **Required Fields:**
 *   `scope = "file"`
-*   `file` (string): The relative path to the file.
-*   `is_new_file` (boolean): `true` if you are creating a new file, `false` if you are rewriting an existing one.
+*   `file` (string): The path to the file. Very important: state the path of the file as shown in the files header above. If there is a complete absolute path, also show the complete absolute path here.
 *   `description` (string): A brief explanation of the change in quotes ""
 
-#### **Example 1.1: Creating a new file**
+#### **Example 1.1: Creating or modifying a file**
 !MODIFICATION new_helpers.R
 scope = "file"
-file = "R/new_helpers.R"
-is_new_file = true
+file = "/home/rstudio/myproject/R/new_helpers.R"
 description = "Create a new file for helper functions."
 ---
 ```r
@@ -13667,23 +13723,6 @@ say_hello = function(name) {
 ```
 !END_MODIFICATION new_helpers.R
 
-#### **Example 1.2: Rewriting an existing file**
-!MODIFICATION README.md
-scope = "file"
-file = "README.md"
-is_new_file = false
-description = "Rewrite the README to add installation instructions."
----
-```md
-# My Awesome Project
-
-## Installation
-
-Run `remotes::install_github("user/repo")` to install.
-```
-!END_MODIFICATION README.md
-
----
 
 ### **Scope 2: `function`**
 
@@ -13691,13 +13730,13 @@ Use this to replace an existing function or to insert a new function. The new co
 
 #### **Fields for replacing an existing function:**
 *   `scope = "function"`
-*   `file` (string): The relative path to the file.
+*   `file` (string): The path to the file. Very important: state the path of the file as shown in the files header above. If there is a complete absolute path, also show the complete absolute path here.
 *   `function_name` (string): The name of the function to be replaced.
 *   `description` (string): A brief explanation of the change in quotes.
 
 #### **Fields for inserting a new function:**
 *   `scope = "function"`
-*   `file` (string): The relative path to the file.
+*   `file` (string): The path to the file. Very important: state the path of the file as shown in the files header above. If there is a complete absolute path, also show the complete absolute path here.
 *   `description` (string): A brief explanation of the change, enclose in quotes.
 *   **One of** the following fields to specify the insertion point. They are mutually exclusive.
     *   `insert_top = true`: Insert at the top of the file.
@@ -13721,10 +13760,10 @@ calculate_sum = function(vec) {
 ```
 !END_MODIFICATION calculate_sum utils.R
 
-#### **Example 2.2: Inserting a new function at the bottom of a file**
+#### **Example 2.2: Inserting a new function at the bottom of a file (here was an absolute file path given)**
 !MODIFICATION is_positive in R/utils.R
 scope = "function"
-file = "R/utils.R"
+file = "/home/myuser/mypkg/R/utils.R"
 insert_bottom = true
 description = "Add a new helper function to check for positivity."
 ---
@@ -13754,6 +13793,106 @@ is_negative = function(n) {
 !END_MODIFICATION is_negative in R/utils.R
 
 
+# General coding instructions
+
+- For string operations try to use `stringi` functions.
+
+- Try to avoid loops, vectorize if possible.
+
+- Use `=` instead of `<-` as assignment operator.
+
+- Very Important: Do not warp code into `try` statements to generally catch errors.
+  I want that the code fails if there are errors we have not yet understood dealt with.
+  General try catch wrappers will dillude this goal. Existing wrappers are probably
+  ok, but don't add new ones, unless there is really a strong reason to believe that
+  this cleanly solves the underlying problem and does not hide other possible problems.
+
+
+
+# Instructions for coding in stata2r
+
+For every Stata command that can be translated the package will have a file
+named t_{cmd}.R, e.g. t_keep.R for the keep command.
+
+Each t_{cmd}.R file will have 3 R functions:
+
+str2_p_{cmd}: parses the original Stata code for the command and returns a
+  a structured list.list different substrings corresponding to parts of
+  the command like  (if, in, and varlist)
+  Where sensible the parsing function delegates to general package tools
+  like s2r_parse_if_in.
+
+t_{cmd}: The main translation function. First calls str2_p_{cmd}
+  for parsing but then builds the R translation, which will essentially
+  be a call to scmd_{cmd} with `data` as first argument and other
+  arguments depending on the structure and arguments of the the original
+  Stata command.
+
+scmd_{cmd}: The R function called at runtime that performs
+  the data manipulation (and possibly storage of some global variables)
+  needed for later commands. First argument is the data set `data`.
+  Later arguments, like if conditions for filtering will often be strings.
+  That is because we want emulate Stata's exact logic—resolving
+  abbreviations with expand_varlist and handling NA/Inf rules dynamically.
+  For this call general tool functions whenever sensible, instead of
+  duplicating too much functionality in every scmd_ command.
+
+Points for your code:
+
+- Stata just has a single global data set. Assume it is call `data`. Certain functions like
+preverse or restore can generate other data sets. Think of a suitable name.
+
+- Internally your scmd_ functions or helper functions, should try to use
+  the `collapse` package whenever sensible. It is often faster than `dplyr`.
+
+
+- Comments can be completely ignored in your translation. Also mark command lines that only
+  consist of a comment and ignore them.
+
+- Try not change any code in main.R.
+
+- You can update the general helper functions shared by multiple files
+  or generate new helper functions.
+
+
+- Consider this example code:
+
+```do
+regress y_outcome time
+regress y_outcome x_numeric
+keep if e(sample)
+```
+  Only the `keep` command changes the data set, but the e(sample) object is from
+  the last call to regress. In such cases, mark for the regress command which
+  e() or similar objects will be used in later data preparation steps
+  or in if conditions of later regression. The t_regression function shall then
+  only generate the intermediate R objects that will then be required.
+  For example, for the first regression t_regress nothing must be done in R,
+  but for the second regression the `e(sample)` object must be stored in R,
+  so that it can be used in the later `keep` call.
+
+- Note that Stata allows command abbreviations.
+  E.g. 'gen' and 'generate' are the same commands. Just call str2_t_generate
+  for both.
+
+- Where approbiate, generate custom implementations for Stata functions
+  (not Stata commands but functions that can e.g. be called in a generate command),
+  like sfun_missing, also in a separate file. Those functions and files
+  shall be prefixed with sfun_
+
+- Try to generate a separate R file for every function you generate.
+  Except perhaps for very small tool functions.
+
+- Your code shall not install any R packages, nor perform any file operations,
+  nor any network operations. The R code translated from Stata can read or write
+  data set files, however.
+
+- Never hack your solution in a way that cannot be generalized to other test data sets.
+
+- Small numerical differences to Stata are ok. Don't round your R results to make R
+  and Stata results equal.
+
+
 ###########
 # Test run
 ###########
@@ -13763,7 +13902,7 @@ I performed a test run of the pipeline using a project.
 Below is the test report generated with `mrb_run_as_test`
 
 
-# FILE: test_report.Rmd
+# FILE: /home/rstudio/repbox/projects/test/test_report/test_report.Rmd
 ```
 # Report of test run for project ~/repbox/projects/test
 
@@ -13952,6 +14091,7 @@ if (FALSE) {
   options(warn=2)
   opts=mrb_test_opts(data_head_rows = 30, show_org_data=FALSE, show_pre_reg_data = FALSE, data_width=100, max_cases = 1, data_add_org_row=TRUE)
   metaregBase::mrb_run_as_test(project_dir = "~/repbox/projects/test","~/repbox/projects/test/run/run_test.R", opts=opts)
+  rstudioapi::navigateToFile("~/repbox/projects/test/test_report/test_report.Rmd")
   rstudioapi::filesPaneNavigate(project_dir)
 }
 
@@ -13981,7 +14121,7 @@ mrb = mrb_run_r_reg(mrb)
 # Run log of the script
 
 
-### source_with_log start: 2026-03-24 07:48:50 
+### source_with_log start: 2026-03-24 12:31:46 
 ### file: /home/rstudio/repbox/projects/test/run/run_test.R 
 
 
@@ -13996,6 +14136,7 @@ mrb = mrb_run_r_reg(mrb)
 +   options(warn=2)
 +   opts=mrb_test_opts(data_head_rows = 30, show_org_data=FALSE, show_pre_reg_data = FALSE, data_width=100, max_cases = 1, data_add_org_row=TRUE)
 +   metaregBase::mrb_run_as_test(project_dir = "~/repbox/projects/test","~/repbox/projects/test/run/run_test.R", opts=opts)
++   rstudioapi::navigateToFile("~/repbox/projects/test/test_report/test_report.Rmd")
 +   rstudioapi::filesPaneNavigate(project_dir)
 + }
 
@@ -14025,7 +14166,7 @@ Run  /home/rstudio/repbox/projects/test/mod/code/repbox_current_test.do
 2 of 7 inject and run
 
 Run  /home/rstudio/repbox/projects/test/mod/code/repbox_data_manip.do
-    finished after 0.08 seconds.
+    finished after 0.11 seconds.
 
 3 of 7 inject and run
 
@@ -14067,120 +14208,72 @@ Run  /home/rstudio/repbox/projects/test/mod/code/repbox_ts_op.do
 
 
 Run  /home/rstudio/repbox/projects/test/metareg/base/stata_code/mrb_stata.do
-    finished after 0.33 seconds.
+    finished after 0.34 seconds.
 
 > mrb = mrb_run_r_base(mrb)
 
-mrb_r_base processing runids: 3 5 12 18 19 27 28 31 Error in `data[, all_vars, drop = FALSE]` at stata2r/R/t_estimation_cmd.R:158:5:
-! Can't subset columns that don't exist.
-✖ Column `i2#year` doesn't exist.
+mrb_r_base processing runids: 3 5 12 18 19 27 28 31 40 Error in `dplyr::mutate()`:
+ℹ In argument: `x1_capped = as.numeric(sfun_stata_cond(x1 > cutoff, cutoff,
+  x1))`.
+Caused by error in `as.list.environment()`:
+! object 'cutoff' not found
 Run `rlang::last_trace()` to see where the error occurred.
-31: (function () 
+36: (function () 
     mrb_test_traceback())()
-30: stop(fallback)
-29: signal_abort(cnd)
-28: cnd_signal(cnd)
-27: (function (cnd) 
+35: stop(fallback)
+34: signal_abort(cnd, .file)
+33: abort(message, class = error_class, parent = parent, call = error_call)
+32: h(simpleError(msg, call))
+31: .handleSimpleError(function (cnd) 
     {
-        cnd$subscript_arg <- j_arg
-        cnd$subscript_elt <- "column"
-        if (isTRUE(assign) && !isTRUE(cnd$subscript_action %in% c("negate"))) {
-            cnd$subscript_action <- "assign"
+        local_error_context(dots, i = frame[[i_sym]], mask = mask)
+        if (inherits(cnd, "dplyr:::internal_error")) {
+            parent <- error_cnd(message = bullets(cnd))
         }
-        cnd_signal(cnd)
-    })(list(message = "", trace = list(call = list(metaregBase::mrb_run_as_test(project_dir = "~/repbox/projects/test", 
-        "~/repbox/projects/test/run/run_test.R", opts = opts), source_with_log(run_script, 
-        log_con = con), withCallingHandlers(source(file = file, local = envir, 
-        echo = echo, print.eval = print.eval, prompt.echo = prompt.echo, 
-        max.deparse.length = max.deparse.length, chdir = chdir, keep.source = keep.source), 
-        warning = function(w) {
-            warnings_seen <<- c(warnings_seen, conditionMessage(w))
-            invokeRestart("muffleWarning")
-        }), source(file = file, local = envir, echo = echo, print.eval = print.eval, 
-        prompt.echo = prompt.echo, max.deparse.length = max.deparse.length, 
-        chdir = chdir, keep.source = keep.source), withVisible(eval(ei, 
-        envir)), eval(ei, envir), eval(ei, envir), mrb_run_r_base(mrb), 
-        mrb_run_r_base_step(mrb, pid), repboxDRF::drf_get_data(pid, 
-            drf = mrb$drf), eval(rcode_call, envir = exec_env), eval(rcode_call, 
-            envir = exec_env), scmd_estimation_effects(data = data, 
-            dep_var = "y", model_vars = c("x1", "i1", "i2#year"), 
-            needed_e = c("e(N)", "e(r2)"), estimator = "reghdfe", 
-            formula_terms = c("x1")), stats::complete.cases(data[, 
-            all_vars, drop = FALSE]), data[, all_vars, drop = FALSE], 
-        `[.tbl_df`(data, , all_vars, drop = FALSE), vectbl_as_col_location(j, 
-            length(x), names(x), j_arg = j_arg, assign = FALSE), 
-        subclass_col_index_errors(vec_as_location(j, n, names, missing = "error", 
-            call = call), j_arg = j_arg, assign = assign), withCallingHandlers(expr, 
-            vctrs_error_subscript = function(cnd) {
-                cnd$subscript_arg <- j_arg
-                cnd$subscript_elt <- "column"
-                if (isTRUE(assign) && !isTRUE(cnd$subscript_action %in% 
-                    c("negate"))) {
-                    cnd$subscript_action <- "assign"
-                }
-                cnd_signal(cnd)
-            }), vec_as_location(j, n, names, missing = "error", call = call), 
-        `<fn>`(), stop_subscript_oob(i = i, subscript_type = subscript_type, 
-            names = names, subscript_action = subscript_action, subscript_arg = subscript_arg, 
-            call = call), stop_subscript(class = "vctrs_error_subscript_oob", 
-            i = i, subscript_type = subscript_type, ..., call = call), 
-        abort(class = c(class, "vctrs_error_subscript"), i = i, ..., 
-            call = call)), parent = c(0L, 1L, 2L, 2L, 4L, 4L, 6L, 
-    1L, 8L, 9L, 10L, 11L, 12L, 13L, 13L, 13L, 16L, 17L, 18L, 17L, 
-    0L, 21L, 22L, 23L), visible = c(TRUE, TRUE, TRUE, TRUE, TRUE, 
-    TRUE, TRUE, TRUE, TRUE, TRUE, TRUE, TRUE, TRUE, TRUE, TRUE, TRUE, 
-    FALSE, FALSE, FALSE, FALSE, FALSE, FALSE, FALSE, FALSE), namespace = c("metaregBase", 
-    "metaregBase", "base", "base", "base", "base", "base", "metaregBase", 
-    "metaregBase", "repboxDRF", "base", "base", "stata2r", "stats", 
-    NA, "tibble", "tibble", "tibble", "base", "vctrs", "vctrs", "vctrs", 
-    "vctrs", "rlang"), scope = c("::", "::", "::", "::", "::", "::", 
-    "::", "::", "::", "::", "::", "::", "::", "::", NA, ":::", ":::", 
-    ":::", "::", "::", "local", ":::", ":::", "::"), error_frame = c(FALSE, 
-    FALSE, FALSE, FALSE, FALSE, FALSE, FALSE, FALSE, FALSE, FALSE, 
-    FALSE, FALSE, FALSE, FALSE, FALSE, TRUE, FALSE, FALSE, FALSE, 
-    FALSE, FALSE, FALSE, FALSE, FALSE)), parent = NULL, i = c("y", 
-    "x1", "i1", "i2#year"), subscript_type = "character", names = c("year", 
-    "date", "i", "y", "x1", "d1", "d2", "i1", "i2", "f1", "my_long_factor", 
-    "my_long_integer", "key", "stata2r_original_order_idx"), subscript_action = NULL, 
-        subscript_arg = "j", rlang = list(inherit = TRUE), call = data[, 
-            all_vars, drop = FALSE]))
-26: signalCondition(cnd)
-25: signal_abort(cnd, .file)
-24: abort(class = c(class, "vctrs_error_subscript"), i = i, ..., 
-        call = call)
-23: stop_subscript(class = "vctrs_error_subscript_oob", i = i, subscript_type = subscript_type, 
-        ..., call = call)
-22: stop_subscript_oob(i = i, subscript_type = subscript_type, names = names, 
-        subscript_action = subscript_action, subscript_arg = subscript_arg, 
-        call = call)
-21: (function () 
-    stop_subscript_oob(i = i, subscript_type = subscript_type, names = names, 
-        subscript_action = subscript_action, subscript_arg = subscript_arg, 
-        call = call))()
-20: vec_as_location(j, n, names, missing = "error", call = call)
-19: withCallingHandlers(expr, vctrs_error_subscript = function(cnd) {
-        cnd$subscript_arg <- j_arg
-        cnd$subscript_elt <- "column"
-        if (isTRUE(assign) && !isTRUE(cnd$subscript_action %in% c("negate"))) {
-            cnd$subscript_action <- "assign"
+        else {
+            parent <- cnd
         }
-        cnd_signal(cnd)
-    })
-18: subclass_col_index_errors(vec_as_location(j, n, names, missing = "error", 
-        call = call), j_arg = j_arg, assign = assign)
-17: vectbl_as_col_location(j, length(x), names(x), j_arg = j_arg, 
-        assign = FALSE)
-16: `[.tbl_df`(data, , all_vars, drop = FALSE) at t_estimation_cmd.R#158
-15: data[, all_vars, drop = FALSE] at t_estimation_cmd.R#158
-14: stats::complete.cases(data[, all_vars, drop = FALSE]) at t_estimation_cmd.R#158
-13: scmd_estimation_effects(data = data, dep_var = "y", model_vars = c("x1", 
-        "i1", "i2#year"), needed_e = c("e(N)", "e(r2)"), estimator = "reghdfe", 
-        formula_terms = c("x1")) at <text>#5
+        message <- c(cnd_bullet_header(action), i = if (has_active_group_context(mask)) cnd_bullet_cur_group_label())
+        abort(message, class = error_class, parent = parent, call = error_call)
+    }, "object 'cutoff' not found", base::quote(as.list.environment(envir, 
+        all.names = TRUE)))
+30: as.list.environment(envir, all.names = TRUE)
+29: as.list(envir, all.names = TRUE)
+28: copy.fun(envir)
+27: store.objects(name = name, parent.num = -2, deep.copy = deep.copy, 
+        force = force, dots = dots)
+26: restore.point("sfun_stata_cond") at sfun_stata_cond.R#5
+25: sfun_stata_cond(x1 > cutoff, cutoff, x1)
+24: .Call(dplyr_mask_eval_all_mutate, quo, private)
+23: eval()
+22: mask$eval_all_mutate(quo)
+21: mutate_col(dots[[i]], data, mask, new_columns)
+20: withCallingHandlers(for (i in seq_along(dots)) {
+        poke_error_context(dots, i, mask = mask)
+        context_poke("column", old_current_column)
+        new_columns <- mutate_col(dots[[i]], data, mask, new_columns)
+    }, error = dplyr_error_handler(dots = dots, mask = mask, bullets = mutate_bullets, 
+        error_call = error_call, error_class = "dplyr:::mutate_error"), 
+        warning = dplyr_warning_handler(state = warnings_state, mask = mask, 
+            error_call = error_call))
+19: mutate_cols(.data, dplyr_quosures(...), by)
+18: mutate.data.frame(., x1_capped = as.numeric(sfun_stata_cond(x1 > 
+        cutoff, cutoff, x1)))
+17: dplyr::mutate(., x1_capped = as.numeric(sfun_stata_cond(x1 > 
+        cutoff, cutoff, x1)))
+16: data %>% dplyr::mutate(x1_capped = as.numeric(sfun_stata_cond(x1 > 
+        cutoff, cutoff, x1))) at <text>#1
+15: eval(parse(text = paste(pipe_el, collapse = " %>% ")), envir = list(data = data), 
+        enclos = parent.frame())
+14: eval(parse(text = paste(pipe_el, collapse = " %>% ")), envir = list(data = data), 
+        enclos = parent.frame()) at t_generate.R#79
+13: scmd_generate(data = data, new_var = "x1_capped", r_expr_str = "sfun_stata_cond(`x1` > `cutoff`,  `cutoff`,  `x1`)", 
+        is_string = FALSE, force_integer = FALSE) at <text>#11
 12: eval(rcode_call, envir = exec_env)
 11: eval(rcode_call, envir = exec_env) at drf_run_r.R#85
 10: repboxDRF::drf_get_data(pid, drf = mrb$drf) at mrb_r_base.R#96
 9: mrb_run_r_base_step(mrb, pid) at mrb_r_base.R#50
-8: mrb_run_r_base(mrb) at run_test.R#32
+8: mrb_run_r_base(mrb) at run_test.R#33
 7: eval(ei, envir)
 6: eval(ei, envir)
 5: withVisible(eval(ei, envir))
@@ -14197,7 +14290,7 @@ Run `rlang::last_trace()` to see where the error occurred.
 1: metaregBase::mrb_run_as_test(project_dir = "~/repbox/projects/test", 
        "~/repbox/projects/test/run/run_test.R", opts = opts)
 ```
-# END OF FILE: test_report.Rmd
+# END OF FILE: /home/rstudio/repbox/projects/test/test_report/test_report.Rmd
 
 -----------------------------------------------------------
 

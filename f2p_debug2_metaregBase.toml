@@ -84,15 +84,13 @@ Use this to create a new file or to completely rewrite an existing one.
 
 **Required Fields:**
 *   `scope = "file"`
-*   `file` (string): The relative path to the file.
-*   `is_new_file` (boolean): `true` if you are creating a new file, `false` if you are rewriting an existing one.
+*   `file` (string): The path to the file. Very important: state the path of the file as shown in the files header above. If there is a complete absolute path, also show the complete absolute path here.
 *   `description` (string): A brief explanation of the change in quotes ""
 
-#### **Example 1.1: Creating a new file**
+#### **Example 1.1: Creating or modifying a file**
 !MODIFICATION new_helpers.R
 scope = "file"
-file = "R/new_helpers.R"
-is_new_file = true
+file = "/home/rstudio/myproject/R/new_helpers.R"
 description = "Create a new file for helper functions."
 ---
 ```r
@@ -103,23 +101,6 @@ say_hello = function(name) {
 ```
 !END_MODIFICATION new_helpers.R
 
-#### **Example 1.2: Rewriting an existing file**
-!MODIFICATION README.md
-scope = "file"
-file = "README.md"
-is_new_file = false
-description = "Rewrite the README to add installation instructions."
----
-```md
-# My Awesome Project
-
-## Installation
-
-Run `remotes::install_github("user/repo")` to install.
-```
-!END_MODIFICATION README.md
-
----
 
 ### **Scope 2: `function`**
 
@@ -127,13 +108,13 @@ Use this to replace an existing function or to insert a new function. The new co
 
 #### **Fields for replacing an existing function:**
 *   `scope = "function"`
-*   `file` (string): The relative path to the file.
+*   `file` (string): The path to the file. Very important: state the path of the file as shown in the files header above. If there is a complete absolute path, also show the complete absolute path here.
 *   `function_name` (string): The name of the function to be replaced.
 *   `description` (string): A brief explanation of the change in quotes.
 
 #### **Fields for inserting a new function:**
 *   `scope = "function"`
-*   `file` (string): The relative path to the file.
+*   `file` (string): The path to the file. Very important: state the path of the file as shown in the files header above. If there is a complete absolute path, also show the complete absolute path here.
 *   `description` (string): A brief explanation of the change, enclose in quotes.
 *   **One of** the following fields to specify the insertion point. They are mutually exclusive.
     *   `insert_top = true`: Insert at the top of the file.
@@ -157,10 +138,10 @@ calculate_sum = function(vec) {
 ```
 !END_MODIFICATION calculate_sum utils.R
 
-#### **Example 2.2: Inserting a new function at the bottom of a file**
+#### **Example 2.2: Inserting a new function at the bottom of a file (here was an absolute file path given)**
 !MODIFICATION is_positive in R/utils.R
 scope = "function"
-file = "R/utils.R"
+file = "/home/myuser/mypkg/R/utils.R"
 insert_bottom = true
 description = "Add a new helper function to check for positivity."
 ---
@@ -188,6 +169,106 @@ is_negative = function(n) {
 }
 ```
 !END_MODIFICATION is_negative in R/utils.R
+
+
+# General coding instructions
+
+- For string operations try to use `stringi` functions.
+
+- Try to avoid loops, vectorize if possible.
+
+- Use `=` instead of `<-` as assignment operator.
+
+- Very Important: Do not warp code into `try` statements to generally catch errors.
+  I want that the code fails if there are errors we have not yet understood dealt with.
+  General try catch wrappers will dillude this goal. Existing wrappers are probably
+  ok, but don't add new ones, unless there is really a strong reason to believe that
+  this cleanly solves the underlying problem and does not hide other possible problems.
+
+
+
+# Instructions for coding in stata2r
+
+For every Stata command that can be translated the package will have a file
+named t_{cmd}.R, e.g. t_keep.R for the keep command.
+
+Each t_{cmd}.R file will have 3 R functions:
+
+str2_p_{cmd}: parses the original Stata code for the command and returns a
+  a structured list.list different substrings corresponding to parts of
+  the command like  (if, in, and varlist)
+  Where sensible the parsing function delegates to general package tools
+  like s2r_parse_if_in.
+
+t_{cmd}: The main translation function. First calls str2_p_{cmd}
+  for parsing but then builds the R translation, which will essentially
+  be a call to scmd_{cmd} with `data` as first argument and other
+  arguments depending on the structure and arguments of the the original
+  Stata command.
+
+scmd_{cmd}: The R function called at runtime that performs
+  the data manipulation (and possibly storage of some global variables)
+  needed for later commands. First argument is the data set `data`.
+  Later arguments, like if conditions for filtering will often be strings.
+  That is because we want emulate Stata's exact logic—resolving
+  abbreviations with expand_varlist and handling NA/Inf rules dynamically.
+  For this call general tool functions whenever sensible, instead of
+  duplicating too much functionality in every scmd_ command.
+
+Points for your code:
+
+- Stata just has a single global data set. Assume it is call `data`. Certain functions like
+preverse or restore can generate other data sets. Think of a suitable name.
+
+- Internally your scmd_ functions or helper functions, should try to use
+  the `collapse` package whenever sensible. It is often faster than `dplyr`.
+
+
+- Comments can be completely ignored in your translation. Also mark command lines that only
+  consist of a comment and ignore them.
+
+- Try not change any code in main.R.
+
+- You can update the general helper functions shared by multiple files
+  or generate new helper functions.
+
+
+- Consider this example code:
+
+```do
+regress y_outcome time
+regress y_outcome x_numeric
+keep if e(sample)
+```
+  Only the `keep` command changes the data set, but the e(sample) object is from
+  the last call to regress. In such cases, mark for the regress command which
+  e() or similar objects will be used in later data preparation steps
+  or in if conditions of later regression. The t_regression function shall then
+  only generate the intermediate R objects that will then be required.
+  For example, for the first regression t_regress nothing must be done in R,
+  but for the second regression the `e(sample)` object must be stored in R,
+  so that it can be used in the later `keep` call.
+
+- Note that Stata allows command abbreviations.
+  E.g. 'gen' and 'generate' are the same commands. Just call str2_t_generate
+  for both.
+
+- Where approbiate, generate custom implementations for Stata functions
+  (not Stata commands but functions that can e.g. be called in a generate command),
+  like sfun_missing, also in a separate file. Those functions and files
+  shall be prefixed with sfun_
+
+- Try to generate a separate R file for every function you generate.
+  Except perhaps for very small tool functions.
+
+- Your code shall not install any R packages, nor perform any file operations,
+  nor any network operations. The R code translated from Stata can read or write
+  data set files, however.
+
+- Never hack your solution in a way that cannot be generalized to other test data sets.
+
+- Small numerical differences to Stata are ok. Don't round your R results to make R
+  and Stata results equal.
 
 
 ###########
@@ -220,11 +301,11 @@ How would you improve the code that generates the test report?
 
 file_template = '''
 
-# FILE: {{filename}}
+# FILE: {{filepath}}
 ```
 {{filetext}}
 ```
-# END OF FILE: {{filename}}
+# END OF FILE: {{filepath}}
 
 -----------------------------------------------------------
 '''
@@ -278,8 +359,8 @@ include_files = '''
 [[stata2r]]
 
 include_files = '''
-/home/rstudio//aicoder/stata2r/DESCRIPTION
-/home/rstudio//aicoder/stata2r//R/*.R
+/home/rstudio/aicoder/stata2r/DESCRIPTION
+/home/rstudio/aicoder/stata2r/R/*.R
 '''
 
 
