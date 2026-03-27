@@ -86,7 +86,30 @@ mrb_test_report = function(project_dir, parcels, drf, opts=mrb_test_opts()) {
   max_cases = opts$max_cases
 
   flags = mrb_test_generate_flags(project_dir, parcels, drf, opts=opts)
-  if (NROW(flags) == 0) return("\n No regressions found to compare.")
+
+  # Extract Stata reproduction errors
+  stata_err_text = ""
+  if (!is.null(drf$run_df) && "errcode" %in% names(drf$run_df)) {
+    err_df = drf$run_df %>% filter(!is.na(errcode) & errcode != 0)
+    if (NROW(err_df) > 0) {
+      stata_err_text = paste0(
+        "# Stata Reproduction Run Errors\n\n",
+        "The following ", NROW(err_df), " Stata commands threw an error during the original reproduction run:\n\n"
+      )
+
+      err_items = lapply(seq_len(NROW(err_df)), function(i) {
+        file_info = if ("found_path" %in% names(err_df)) basename(err_df$found_path[i]) else "Unknown file"
+        paste0(
+          "**runid ", err_df$runid[i], "** (File: ", file_info, ")\n\n",
+          "- **Error Code:** ", err_df$errcode[i], "\n",
+          "```stata\n", err_df$cmdline[i], "\n```\n"
+        )
+      })
+      stata_err_text = paste0(stata_err_text, paste(err_items, collapse = "\n"), "\n\n")
+    }
+  }
+
+  if (NROW(flags) == 0) return(paste0(stata_err_text, "\n No regressions found to compare."))
 
   probs = flags %>% filter(is_problem | is_note)
 
@@ -99,7 +122,7 @@ mrb_test_report = function(project_dir, parcels, drf, opts=mrb_test_opts()) {
   num_all_note = sum(flags$is_note & !flags$is_problem, na.rm = TRUE)
 
   if (num_all_prob == 0 && num_all_note == 0) {
-    return("\n-- In all regressions R and Stata coefficients and standard errors match, and all results are generated successfully. --")
+    return(paste0(stata_err_text, "\n-- In all regressions R and Stata coefficients and standard errors match, and all results are generated successfully. --"))
   }
 
   if (is.finite(max_cases) && NROW(probs) > max_cases) {
@@ -176,7 +199,7 @@ mrb_test_report = function(project_dir, parcels, drf, opts=mrb_test_opts()) {
   }
   head = paste0(head, NROW(probs), " cases are shown below.")
 
-  paste0(c(head, unlist(txt)), collapse = "\n\n")
+  paste0(c(stata_err_text, head, unlist(txt)), collapse = "\n\n")
 }
 
 
