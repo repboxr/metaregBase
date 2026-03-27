@@ -88,21 +88,21 @@ mrb_test_report = function(project_dir, parcels, drf, opts=mrb_test_opts()) {
   flags = mrb_test_generate_flags(project_dir, parcels, drf, opts=opts)
   if (NROW(flags) == 0) return("\n No regressions found to compare.")
 
-  probs = flags %>% filter(is_problem)
+  probs = flags %>% filter(is_problem | is_note)
 
   if (!is.null(opts$just_runid)) {
     probs = probs[probs$runid %in% opts$just_runid,]
   }
 
-
   num_all_reg = n_distinct(flags$runid)
-  num_all_prob = n_distinct(probs$runid)
+  num_all_prob = sum(flags$is_problem, na.rm = TRUE)
+  num_all_note = sum(flags$is_note & !flags$is_problem, na.rm = TRUE)
 
-  if (num_all_prob == 0) {
+  if (num_all_prob == 0 && num_all_note == 0) {
     return("\n-- In all regressions R and Stata coefficients and standard errors match, and all results are generated successfully. --")
   }
 
-  if (is.finite(max_cases) && num_all_prob > max_cases) {
+  if (is.finite(max_cases) && NROW(probs) > max_cases) {
     probs = probs[seq_len(max_cases), , drop = FALSE]
   }
 
@@ -114,12 +114,25 @@ mrb_test_report = function(project_dir, parcels, drf, opts=mrb_test_opts()) {
 
     # Compile the specific flags into a readable summary string
     issues = c()
-    if (!row$has_sb) issues = c(issues, "Missing Stata (sb) results")
-    if (!row$has_rb) issues = c(issues, "Missing R (rb) results")
+    if (!row$has_sb && row$has_rb) issues = c(issues, "Missing Stata (sb) results (R produced results)")
+    if (row$has_sb && !row$has_rb) issues = c(issues, "Missing R (rb) results (Stata produced results)")
     if (row$coef_diff) issues = c(issues, "Coefficients differ")
     if (row$se_diff) issues = c(issues, "Standard errors differ (coefficients match)")
 
-    issues_text = paste0("**Issues detected:** ", paste(issues, collapse = ", "))
+    notes = c()
+    if (!row$has_sb && !row$has_rb) notes = c(notes, "Both Stata and R yielded no results (e.g. empty data or expected abort)")
+    if (!row$has_sb && row$has_rb) notes = c(notes, "Stata yielded no results (but R did)")
+    if (row$has_sb && !row$has_rb) notes = c(notes, "R yielded no results (but Stata did)")
+
+    issues_text = ""
+    if (length(issues) > 0) {
+      issues_text = paste0("**Issues detected:** ", paste(issues, collapse = ", "))
+    }
+
+    notes_text = ""
+    if (length(notes) > 0) {
+      notes_text = paste0("**Notes:** ", paste(notes, collapse = ", "))
+    }
 
     # Get the table of differences if both Stata and R have outputs
     diff_res = list(text = "", note = "")
@@ -140,12 +153,11 @@ mrb_test_report = function(project_dir, parcels, drf, opts=mrb_test_opts()) {
     # Generate the data preview text (Original & Regression Datasets)
     data_preview_text = mrb_test_data_preview_text(runid, drf, parcels, opts=opts)
 
-
     block = c(
       header,
       "",
-      issues_text,
-      "",
+      if (nzchar(issues_text)) c(issues_text, "") else NULL,
+      if (nzchar(notes_text)) c(notes_text, "") else NULL,
       if (nzchar(diff_res$note)) c(diff_res$note, "") else NULL,
       if (nzchar(diff_res$text)) c(diff_res$text, "") else NULL,
       "### Code Path",
@@ -158,10 +170,15 @@ mrb_test_report = function(project_dir, parcels, drf, opts=mrb_test_opts()) {
     paste0(block, collapse = "\n")
   })
 
-  head = paste0("In ", num_all_prob, " of ", num_all_reg, " regressions, problems were detected. ", NROW(probs), " problematic cases are shown below.")
+  head = paste0("In ", num_all_prob, " of ", num_all_reg, " regressions, problems were detected. ")
+  if (num_all_note > 0) {
+    head = paste0(head, "Also ", num_all_note, " notes were generated. ")
+  }
+  head = paste0(head, NROW(probs), " cases are shown below.")
 
   paste0(c(head, unlist(txt)), collapse = "\n\n")
 }
+
 
 
 
@@ -218,7 +235,9 @@ mrb_test_generate_flags = function(project_dir, parcels, drf = NULL,  opts=mrb_t
 
       se_diff = overall_diff & !coef_diff,
 
-      is_problem = !has_sb | !has_rb | coef_diff | se_diff
+      is_problem = (has_sb != has_rb) | coef_diff | se_diff,
+
+      is_note = !has_sb | !has_rb
     )
 
   return(res)

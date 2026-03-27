@@ -11,6 +11,10 @@ make_regxvar = function(regvar, dat,  regcoef=NULL) {
   restore.point("make_regxvar")
   regvar = regvar[regvar$role %in% c("exo","endo","instr") & !regvar$absorbed_fe,]
 
+  if (NROW(regvar) == 0) {
+    return(tibble(runid = integer(), ia_cterm = character(), cterm = character(), role = character(), org_coef = numeric(), in_regcoef = logical()))
+  }
+
   rows = regvar$var_reg_type == "factor"
   factor_vars = unique(regvar$cterm[rows])
 
@@ -20,7 +24,6 @@ make_regxvar = function(regvar, dat,  regcoef=NULL) {
   names(factor_levels) = factor_vars
 
   ia_cterms = unique(regvar$ia_cterm)
-
 
   res_li = lapply(ia_cterms, function(ia_term) {
     rows = which(regvar$ia_cterm == ia_term)
@@ -36,19 +39,25 @@ make_regxvar = function(regvar, dat,  regcoef=NULL) {
     res
   })
 
-  regcoef = filter(regcoef, !is.na(coef))
-  # For some commands like mlogit we have duplicated entries
-  regcoef = regcoef[!duplicated(regcoef[,c("runid","cterm")]), ]
+  if (!is.null(regcoef) && nrow(regcoef) > 0) {
+    regcoef = filter(regcoef, !is.na(coef))
+    regcoef = regcoef[!duplicated(regcoef[,c("runid","cterm")]), ]
+  }
 
   regxvar = tibble(runid=first(regvar$runid), ia_cterm=ia_cterms, cterm = res_li) %>%
     unnest(cterm) %>%
     left_join(regvar %>% select(ia_cterm, role), by="ia_cterm") %>%
-    unique() %>%
-    left_join(select(regcoef,runid, cterm, org_coef=coef), by=c("cterm","runid")) %>%
-    mutate(in_regcoef = !is.na(org_coef))
+    unique()
+
+  if (!is.null(regcoef) && nrow(regcoef) > 0) {
+    regxvar = regxvar %>%
+      left_join(select(regcoef,runid, cterm, org_coef=coef), by=c("cterm","runid")) %>%
+      mutate(in_regcoef = !is.na(org_coef))
+  } else {
+    regxvar = regxvar %>% mutate(org_coef = NA_real_, in_regcoef = FALSE)
+  }
 
   regxvar
-
 }
 
 make_regxvar_ia1 = function(regvar,level_li) {

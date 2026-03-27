@@ -254,10 +254,6 @@ cmdpart_expand_vars = function(cmdpart, data_cols) {
 }
 
 
-# ==============================================================================
-# PART 3: Bridging `cmdpart` to `regvar` (Replacing `mrb_vi_from_stata_reg`)
-# ==============================================================================
-
 #' Create the regvar (vi) table strictly from the expanded cmdpart, opts_df, and se_info
 cmdpart_to_regvar = function(cmdpart, dat, opts_df, se_info) {
   restore.point("cmdpart_to_regvar")
@@ -282,7 +278,7 @@ cmdpart_to_regvar = function(cmdpart, dat, opts_df, se_info) {
   # Absorb (from reghdfe / areg)
   absorb_opts = opts_df %>% filter(opt %in% c("absorb", "a", "ab", "abs", "abso", "absor"))
   if (nrow(absorb_opts) > 0) {
-    abs_vars = strsplit(shorten.spaces(absorb_opts$opt_arg[1]), " ", fixed = TRUE)[[1]]
+    abs_vars = strsplit(shorten.spaces(paste0(absorb_opts$opt_arg, collapse = " ")), " ", fixed = TRUE)[[1]]
     term_list[[3]] = tibble(ia_expr = abs_vars, role = "exo", option = "absorb")
   }
 
@@ -334,19 +330,19 @@ cmdpart_to_regvar = function(cmdpart, dat, opts_df, se_info) {
   vi = vi %>% left_join(cols_info, by = c("var" = "col"))
 
   # 4. Determine Types and Classes
-  # 4. Determine Types and Classes
   vi = vi %>%
     mutate(
       is_factor = class %in% c("character", "factor"),
       fe_type = case_when(
+        startsWith(tolower(prefix), "c") ~ "",
         startsWith(tolower(prefix), "i") ~ "i",
         startsWith(tolower(prefix), "b") ~ "b",
-        has.substr(ia_expr, "#") & !startsWith(tolower(prefix), "c") ~ "#",
         option %in% c("absorb", "fe") ~ option,
+        has.substr(ia_expr, "#") ~ "#",
         is_factor ~ class,
         TRUE ~ ""
       ),
-      absorbed_fe = fe_type %in% c("absorb", "fe"),
+      absorbed_fe = option %in% c("absorb", "fe"),
       is_fe = fe_type != "",
       varclass = class,
       class = ifelse(is_fe & !is_factor, "fe", class),

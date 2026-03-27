@@ -102,6 +102,15 @@ repbox_write_dprobit_coef_se "',outdir, "/dprobit_", runid, ".csv\n")
   }
 
   code = paste0(
+    'capture erase "', outfile, '"\n',
+    'capture erase "', scalar_outfile, '"\n',
+    'capture erase "', macro_outfile, '"\n',
+    'capture erase "', paste0(outdir, "/reg_", runid, "__sb_mem.dta"), '"\n',
+    'capture erase "', paste0(outdir, "/regscalar_", runid, "__sb_mem.txt"), '"\n',
+    'capture erase "', paste0(outdir, "/regmacro_", runid, "__sb_mem.txt"), '"\n',
+    'capture erase "', paste0(outdir, "/dprobit_", runid, ".csv"), '"\n',
+    'capture erase "', paste0(outdir, "/reg_", runid, "__sb_exp.tsv"), '"\n',
+    cap_str, 'ereturn clear\n',
     cap_str, stata_code,
     '\n
 ', cap_str, 'parmest, label saving("',outfile,'", replace)

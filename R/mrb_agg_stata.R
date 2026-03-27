@@ -1,4 +1,3 @@
-
 # TO DO: Transform to parcels
 mrb_agg_stata = function(mrb, skip_if_has = TRUE) {
   restore.point("mrb_agg_stata")
@@ -37,8 +36,8 @@ mrb_agg_stata_regcoef = function(mrb, file_prefix="reg_", dir = file.path(mrb$mr
         runid = as_integer(str.between(base, file_prefix, ".dta"))
         variant = ""
       }
-      df$runid = rep(runid, NROW(runid))
-      df$variant = rep(variant, NROW(runid))
+      df$runid = rep(runid, NROW(df))
+      df$variant = rep(variant, NROW(df))
       df$cmd = run_df$cmd[runid]
     }
     return(df)
@@ -53,16 +52,16 @@ mrb_agg_stata_reg_scalars = function(mrb, file_prefix="regscalar_", dir = file.p
   restore.point("mr_agg_stata_reg_scalars")
   glob = paste0(file_prefix, "*",".txt")
   files = list.files(dir, glob2rx(glob), full.names=TRUE)
-  file = first(files)
-  li = lapply(files, function(file) {
+  if (length(files)==0) return(NULL)
 
+  li = lapply(files, function(file) {
     df = read_var_equal_val_file(file,as.numeric = TRUE)
     base = basename(file)
     if (!is.null(df)) {
       runid = as_integer(str.between(base, file_prefix, "__"))
       variant = str.between(base, "__", ".txt")
-      df$runid = rep(runid, NROW(runid))
-      df$variant = rep(variant, NROW(runid))
+      df$runid = rep(runid, NROW(df))
+      df$variant = rep(variant, NROW(df))
     }
     return(df)
   })
@@ -75,16 +74,16 @@ mrb_agg_stata_reg_macros = function(mrb, file_prefix="regmacro_", dir = file.pat
   restore.point("mr_agg_stata_reg_macros")
   glob = paste0(file_prefix, "*",".txt")
   files = list.files(dir, glob2rx(glob), full.names=TRUE)
-  file = first(files)
+  if (length(files)==0) return(NULL)
+
   li = lapply(files, function(file) {
     df = read_var_equal_val_file(file,as.numeric = FALSE)
     base = basename(file)
     if (!is.null(df)) {
       runid = as_integer(str.between(base, file_prefix, "__"))
       variant = str.between(base, "__", ".txt")
-      df$runid = rep(runid, NROW(runid))
-      df$variant = rep(variant, NROW(runid))
-
+      df$runid = rep(runid, NROW(df))
+      df$variant = rep(variant, NROW(df))
     }
     return(df)
   })
@@ -92,46 +91,46 @@ mrb_agg_stata_reg_macros = function(mrb, file_prefix="regmacro_", dir = file.pat
   res
 }
 
-
-
 # Extract marginal effects for dprobit commands
-# Unlike margins, dprobit (and mfx) treats dummy variables automatically as
-# discrete, i.e. we have special code.
 mrb_agg_add_dprobit_coef = function(mrb, stata_ct, dir = file.path(mrb$mrb_dir, "stata_reg_out")) {
   restore.point("mr_agg_add_dprobit_coef")
   glob = paste0("dprobit_", "*",".csv")
   files = list.files(dir, glob2rx(glob), full.names=TRUE)
   if (length(files)==0) return(stata_ct)
 
-  #runid.df = mr$runid.df
-  #new.cols = c("var","label", "coef","se","dof", "t","p","ci_low","ci_up")
-
-  df = lapply(files, function(file) {
+  df_list = lapply(files, function(file) {
     df = read.csv(file)
     base = basename(file)
     if (!is.null(df)) {
       runid = as_integer(str.between(base, "dprobit_", ".csv"))
-      df$runid = rep(runid, NROW(runid))
+      df$runid = rep(runid, NROW(df))
+      df$variant = rep("sb_mfx", NROW(df))
     }
     return(df)
-  }) %>% bind_rows()
+  })
+  df = bind_rows(df_list)
+  if (nrow(df) == 0) return(stata_ct)
+
   df$t = df$coef / df$se
   df$ci_low = df$ci_up = NA_real_
-  df$variant = rep("sb_mfx", NROW(runid))
   df$cmd = "dprobit"
 
   # p-value is the same as for the original coefficient
-  df = left_join(df, stata_ct %>% filter(variant=="sb") %>% select(runid, var,p,label), by=c("runid","var"))
-
-
+  if (!is.null(stata_ct) && nrow(stata_ct) > 0) {
+    df = left_join(df, stata_ct %>% filter(variant=="sb") %>% select(runid, var,p,label), by=c("runid","var"))
+  } else {
+    df$p = NA_real_
+    df$label = ""
+  }
 
   return(df)
 }
 
-
 read_var_equal_val_file = function(file, as.numeric=FALSE, wide = FALSE) {
   restore.point("read_var_equal_file")
   txt = readLines(file)
+  if (length(txt) == 0) return(tibble())
+
   pos = stringi::stri_locate_first_fixed(txt,"=")[,1]
 
   var = stringi::stri_sub(txt,1,pos-1)

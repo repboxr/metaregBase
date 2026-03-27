@@ -39,11 +39,18 @@ stata_expr_to_cterm = function(stata_expr) {
   cterm = stringi::stri_replace_all_regex(cterm, "#[iI]?[bB]([0-9]+)\\.","#" )
   cterm = stringi::stri_replace_all_regex(cterm, "^[iI]?[bB]([0-9]+)\\.","" )
 
+  # Expand missing dots between TS operators (e.g. L1D1. -> L1.D1., LD. -> L.D.)
   old_cterm = ""
   while (any(old_cterm != cterm)) {
     old_cterm = cterm
-    cterm = gsub("(^|#|\\.)([LlFfDdSsOo])1?\\.", "\\1\\U\\2.", cterm, perl=TRUE)
-    cterm = gsub("(^|#|\\.)([LlFfDdSsOo])([2-9]|[1-9][0-9]+)\\.", "\\1\\U\\2\\3.", cterm, perl=TRUE)
+    cterm = gsub("(?<=^|#|\\.)([LlFfDdSsOo][0-9]*)([LlFfDdSsOo][0-9]*\\.)", "\\1.\\2", cterm, perl=TRUE)
+  }
+
+  old_cterm = ""
+  while (any(old_cterm != cterm)) {
+    old_cterm = cterm
+    cterm = gsub("(?<=^|#|\\.)([LlFfDdSsOo])1?\\.", "\\U\\1\\E.", cterm, perl=TRUE)
+    cterm = gsub("(?<=^|#|\\.)([LlFfDdSsOo])([2-9]|[1-9][0-9]+)\\.", "\\U\\1\\E\\2.", cterm, perl=TRUE)
   }
 
   cterm = gsub(".","@", cterm, fixed=TRUE)
@@ -114,14 +121,20 @@ canonical.output.terms.stata.default = function(terms, ...) {
 
   terms[rows] = paste0(base, "=", level)
 
-  rows = has.substr(terms,".") & !is.na(suppressWarnings(as_integer(substring(terms,1,1))))
   terms = remove.unused.stata.prefixes(terms)
+
+  # Expand missing dots between TS operators (e.g. L1D1. -> L1.D1., LD. -> L.D.)
+  old_terms = ""
+  while (isTRUE(any(old_terms != terms, na.rm=TRUE))) {
+    old_terms = terms
+    terms = gsub("(?<=^|#|\\.)([LlFfDdSsOo][0-9]*)([LlFfDdSsOo][0-9]*\\.)", "\\1.\\2", terms, perl=TRUE)
+  }
 
   old_terms = ""
   while (isTRUE(any(old_terms != terms, na.rm=TRUE))) {
     old_terms = terms
-    terms = gsub("(^|#|\\.)([LlFfDdSsOo])1?\\.", "\\1\\U\\2.", terms, perl=TRUE)
-    terms = gsub("(^|#|\\.)([LlFfDdSsOo])([2-9]|[1-9][0-9]+)\\.", "\\1\\U\\2\\3.", terms, perl=TRUE)
+    terms = gsub("(?<=^|#|\\.)([LlFfDdSsOo])1?\\.", "\\U\\1\\E.", terms, perl=TRUE)
+    terms = gsub("(?<=^|#|\\.)([LlFfDdSsOo])([2-9]|[1-9][0-9]+)\\.", "\\U\\1\\E\\2.", terms, perl=TRUE)
   }
 
   terms = adapt.stata.prefix.notation(terms)
@@ -366,7 +379,7 @@ create_prefix_nolevel_cterm_col = function(dat,cterm, panelvar=NA, timevar=NA, t
   # Fixed check to target basevar
   if (!has.col(dat, basevar)) {
     msg = paste0("Column ", basevar, " does not exist in data set and thus I cannot generate the cterm ", cterm)
-    repbox_problem(type="missing_var",msg=msg, fail_action="msg", fail_action = "error")
+    repbox_problem(type="missing_var",msg=msg, fail_action = "error")
     return(dat)
   }
 
