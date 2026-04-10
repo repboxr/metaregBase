@@ -11,14 +11,15 @@ example = function() {
   drf = drf_load(project_dir)
 }
 
-mrb_run_all = function(project_dir, drf=drf_load(project_dir)) {
+mrb_run_all = function(project_dir, drf=repboxDRF::drf_load(project_dir)) {
   restore.point("mrb_run_all")
   mrb = mrb_init(project_dir, drf=drf)
   mrb = mrb_full_stata_script(mrb)
   mrb = mrb_run_stata_script(mrb)
-
-
-  #mrb = mrb_to_repdb(mrb)
+  mrb = mrb_agg_stata(mrb)
+  mrb = mrb_run_r_base(mrb)
+  mrb = mrb_run_r_reg(mrb)
+  mrb
 }
 
 mrb_init = function(project_dir=drf$project_dir, drf=NULL) {

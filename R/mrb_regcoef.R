@@ -9,12 +9,17 @@ parmest_output_to_regcoef = function(mr, variant=NULL,  prefix, artid = basename
 }
 
 #' regvar is only needed if cterm shall be generated in R
-ct_to_regcoef = function(ct, lang="stata", variant=NULL, artid=NULL, regvar=NULL) {
+ct_to_regcoef = function(ct, lang="stata", variant=NULL, artid=NULL, regvar=NULL, default_eq=NULL) {
   restore.point("ct_to_regcoef")
   if (NROW(ct)==0) return(NULL)
 
   if (!is.null(variant) & !has.col(ct, "variant")) {
     ct$variant = variant
+  }
+
+  ct = regcoef_ensure_eq(ct)
+  if (!is.null(default_eq) && all(ct$eq == "")) {
+    ct$eq = rep(default_eq, NROW(ct))
   }
 
   # Better overwrite cterm since sometimes it has NA values
@@ -28,10 +33,9 @@ ct_to_regcoef = function(ct, lang="stata", variant=NULL, artid=NULL, regvar=NULL
     ct$cterm = canonical.r.output.terms(ct$term,regvar,rcmd = "")
   }
 
-
   if (!has.col(ct,"shown_term")) {
     if (lang=="stata") {
-      ct$shown_term = ct$var
+      ct$shown_term = ifelse(ct$var == "_cons" & ct$eq != "", paste0("/", ct$eq), ct$var)
     } else if (lang=="r") {
       ct$shown_term = ct$term
     }
@@ -90,6 +94,96 @@ regcoef_normalize_dropped_coef = function(co, lang="stata") {
 }
 
 
+regcoef_ensure_eq = function(co) {
+  if (is.null(co)) return(NULL)
+  if (NROW(co) == 0) return(co)
+  if (!has.col(co, "eq")) {
+    co$eq = rep("", NROW(co))
+  }
+  co$eq = as.character(co$eq)
+  co$eq[is.na(co$eq)] = ""
+  co
+}
+
+
+regcoef_default_eq = function(co) {
+  co = regcoef_ensure_eq(co)
+  if (is.null(co) || NROW(co) == 0) return("")
+  eq = unique(co$eq)
+  if (length(eq) == 0) return("")
+  eq[[1]]
+}
+
+
+regcoef_keep_default_eq = function(co, eq = NULL) {
+  co = regcoef_ensure_eq(co)
+  if (is.null(co) || NROW(co) == 0) return(co)
+  if (is.null(eq)) {
+    eq = regcoef_default_eq(co)
+  }
+  co[co$eq == eq, , drop = FALSE]
+}
+
+
+regcoef_prepare_eq_for_diff = function(co1, co2, eq_mode = c("auto", "exact")[1]) {
+  restore.point("regcoef_prepare_eq_for_diff")
+  eq_mode = match.arg(eq_mode, c("auto", "exact"))
+
+  co1 = regcoef_ensure_eq(co1)
+  co2 = regcoef_ensure_eq(co2)
+
+  if (eq_mode == "exact") {
+    return(list(co1 = co1, co2 = co2))
+  }
+
+  runids = union(unique(co1$runid), unique(co2$runid))
+  co1_li = vector("list", length(runids))
+  co2_li = vector("list", length(runids))
+
+  for (i in seq_along(runids)) {
+    runid = runids[[i]]
+    d1 = co1[co1$runid == runid, , drop = FALSE]
+    d2 = co2[co2$runid == runid, , drop = FALSE]
+
+    u1 = unique(d1$eq)
+    u2 = unique(d2$eq)
+    n1 = length(u1)
+    n2 = length(u2)
+
+    default_eq = ""
+    if (n1 > 0) {
+      default_eq = u1[[1]]
+    } else if (n2 > 0) {
+      default_eq = u2[[1]]
+    }
+
+    if (n1 <= 1 && n2 > 1) {
+      if (NROW(d1) > 0) {
+        d1$eq = rep(default_eq, NROW(d1))
+      }
+      d2 = d2[d2$eq == default_eq, , drop = FALSE]
+    } else if (n2 <= 1 && n1 > 1) {
+      if (NROW(d2) > 0) {
+        d2$eq = rep(default_eq, NROW(d2))
+      }
+      d1 = d1[d1$eq == default_eq, , drop = FALSE]
+    } else if (n1 <= 1 && n2 <= 1) {
+      if (NROW(d1) > 0) {
+        d1$eq = rep(default_eq, NROW(d1))
+      }
+      if (NROW(d2) > 0) {
+        d2$eq = rep(default_eq, NROW(d2))
+      }
+    }
+
+    co1_li[[i]] = d1
+    co2_li[[i]] = d2
+  }
+
+  list(co1 = bind_rows(co1_li), co2 = bind_rows(co2_li))
+}
+
+
 coef_diff_summary = function(diff_tab, compare_what=c("all","coef"), problem="") {
   if (NROW(diff_tab)==0) return(NULL)
 
@@ -145,13 +239,17 @@ coef_diff_summary = function(diff_tab, compare_what=c("all","coef"), problem="")
   sum
 }
 
-coef_diff_table = function(co1, co2, check.ref.levels = TRUE) {
+coef_diff_table = function(co1, co2, check.ref.levels = TRUE, eq_mode = c("auto", "exact")[1]) {
   restore.point("regcoef_check_same")
 
   if (is.null(co1) | is.null(co2)) return(NULL)
 
+  prep = regcoef_prepare_eq_for_diff(co1, co2, eq_mode = eq_mode)
+  co1 = prep$co1
+  co2 = prep$co2
+
   # Match results
-  cod = full_join(co1, co2, by=c("cterm","runid"), suffix=c("_1","_2"))
+  cod = full_join(co1, co2, by=c("eq","cterm","runid"), suffix=c("_1","_2"))
 
   # Ignore coefficients that are missing in both co1 and co2
   cod = cod %>%
@@ -167,7 +265,7 @@ coef_diff_table = function(co1, co2, check.ref.levels = TRUE) {
         is_factor = has.substr(cterm, "="),
         factor_group = stringi::stri_replace_all_regex(paste0(cterm,":"), "=([^\\:]*):",":") %>% str.remove.ends(right=1)
       ) %>%
-      group_by(runid, factor_group) %>%
+      group_by(runid, eq, factor_group) %>%
       mutate(
         # We will normalize reference levels to those of coef_1
         # Note that rows where both coef_1 and coef_2
@@ -176,7 +274,7 @@ coef_diff_table = function(co1, co2, check.ref.levels = TRUE) {
         # Reference levels differ if some coef_2 is NA
         ref_level_differs = is_factor & any(is.na(coef_2)),
 
-        # We codute the offset for coef_2
+        # We compute the offset for coef_2
         offset.2 = ifelse(ref_level_differs, -coef_1[first(which(is.na(coef_2)))],0),
         num_diff_ref_coef_2 = sum(is.na(coef_2))
       ) %>%
@@ -195,7 +293,7 @@ coef_diff_table = function(co1, co2, check.ref.levels = TRUE) {
 
     # Adapt (Intercept) if there are different reference levels
     cod = cod %>%
-      group_by(runid) %>%
+      group_by(runid, eq) %>%
       mutate(
         ref_level_differs = ifelse(cterm=="(Intercept)" & any(ref_level_differs), any(ref_level_differs, na.rm=TRUE), ref_level_differs),
         offset.2.intercept =  ifelse(cterm=="(Intercept)" & any(ref_level_differs), -sum(unique(offset.2), na.rm=TRUE), offset.2),
@@ -224,7 +322,7 @@ coef_diff_table = function(co1, co2, check.ref.levels = TRUE) {
   # we cannot repair different dummy dropping between Stata and R
   # we just add an indicator
   cod = cod %>%
-    group_by(runid) %>%
+    group_by(runid, eq) %>%
     mutate(
       step_refs_differ =
         any(ref_level_differs) |
@@ -233,7 +331,7 @@ coef_diff_table = function(co1, co2, check.ref.levels = TRUE) {
     ungroup()
 
   cod = cod %>%
-    select(runid, cterm, identical, identical_coef, everything())
+    select(runid, eq, cterm, identical, identical_coef, everything())
 
   cod
 }
@@ -245,4 +343,3 @@ max_empty_na = function(x, na.rm=TRUE) {
   if (length(x)==0) return(NA_real_)
   max(x)
 }
-

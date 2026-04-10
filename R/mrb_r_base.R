@@ -40,6 +40,10 @@ mrb_run_r_base = function(mrb, just_pids=NULL, make_parcels=TRUE) {
   }
   mrb = mrb_agg_stata(mrb, skip_if_has = TRUE)
 
+  # Load original reproduction results (so variant) directly from DRF
+  regtab_file = file.path(mrb$project_dir, "repbox/stata/regtab.Rds")
+  mrb$regtab_so = tryCatch(readRDS(regtab_file), error = function(e) NULL)
+
   all_step_parcels = list()
 
 
@@ -87,7 +91,7 @@ mrb_run_r_base_step = function(mrb, pid) {
   cmdpart = all_cmdpart %>% filter(runid == pid)
   if (NROW(cmdpart) == 0) stop(paste0("No cmdpart stored for runid = ", pid))
 
-  # 2. Extract specific Stata outcomes for this step
+  # 2. Extract specific Stata outcomes for this step (metaregBase 'sb')
   stata_ct = if (!is.null(mrb$stata_ct_sb)) mrb$stata_ct_sb %>% filter(runid == pid) else NULL
   stata_scalars = if (!is.null(mrb$stata_scalars)) mrb$stata_scalars %>% filter(runid == pid) else NULL
   stata_macros = if (!is.null(mrb$stata_macros)) mrb$stata_macros %>% filter(runid == pid) else NULL
@@ -124,11 +128,24 @@ mrb_run_r_base_step = function(mrb, pid) {
 
   step_parcels = list()
 
-  # A. REGCOEF (Parsed Stata Coefficients)
+  # A. REGCOEF (Parsed Stata Coefficients from metaregBase 'sb' run)
   if (!is.null(stata_ct) && nrow(stata_ct) > 0) {
     step_parcels$regcoef = ct_to_regcoef(stata_ct, variant = "sb", artid = mrb$artid)
   } else {
     step_parcels$regcoef = tibble()
+  }
+
+  # A2. REGCOEF_SO (Parsed Stata Coefficients from Original DRF run 'so')
+  step_parcels$regcoef_so = tibble()
+  if (!is.null(mrb$regtab_so)) {
+    rt_row = mrb$regtab_so %>% filter(runid == pid)
+    if (nrow(rt_row) > 0 && !is.null(rt_row$ct[[1]])) {
+      so_df = rt_row$ct[[1]]
+      if (nrow(so_df) > 0) {
+        so_df$runid = pid
+        step_parcels$regcoef_so = ct_to_regcoef(so_df, variant = "so", artid = mrb$artid)
+      }
+    }
   }
 
   # B. REGVAR (Variables with prefixes and dropping info)
@@ -244,6 +261,7 @@ mrb_make_r_base_parcels = function(mrb, save=TRUE) {
 
   # Coefs & Variables
   parcels$regcoef = combine_steps("regcoef")
+  parcels$regcoef_so = combine_steps("regcoef_so")
   parcels$regvar = combine_steps("regvar")
   parcels$regxvar = combine_steps("regxvar")
 

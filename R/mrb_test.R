@@ -64,7 +64,7 @@ knitr::opts_chunk$set(eval = FALSE)\n```")
   parcels = list()
   parcels = repboxDB::repdb_load_parcels(
     project_dir,
-    c("regcoef_diff", "reg", "reg_rb", "reg_cmdpart", "regvar", "regxvar", "regsource", "regcoef", "regcoef_rb"),
+    c("regcoef_diff", "reg", "reg_rb", "reg_cmdpart", "regvar", "regxvar", "regsource", "regcoef", "regcoef_rb", "regcoef_so"),
     parcels = parcels
   )
 
@@ -137,15 +137,18 @@ mrb_test_report = function(project_dir, parcels, drf, opts=mrb_test_opts()) {
 
     # Compile the specific flags into a readable summary string
     issues = c()
-    if (!row$has_sb && row$has_rb) issues = c(issues, "Missing Stata (sb) results (R produced results)")
-    if (row$has_sb && !row$has_rb) issues = c(issues, "Missing R (rb) results (Stata produced results)")
-    if (row$coef_diff) issues = c(issues, "Coefficients differ")
-    if (row$se_diff) issues = c(issues, "Standard errors differ (coefficients match)")
+    if (isTRUE(row$error_in_r)) issues = c(issues, paste0("R translation/execution failed: ", row$error_msg))
+    if (!row$has_sb && row$has_rb) issues = c(issues, "Missing metareg Stata (sb) results (but R produced results)")
+    if (row$has_sb && !row$has_rb && !isTRUE(row$error_in_r)) issues = c(issues, "Missing R (rb) results (Stata produced results)")
+    if (row$has_sb && !row$has_so) issues = c(issues, "Missing original Stata (so) results (metareg Stata produced results)")
+
+    if (isTRUE(row$sb_so_diff)) issues = c(issues, "Metareg Stata (sb) and Original Stata (so) differ")
+    if (isTRUE(row$sb_rb_diff)) issues = c(issues, "Metareg Stata (sb) and R (rb) differ")
 
     notes = c()
     if (!row$has_sb && !row$has_rb) notes = c(notes, "Both Stata and R yielded no results (e.g. empty data or expected abort)")
     if (!row$has_sb && row$has_rb) notes = c(notes, "Stata yielded no results (but R did)")
-    if (row$has_sb && !row$has_rb) notes = c(notes, "R yielded no results (but Stata did)")
+    if (row$has_sb && !row$has_rb && !isTRUE(row$error_in_r)) notes = c(notes, "R yielded no results (but Stata did)")
 
     issues_text = ""
     if (length(issues) > 0) {
@@ -158,15 +161,30 @@ mrb_test_report = function(project_dir, parcels, drf, opts=mrb_test_opts()) {
     }
 
     # Get the table of differences if both Stata and R have outputs
-    diff_res = list(text = "", note = "")
-    if (row$has_sb && row$has_rb && (row$coef_diff || row$se_diff)) {
-      coef_pair = mrb_test_get_regcoef_pair(runid = runid, variant1 = "rb", variant2 = "sb", parcels = parcels)
+    diff_res_text = ""
+    diff_res_note = ""
 
+    if (row$has_sb && row$has_so && isTRUE(row$sb_so_diff)) {
+      coef_pair = mrb_test_get_regcoef_pair(runid = runid, variant1 = "sb", variant2 = "so", parcels = parcels)
       if (!is.null(coef_pair$co1) && !is.null(coef_pair$co2) && NROW(coef_pair$co1) > 0 && NROW(coef_pair$co2) > 0) {
         diff_tab = coef_diff_table(coef_pair$co1, coef_pair$co2)
-        diff_res = mrb_test_regcoef_diff_text(diff_tab, opts=opts)
+        d_res = mrb_test_regcoef_diff_text(diff_tab, variant1="sb", variant2="so", opts=opts)
+        diff_res_text = paste0(diff_res_text, "\n\n**sb vs so difference:**\n", d_res$text)
+        diff_res_note = paste0(diff_res_note, " ", d_res$note)
       } else {
-         diff_res$text = "- Could not create coefficient comparison table. One variant returned an empty table."
+        diff_res_text = paste0(diff_res_text, "\n- Could not create sb vs so comparison table.")
+      }
+    }
+
+    if (row$has_sb && row$has_rb && isTRUE(row$sb_rb_diff)) {
+      coef_pair = mrb_test_get_regcoef_pair(runid = runid, variant1 = "sb", variant2 = "rb", parcels = parcels)
+      if (!is.null(coef_pair$co1) && !is.null(coef_pair$co2) && NROW(coef_pair$co1) > 0 && NROW(coef_pair$co2) > 0) {
+        diff_tab = coef_diff_table(coef_pair$co1, coef_pair$co2)
+        d_res = mrb_test_regcoef_diff_text(diff_tab, variant1="sb", variant2="rb", opts=opts)
+        diff_res_text = paste0(diff_res_text, "\n\n**sb vs rb difference:**\n", d_res$text)
+        diff_res_note = paste0(diff_res_note, " ", d_res$note)
+      } else {
+        diff_res_text = paste0(diff_res_text, "\n- Could not create sb vs rb comparison table.")
       }
     }
 
@@ -181,8 +199,8 @@ mrb_test_report = function(project_dir, parcels, drf, opts=mrb_test_opts()) {
       "",
       if (nzchar(issues_text)) c(issues_text, "") else NULL,
       if (nzchar(notes_text)) c(notes_text, "") else NULL,
-      if (nzchar(diff_res$note)) c(diff_res$note, "") else NULL,
-      if (nzchar(diff_res$text)) c(diff_res$text, "") else NULL,
+      if (nzchar(diff_res_note)) c(diff_res_note, "") else NULL,
+      if (nzchar(diff_res_text)) c(diff_res_text, "") else NULL,
       "### Code Path",
       "```r",
       code_path_text,
@@ -221,46 +239,52 @@ mrb_test_generate_flags = function(project_dir, parcels, drf = NULL,  opts=mrb_t
 
   sb_runs = unique(parcels$regcoef$runid)
   rb_runs = unique(parcels$regcoef_rb$runid)
+  so_runs = unique(parcels$regcoef_so$runid)
 
   res$has_sb = res$runid %in% sb_runs
   res$has_rb = res$runid %in% rb_runs
+  res$has_so = res$runid %in% so_runs
+
+  if (!is.null(parcels$reg_rb) && NROW(parcels$reg_rb) > 0) {
+    if (!has_col(parcels$reg_rb,"error_msg")) {
+      parcels$reg_rb$error_msg = ""
+    }
+    res = left_join(res, parcels$reg_rb %>% select(runid, error_in_r, error_msg), by = "runid")
+  } else {
+    res$error_in_r = NA
+    res$error_msg = NA
+  }
 
   diff = parcels$regcoef_diff
   if (!is.null(diff) && NROW(diff) > 0) {
-    diff_all = diff %>%
-      filter(compare_what == "all") %>%
-      select(runid, max_rel_diff, max_deviation, identical)
-    res = left_join(res, diff_all, by = "runid")
+    diff_sb_rb = diff %>% filter(compare_what == "all", variant1 == "sb", variant2 == "rb") %>%
+       select(runid, sb_rb_max_dev = max_deviation, sb_rb_max_rel = max_rel_diff, sb_rb_identical = identical)
+    diff_sb_so = diff %>% filter(compare_what == "all", variant1 == "sb", variant2 == "so") %>%
+       select(runid, sb_so_max_dev = max_deviation, sb_so_max_rel = max_rel_diff, sb_so_identical = identical)
 
-    diff_coef = diff %>%
-      filter(compare_what == "coef") %>%
-      select(runid, coef_rel_diff = max_rel_diff, coef_dev = max_deviation, coef_identical = identical)
-    res = left_join(res, diff_coef, by = "runid")
+    res = left_join(res, diff_sb_rb, by = "runid")
+    res = left_join(res, diff_sb_so, by = "runid")
   } else {
-    res$max_rel_diff = NA_real_
-    res$max_deviation = NA_real_
-    res$identical = NA
-    res$coef_rel_diff = NA_real_
-    res$coef_dev = NA_real_
-    res$coef_identical = NA
+    res$sb_rb_max_dev = NA_real_
+    res$sb_rb_max_rel = NA_real_
+    res$sb_rb_identical = NA
+    res$sb_so_max_dev = NA_real_
+    res$sb_so_max_rel = NA_real_
+    res$sb_so_identical = NA
   }
 
-  # Add logic to flag each individual issue
   res = res %>%
     mutate(
-      coef_diff = has_sb & has_rb & (!isTRUE(coef_identical) &
-                    (is.na(coef_rel_diff) | coef_rel_diff > max_rel_diff_tol |
-                     is.na(coef_dev) | coef_dev > max_deviation_tol)),
+      sb_so_diff = has_sb & has_so & (!isTRUE(sb_so_identical) &
+                     (is.na(sb_so_max_dev) | sb_so_max_dev > max_deviation_tol |
+                      is.na(sb_so_max_rel) | sb_so_max_rel > max_rel_diff_tol)),
+      sb_rb_diff = has_sb & has_rb & (!isTRUE(sb_rb_identical) &
+                     (is.na(sb_rb_max_dev) | sb_rb_max_dev > max_deviation_tol |
+                      is.na(sb_rb_max_rel) | sb_rb_max_rel > max_rel_diff_tol)),
 
-      overall_diff = has_sb & has_rb & (!isTRUE(identical) &
-                    (is.na(max_rel_diff) | max_rel_diff > max_rel_diff_tol |
-                     is.na(max_deviation) | max_deviation > max_deviation_tol)),
+      is_problem = (has_sb != has_so) | (has_sb != has_rb & !isTRUE(error_in_r)) | isTRUE(error_in_r) | sb_so_diff | sb_rb_diff,
 
-      se_diff = overall_diff & !coef_diff,
-
-      is_problem = (has_sb != has_rb) | coef_diff | se_diff,
-
-      is_note = !has_sb | !has_rb
+      is_note = !has_sb | !has_rb | !has_so
     )
 
   return(res)

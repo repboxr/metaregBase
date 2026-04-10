@@ -31,7 +31,7 @@ mrb_run_r_reg = function(mrb, just_pids=NULL) {
   restore.point("mrb_run_r_reg")
 
   mrb$artid = basename(mrb$project_dir)
-  mrb$parcels = repboxDB::repdb_load_parcels(mrb$project_dir, c("reg_cmdpart", "reg","regvar","regxvar","regcoef"))
+  mrb$parcels = repboxDB::repdb_load_parcels(mrb$project_dir, c("reg_cmdpart", "reg","regvar","regxvar","regcoef", "regcoef_so"))
 
   pids = mrb$drf$pids
   if (length(pids) == 0) {
@@ -70,59 +70,100 @@ mrb_run_r_reg_step = function(mrb, pid) {
 
   reg = parcel_for_runid(parcels$reg, runid)
   regvar = parcel_for_runid(parcels$regvar, runid)
-  regxvar = parcel_for_runid(parcels$regxvar, runid)
+  regxvar = if (!is.null(parcels$regxvar)) parcel_for_runid(parcels$regxvar, runid) else tibble()
   cmdpart = parcel_for_runid(parcels$reg_cmdpart, runid)
-  stata_co = parcel_for_runid(parcels$regcoef, runid)
 
-  if (NROW(stata_co)==0) {
-    cat("\nNo regcoef parcel entry from mrb_run_r_base for regression with runid=", pid, " found. Make sure you have run mrb_run_r_base.\n")
-    return(NULL)
-  }
+  stata_co = parcel_for_runid(parcels$regcoef, runid)
+  stata_so = parcel_for_runid(parcels$regcoef_so, runid)
+  default_eq = regcoef_default_eq(stata_co)
 
   step_parcels = list()
 
+  diff_sb_so = NULL
+  if (NROW(stata_co) > 0 && NROW(stata_so) > 0) {
+     if (!"variant" %in% names(stata_co)) stata_co$variant = "sb"
+     if (!"variant" %in% names(stata_so)) stata_so$variant = "so"
+     diff_tab = coef_diff_table(stata_co, stata_so)
+     if (!is.null(diff_tab)) {
+        diff_sb_so = coef_diff_summary(diff_tab, compare_what=c("all","coef"))
+     }
+  }
+
+  if (NROW(regvar) == 0 || NROW(cmdpart) == 0) {
+    # Cannot translate if base parcels are empty, but we must return whatever diff we have
+    step_parcels$regcoef_diff = diff_sb_so
+    return(step_parcels)
+  }
+
   library(regtranslate)
   opts = code_options(add_function = TRUE, add_broom = TRUE)
-  code_df = reg_stata_to_r_code(reg, regvar, regxvar, cmdpart, prefer="fixest", opts=opts)
+  code_df = try(reg_stata_to_r_code(reg, regvar, regxvar, cmdpart, prefer="fixest", opts=opts), silent=TRUE)
+
+  reg_rb = reg %>% mutate(variant = "rb", error_in_r = FALSE, error_msg = "")
+
+  if (is(code_df, "try-error") || any(grepl("# Stata command .* not fully translated", code_df$code)) || any(grepl("# Translation failed", code_df$code))) {
+     reg_rb$error_in_r = TRUE
+     reg_rb$error_msg = "Stata regression could not be translated to R."
+     step_parcels$reg_rb = reg_rb
+     step_parcels$regcoef_diff = diff_sb_so
+     return(step_parcels)
+  }
+
   code = paste0(code_df$code, collapse="\n")
   reg_fun_code = paste0("reg_fun = ", code)
 
-  reg_fun = eval(parse(text=reg_fun_code))
+  reg_fun = try(eval(parse(text=reg_fun_code)), silent=TRUE)
+  if (is(reg_fun, "try-error")) {
+     reg_rb$error_in_r = TRUE
+     reg_rb$error_msg = "Error parsing translated R code."
+     step_parcels$reg_rb = reg_rb
+     step_parcels$regcoef_diff = diff_sb_so
+     return(step_parcels)
+  }
 
   # Fetch and prepare the data using our new refactored helper function
-  dat = mrb_get_regression_data(runid, drf = mrb$drf, reg=reg, regvar = regvar, regxvar = regxvar)
+  dat = try(mrb_get_regression_data(runid, drf = mrb$drf, reg=reg, regvar = regvar, regxvar = regxvar), silent=TRUE)
+  if (is(dat, "try-error")) {
+     reg_rb$error_in_r = TRUE
+     reg_rb$error_msg = "Error preparing regression data."
+     step_parcels$reg_rb = reg_rb
+     step_parcels$regcoef_diff = diff_sb_so
+     return(step_parcels)
+  }
 
-  results = try(reg_fun(dat))
+  results = try(reg_fun(dat), silent=TRUE)
   if (is(results, "try-error")) {
-    cat("\nError occured for runid=",pid,"\n")
-    cat("\nreg_fun_code:\n",paste0(reg_fun_code, collapse="\n"))
-    cat("\nHead of regression data set: head(dat,2)")
-    print(head(dat,2))
-    return(NULL)
+     reg_rb$error_in_r = TRUE
+     reg_rb$error_msg = as.character(attr(results, "condition")$message)
+     step_parcels$reg_rb = reg_rb
+     step_parcels$regcoef_diff = diff_sb_so
+     return(step_parcels)
   }
 
 
   # Process R results
   ct = results$ct
+  diff_sb_rb = NULL
 
   if (!is.null(ct) && nrow(ct) > 0) {
     ct$cterm = cterm_of_r_coefs(ct$term, regvar, dot_to_at = TRUE)
-    co_df = ct_to_regcoef(ct, lang="r", variant="rb", artid=artid)
+    co_df = ct_to_regcoef(ct, lang="r", variant="rb", artid=artid, default_eq=default_eq)
     co_df$runid = runid
     step_parcels$regcoef_rb = co_df
 
-    # Comparison
+    # Comparison sb vs rb
     if (!is.null(stata_co) && nrow(stata_co) > 0) {
-      diff_tab = coef_diff_table(co_df, stata_co)
-      if (!is.null(diff_tab)) {
-        diff_sum = coef_diff_summary(diff_tab, compare_what=c("all","coef"))
-        step_parcels$regcoef_diff = diff_sum
+      if (!"variant" %in% names(stata_co)) stata_co$variant = "sb"
+      diff_tab_rb = coef_diff_table(stata_co, co_df)
+      if (!is.null(diff_tab_rb)) {
+        diff_sb_rb = coef_diff_summary(diff_tab_rb, compare_what=c("all","coef"))
       }
     }
   }
 
+  step_parcels$regcoef_diff = dplyr::bind_rows(diff_sb_so, diff_sb_rb)
+
   glance = results$glance
-  reg_rb = reg %>% mutate(variant = "rb", error_in_r = FALSE, error_msg = "")
 
   if (!is.null(glance)) {
     glance$runid = runid
@@ -146,7 +187,7 @@ mrb_run_r_reg_step = function(mrb, pid) {
 
     stat_cols = intersect(c("r2", "adj_r2", "df_r", "F"), names(stats))
     for(col in stat_cols) {
-      reg[[col]] = stats[[col]]
+      reg_rb[[col]] = stats[[col]]
     }
   }
   reg_rb$cmd = results$rcmd
@@ -156,6 +197,7 @@ mrb_run_r_reg_step = function(mrb, pid) {
 
   return(step_parcels)
 }
+
 
 #' Get and prepare regression data (creates cterms and regxvar columns)
 mrb_get_regression_data = function(runid, drf, reg=NULL, regvar, regxvar = NULL) {
@@ -281,7 +323,6 @@ extract_reg_stats_from_regscalar = function(regscalar) {
 
   stats
 }
-
 
 
 

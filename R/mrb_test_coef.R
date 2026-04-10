@@ -55,23 +55,43 @@ mrb_test_regcoef_diff_text = function(
       head(2)
   }
 
-  # Combine categories and remove possible overlaps (e.g. if a row qualified for multiple)
-  show_tab = bind_rows(cat_missing, cat_coef, cat_se) %>% distinct(cterm, .keep_all = TRUE)
+  # Combine categories and remove possible overlaps
+  show_tab = bind_rows(cat_missing, cat_coef, cat_se)
+  if ("eq" %in% colnames(show_tab)) {
+    show_tab = distinct(show_tab, eq, cterm, .keep_all = TRUE)
+  } else {
+    show_tab = distinct(show_tab, cterm, .keep_all = TRUE)
+  }
 
   if (NROW(show_tab) == 0) {
     return(list(text = "- No differing coefficients to show.", note = note))
   }
 
   # Assemble the exact layout format
-  show = tibble(
-    cterm = show_tab$cterm,
-    coef_1 = show_tab$coef_1,
-    coef_2 = show_tab$coef_2,
-    se_1 = show_tab$se_1,
-    se_2 = show_tab$se_2
-  )
-  names(show)[2:3] = c(paste0("coef_", variant1), paste0("coef_", variant2))
-  names(show)[4:5] = c(paste0("se_", variant1), paste0("se_", variant2))
+  has_eq = "eq" %in% colnames(show_tab) && any(show_tab$eq != "", na.rm = TRUE)
+
+  if (has_eq) {
+    show = tibble(
+      eq = show_tab$eq,
+      cterm = show_tab$cterm,
+      coef_1 = show_tab$coef_1,
+      coef_2 = show_tab$coef_2,
+      se_1 = show_tab$se_1,
+      se_2 = show_tab$se_2
+    )
+    names(show)[3:4] = c(paste0("coef_", variant1), paste0("coef_", variant2))
+    names(show)[5:6] = c(paste0("se_", variant1), paste0("se_", variant2))
+  } else {
+    show = tibble(
+      cterm = show_tab$cterm,
+      coef_1 = show_tab$coef_1,
+      coef_2 = show_tab$coef_2,
+      se_1 = show_tab$se_1,
+      se_2 = show_tab$se_2
+    )
+    names(show)[2:3] = c(paste0("coef_", variant1), paste0("coef_", variant2))
+    names(show)[4:5] = c(paste0("se_", variant1), paste0("se_", variant2))
+  }
 
   out = paste0(capture.output(print(as.data.frame(show), row.names = FALSE, right = FALSE)), collapse = "\n")
 
@@ -83,6 +103,7 @@ mrb_test_regcoef_diff_text = function(
 
   return(list(text = text, note = note))
 }
+
 
 
 mrb_test_coef_diff_stats = function(diff_tab) {

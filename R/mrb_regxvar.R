@@ -40,6 +40,7 @@ make_regxvar = function(regvar, dat,  regcoef=NULL) {
   })
 
   if (!is.null(regcoef) && nrow(regcoef) > 0) {
+    regcoef = regcoef_keep_default_eq(regcoef)
     regcoef = filter(regcoef, !is.na(coef))
     regcoef = regcoef[!duplicated(regcoef[,c("runid","cterm")]), ]
   }
@@ -59,6 +60,7 @@ make_regxvar = function(regvar, dat,  regcoef=NULL) {
 
   regxvar
 }
+
 
 make_regxvar_ia1 = function(regvar,level_li) {
   restore.point("make_regxvar_ia1")

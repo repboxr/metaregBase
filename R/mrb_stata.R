@@ -42,9 +42,16 @@ mrb_full_stata_script = function(mrb, capture=TRUE) {
   restore.point("mrb_full_stata_script")
   run_df = mrb$drf$run_df
 
-
   path_merge = c("load_natural")
   outdir = file.path(mrb$mrb_dir, "stata_reg_out")
+
+  if (dir.exists(outdir)) {
+    old_files = list.files(outdir, full.names = TRUE)
+    if (length(old_files) > 0) file.remove(old_files)
+  } else {
+    dir.create(outdir, recursive = TRUE)
+  }
+
   code_df = repboxDRF::drf_stata_code_df(drf=mrb$drf)
   code_df = code_df %>%
     drf_code_adapt(mrb_code_reg_stata, just_path_pos="end", run_df=run_df, outdir=outdir, capture=capture) %>%
