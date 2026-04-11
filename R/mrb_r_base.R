@@ -19,7 +19,7 @@ example = function() {
   #mrb = mrb_full_stata_script(mrb)
   #mrb = mrb_run_stata_script(mrb)
   mrb = mrb_agg_stata(mrb)
-  mrb = mrb_run_r_base(mrb, just_pid = drf$pids[1])
+  mrb = mrb_run_r_base(mrb, just_pid = drf$pid[1])
 }
 
 

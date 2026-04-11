@@ -83,6 +83,7 @@ knitr::opts_chunk$set(eval = FALSE)\n```")
 
 mrb_test_report = function(project_dir, parcels, drf, opts=mrb_test_opts()) {
   restore.point("mrb_test_report")
+  library(metaregBase)
   max_cases = opts$max_cases
 
   flags = mrb_test_generate_flags(project_dir, parcels, drf, opts=opts)
@@ -188,6 +189,8 @@ mrb_test_report = function(project_dir, parcels, drf, opts=mrb_test_opts()) {
       }
     }
 
+    source_text = mrb_test_source_text(runid, parcels = parcels, drf = drf)
+
     # Generate the comprehensive path of Stata and R code
     code_path_text = mrb_test_code_path(project_dir, runid, parcels, drf, opts=opts)
 
@@ -201,6 +204,7 @@ mrb_test_report = function(project_dir, parcels, drf, opts=mrb_test_opts()) {
       if (nzchar(notes_text)) c(notes_text, "") else NULL,
       if (nzchar(diff_res_note)) c(diff_res_note, "") else NULL,
       if (nzchar(diff_res_text)) c(diff_res_text, "") else NULL,
+      if (nzchar(source_text)) c(source_text, "") else NULL,
       "### Code Path",
       "```r",
       code_path_text,
