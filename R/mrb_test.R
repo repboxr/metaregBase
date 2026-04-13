@@ -51,7 +51,7 @@ mrb_run_as_test = function(project_dir, run_script, navigate=TRUE, opts=mrb_test
 knitr::opts_chunk$set(eval = FALSE)\n```")
 
   add("# do files in the project")
-  do_files = list.files(file.path(project_dir,"mod"), glob2rx("*.do"), recursive = TRUE, full.names = TRUE)
+  do_files = list.files(file.path(project_dir,"org"), glob2rx("*.do"), recursive = TRUE, full.names = TRUE)
   do_files = do_files[!startsWith(basename(do_files), "repbox_")]
   add(files_to_md_fences(do_files))
 

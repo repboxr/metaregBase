@@ -2,6 +2,21 @@
 # create a text that shows the complete path including Stata data modification steps,
 # the filter code, and the translated R regression steps, formatted clearly.
 
+example = function() {
+
+}
+
+mrb_runid_test_files = function(project_dir, runid, parcels=list(), drf=repboxDRF::drf_load(project_dir, parcels), outdir = paste0(project_dir, "/run/runid_",runid)) {
+
+  if (!dir.exists(outdir)) dir.create(outdir)
+  r_code = mrb_test_code_path(project_dir, runid, parcels, drf)
+  r_code = paste0('project_dir = "', project_dir, '"\n', r_code)
+  file = paste0(outdir, "/test_runid_", runid, ".R")
+  writeLines(r_code, file)
+  invisible()
+}
+
+
 mrb_test_code_path = function(project_dir, runid, parcels, drf, opts=mrb_test_opts()) {
   restore.point("mrb_test_code_path")
 
