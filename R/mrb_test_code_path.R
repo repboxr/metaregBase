@@ -58,6 +58,17 @@ mrb_test_code_path = function(project_dir, runid, parcels, drf, opts=mrb_test_op
     } else {
        # Modification or data loading step preceding the target.
        rcode = run_df$rcode[i]
+
+       # If this is the FIRST runid in the path, and it has a cache, inject the cache load code
+       if (i == 1 && isTRUE(run_df$has_file_cache[i])) {
+         drf_rel_path = paste0("cached_dta/", basename(run_df$drf_cache_file[i]))
+         rcode = paste0(
+           'data = drf_load_data(project_dir, "', drf_rel_path ,'")\n',
+           'data$stata2r_original_order_idx = seq_len(nrow(data))\n',
+           'assign("has_original_order_idx", TRUE, envir = stata2r::stata2r_env)'
+         )
+       }
+
        if (is.null(rcode) || is.na(rcode) || !nzchar(rcode)) {
          rcode = "# No R translation found/needed"
        }
@@ -68,3 +79,4 @@ mrb_test_code_path = function(project_dir, runid, parcels, drf, opts=mrb_test_op
 
   paste0(txt_lines, collapse = "\n")
 }
+
