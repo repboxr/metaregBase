@@ -239,10 +239,13 @@ coef_diff_summary = function(diff_tab, compare_what=c("all","coef"), problem="")
   sum
 }
 
-coef_diff_table = function(co1, co2, check.ref.levels = TRUE, eq_mode = c("auto", "exact")[1]) {
+coef_diff_table = function(co1, co2, check.ref.levels = TRUE, eq_mode = c("auto", "exact")[1], ignore_intercept_cmds = mrb_cmds_ignore_intercept_in_r()) {
   restore.point("regcoef_check_same")
 
   if (is.null(co1) | is.null(co2)) return(NULL)
+
+  v1 = if ("variant" %in% names(co1)) co1$variant[1] else "unknown"
+  v2 = if ("variant" %in% names(co2)) co2$variant[1] else "unknown"
 
   prep = regcoef_prepare_eq_for_diff(co1, co2, eq_mode = eq_mode)
   co1 = prep$co1
@@ -250,6 +253,15 @@ coef_diff_table = function(co1, co2, check.ref.levels = TRUE, eq_mode = c("auto"
 
   # Match results
   cod = full_join(co1, co2, by=c("eq","cterm","runid"), suffix=c("_1","_2"))
+
+  # Ignore (Intercept) if translating to R natively absorbs it for these commands
+  # full_join only suffixes columns present in BOTH. If cmd is only in co1, it remains cmd.
+  cmd_col = if ("cmd_1" %in% names(cod)) "cmd_1" else if ("cmd" %in% names(cod)) "cmd" else NULL
+
+  if (!is.null(ignore_intercept_cmds) && v2 == "rb" && !is.null(cmd_col)) {
+    cod = cod %>%
+      filter(!(cterm == "(Intercept)" & !is.na(.data[[cmd_col]]) & .data[[cmd_col]] %in% ignore_intercept_cmds))
+  }
 
   # Ignore coefficients that are missing in both co1 and co2
   cod = cod %>%
@@ -317,7 +329,6 @@ coef_diff_table = function(co1, co2, check.ref.levels = TRUE, eq_mode = c("auto"
       identical = identical_coef & se_1 == se_2
     )
 
-
   # If Stata uses a dummy set like month1 month2 month3 ...
   # we cannot repair different dummy dropping between Stata and R
   # we just add an indicator
@@ -335,6 +346,8 @@ coef_diff_table = function(co1, co2, check.ref.levels = TRUE, eq_mode = c("auto"
 
   cod
 }
+
+
 
 max_empty_na = function(x, na.rm=TRUE) {
   if (na.rm) {

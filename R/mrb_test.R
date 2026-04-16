@@ -81,12 +81,12 @@ knitr::opts_chunk$set(eval = FALSE)\n```")
   outfile
 }
 
-mrb_test_report = function(project_dir, parcels, drf, opts=mrb_test_opts()) {
+mrb_test_report = function(project_dir, parcels, drf, opts = mrb_test_opts()) {
   restore.point("mrb_test_report")
   library(metaregBase)
   max_cases = opts$max_cases
 
-  flags = mrb_test_generate_flags(project_dir, parcels, drf, opts=opts)
+  flags = mrb_test_generate_flags(project_dir, parcels, drf, opts = opts)
 
   # Extract Stata reproduction errors
   stata_err_text = ""
@@ -112,11 +112,11 @@ mrb_test_report = function(project_dir, parcels, drf, opts=mrb_test_opts()) {
 
   if (NROW(flags) == 0) return(paste0(stata_err_text, "\n No regressions found to compare."))
 
-  probs = flags %>% filter(is_problem | is_note)
-
   if (!is.null(opts$just_runid)) {
-    probs = probs[probs$runid %in% opts$just_runid,]
+    flags = flags[flags$runid %in% opts$just_runid, , drop = FALSE]
   }
+
+  probs = flags %>% filter(is_problem | is_note)
 
   num_all_reg = n_distinct(flags$runid)
   num_all_prob = sum(flags$is_problem, na.rm = TRUE)
@@ -125,6 +125,24 @@ mrb_test_report = function(project_dir, parcels, drf, opts=mrb_test_opts()) {
   if (num_all_prob == 0 && num_all_note == 0) {
     return(paste0(stata_err_text, "\n-- In all regressions R and Stata coefficients and standard errors match, and all results are generated successfully. --"))
   }
+
+  probs = probs %>%
+    arrange(desc(severity), desc(is_problem), runid)
+
+  overview_df = probs %>%
+    mutate(problem_combo = ifelse(problem_combo == "", "Unclassified", problem_combo)) %>%
+    group_by(problem_combo) %>%
+    summarize(
+      runids = paste(sort(runid), collapse = ", "),
+      severity = max(severity, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    arrange(desc(severity), problem_combo)
+
+  overview_text = paste0(
+    "Problem types and runids:\n\n",
+    paste0("  - ", overview_df$problem_combo, ": ", overview_df$runids, collapse = "\n")
+  )
 
   if (is.finite(max_cases) && NROW(probs) > max_cases) {
     probs = probs[seq_len(max_cases), , drop = FALSE]
@@ -136,17 +154,51 @@ mrb_test_report = function(project_dir, parcels, drf, opts=mrb_test_opts()) {
 
     header = paste0("## runid ", runid)
 
-    # Compile the specific flags into a readable summary string
-    issues = c()
-    if (isTRUE(row$error_in_r)) issues = c(issues, paste0("R translation/execution failed: ", row$error_msg))
+    run_cmd = NA_character_
+    if (!is.null(parcels$reg) && NROW(parcels$reg) > 0 && "cmd" %in% names(parcels$reg)) {
+      reg_row = parcels$reg[parcels$reg$runid == runid, , drop = FALSE]
+      if (NROW(reg_row) > 0) {
+        run_cmd = as.character(reg_row$cmd[1])
+      }
+    }
+    if ((is.na(run_cmd) || !nzchar(run_cmd)) && !is.null(parcels$reg_rb) && NROW(parcels$reg_rb) > 0 && "cmd" %in% names(parcels$reg_rb)) {
+      reg_rb_row = parcels$reg_rb[parcels$reg_rb$runid == runid, , drop = FALSE]
+      if (NROW(reg_rb_row) > 0) {
+        run_cmd = as.character(reg_rb_row$cmd[1])
+      }
+    }
+
+    issues = character()
+    if (isTRUE(row$error_in_r)) {
+      if (!is.na(row$error_msg) && nzchar(row$error_msg)) {
+        issues = c(issues, paste0("R translation/execution failed: ", row$error_msg))
+      } else {
+        issues = c(issues, "R translation/execution failed")
+      }
+    }
+
     if (!row$has_sb && row$has_rb) issues = c(issues, "Missing metareg Stata (sb) results (but R produced results)")
+    if (!row$has_sb && !row$has_rb) issues = c(issues, "Neither metareg Stata (sb) nor R (rb) produced results")
     if (row$has_sb && !row$has_rb && !isTRUE(row$error_in_r)) issues = c(issues, "Missing R (rb) results (Stata produced results)")
     if (row$has_sb && !row$has_so) issues = c(issues, "Missing original Stata (so) results (metareg Stata produced results)")
 
-    if (isTRUE(row$sb_so_diff)) issues = c(issues, "Metareg Stata (sb) and Original Stata (so) differ")
-    if (isTRUE(row$sb_rb_diff)) issues = c(issues, "Metareg Stata (sb) and R (rb) differ")
+    if (isTRUE(row$sb_so_coef_diff) && isTRUE(row$sb_so_se_diff)) {
+      issues = c(issues, "Metareg Stata (sb) and Original Stata (so) differ in coefficients and SEs")
+    } else if (isTRUE(row$sb_so_coef_diff)) {
+      issues = c(issues, "Metareg Stata (sb) and Original Stata (so) differ in coefficients")
+    } else if (isTRUE(row$sb_so_se_diff)) {
+      issues = c(issues, "Metareg Stata (sb) and Original Stata (so) differ only in SEs")
+    }
 
-    notes = c()
+    if (isTRUE(row$sb_rb_coef_diff) && isTRUE(row$sb_rb_se_diff)) {
+      issues = c(issues, "Metareg Stata (sb) and R (rb) differ in coefficients and SEs")
+    } else if (isTRUE(row$sb_rb_coef_diff)) {
+      issues = c(issues, "Metareg Stata (sb) and R (rb) differ in coefficients")
+    } else if (isTRUE(row$sb_rb_se_diff)) {
+      issues = c(issues, "Metareg Stata (sb) and R (rb) differ only in SEs")
+    }
+
+    notes = character()
     if (!row$has_sb && !row$has_rb) notes = c(notes, "Both Stata and R yielded no results (e.g. empty data or expected abort)")
     if (!row$has_sb && row$has_rb) notes = c(notes, "Stata yielded no results (but R did)")
     if (row$has_sb && !row$has_rb && !isTRUE(row$error_in_r)) notes = c(notes, "R yielded no results (but Stata did)")
@@ -161,15 +213,14 @@ mrb_test_report = function(project_dir, parcels, drf, opts=mrb_test_opts()) {
       notes_text = paste0("**Notes:** ", paste(notes, collapse = ", "))
     }
 
-    # Get the table of differences if both Stata and R have outputs
     diff_res_text = ""
     diff_res_note = ""
 
-    if (row$has_sb && row$has_so && isTRUE(row$sb_so_diff)) {
+    if (row$has_sb && row$has_so && (isTRUE(row$sb_so_coef_diff) || isTRUE(row$sb_so_se_diff))) {
       coef_pair = mrb_test_get_regcoef_pair(runid = runid, variant1 = "sb", variant2 = "so", parcels = parcels)
       if (!is.null(coef_pair$co1) && !is.null(coef_pair$co2) && NROW(coef_pair$co1) > 0 && NROW(coef_pair$co2) > 0) {
         diff_tab = coef_diff_table(coef_pair$co1, coef_pair$co2)
-        d_res = mrb_test_regcoef_diff_text(diff_tab, variant1="sb", variant2="so", opts=opts)
+        d_res = mrb_test_regcoef_diff_text(diff_tab, variant1 = "sb", variant2 = "so", cmd = run_cmd, opts = opts)
         diff_res_text = paste0(diff_res_text, "\n\n**sb vs so difference:**\n", d_res$text)
         diff_res_note = paste0(diff_res_note, " ", d_res$note)
       } else {
@@ -177,11 +228,11 @@ mrb_test_report = function(project_dir, parcels, drf, opts=mrb_test_opts()) {
       }
     }
 
-    if (row$has_sb && row$has_rb && isTRUE(row$sb_rb_diff)) {
+    if (row$has_sb && row$has_rb && (isTRUE(row$sb_rb_coef_diff) || isTRUE(row$sb_rb_se_diff))) {
       coef_pair = mrb_test_get_regcoef_pair(runid = runid, variant1 = "sb", variant2 = "rb", parcels = parcels)
       if (!is.null(coef_pair$co1) && !is.null(coef_pair$co2) && NROW(coef_pair$co1) > 0 && NROW(coef_pair$co2) > 0) {
         diff_tab = coef_diff_table(coef_pair$co1, coef_pair$co2)
-        d_res = mrb_test_regcoef_diff_text(diff_tab, variant1="sb", variant2="rb", opts=opts)
+        d_res = mrb_test_regcoef_diff_text(diff_tab, variant1 = "sb", variant2 = "rb", cmd = run_cmd, opts = opts)
         diff_res_text = paste0(diff_res_text, "\n\n**sb vs rb difference:**\n", d_res$text)
         diff_res_note = paste0(diff_res_note, " ", d_res$note)
       } else {
@@ -190,19 +241,15 @@ mrb_test_report = function(project_dir, parcels, drf, opts=mrb_test_opts()) {
     }
 
     source_text = mrb_test_source_text(runid, parcels = parcels, drf = drf)
-
-    # Generate the comprehensive path of Stata and R code
-    code_path_text = mrb_test_code_path(project_dir, runid, parcels, drf, opts=opts)
-
-    # Generate the data preview text (Original & Regression Datasets)
-    data_preview_text = mrb_test_data_preview_text(runid, drf, parcels, opts=opts)
+    code_path_text = mrb_test_code_path(project_dir, runid, parcels, drf, opts = opts)
+    data_preview_text = mrb_test_data_preview_text(runid, drf, parcels, opts = opts)
 
     block = c(
       header,
       "",
       if (nzchar(issues_text)) c(issues_text, "") else NULL,
       if (nzchar(notes_text)) c(notes_text, "") else NULL,
-      if (nzchar(diff_res_note)) c(diff_res_note, "") else NULL,
+      if (nzchar(diff_res_note)) c(trimws(diff_res_note), "") else NULL,
       if (nzchar(diff_res_text)) c(diff_res_text, "") else NULL,
       if (nzchar(source_text)) c(source_text, "") else NULL,
       "### Code Path",
@@ -221,7 +268,7 @@ mrb_test_report = function(project_dir, parcels, drf, opts=mrb_test_opts()) {
   }
   head = paste0(head, NROW(probs), " cases are shown below.")
 
-  paste0(c(stata_err_text, head, unlist(txt)), collapse = "\n\n")
+  paste0(c(stata_err_text, head, overview_text, unlist(txt)), collapse = "\n\n")
 }
 
 
@@ -230,7 +277,8 @@ mrb_test_report = function(project_dir, parcels, drf, opts=mrb_test_opts()) {
 
 
 
-mrb_test_generate_flags = function(project_dir, parcels, drf = NULL,  opts=mrb_test_opts()) {
+
+mrb_test_generate_flags = function(project_dir, parcels, drf = NULL, opts = mrb_test_opts()) {
   restore.point("mrb_test_generate_flags")
   if (is.null(drf)) drf = repboxDRF::drf_load(project_dir, parcels = parcels)
   max_rel_diff_tol = opts$max_rel_diff_tol
@@ -239,57 +287,228 @@ mrb_test_generate_flags = function(project_dir, parcels, drf = NULL,  opts=mrb_t
   pids = repboxDRF::drf_pids(drf)
   if (length(pids) == 0) return(tibble())
 
+  get_run_cmd = function(runid) {
+    cmds = character()
+
+    if (!is.null(parcels$reg) && NROW(parcels$reg) > 0 && "cmd" %in% names(parcels$reg)) {
+      cmds = c(cmds, as.character(parcels$reg$cmd[parcels$reg$runid == runid]))
+    }
+    if (!is.null(parcels$reg_rb) && NROW(parcels$reg_rb) > 0 && "cmd" %in% names(parcels$reg_rb)) {
+      cmds = c(cmds, as.character(parcels$reg_rb$cmd[parcels$reg_rb$runid == runid]))
+    }
+
+    cmds = cmds[!is.na(cmds) & nzchar(cmds)]
+    if (length(cmds) == 0) return(NA_character_)
+    cmds[[1]]
+  }
+
+  eval_diff_tab = function(diff_tab) {
+    if (is.null(diff_tab) || NROW(diff_tab) == 0) {
+      return(list(
+        all_diff = FALSE,
+        coef_diff = FALSE,
+        se_diff = FALSE,
+        all_max_dev = NA_real_,
+        all_max_rel = NA_real_,
+        coef_max_dev = NA_real_,
+        coef_max_rel = NA_real_,
+        se_max_dev = NA_real_,
+        se_max_rel = NA_real_
+      ))
+    }
+
+    coef_missing_one = xor(is.na(diff_tab$coef_1), is.na(diff_tab$coef_2))
+    se_missing_one = xor(is.na(diff_tab$se_1), is.na(diff_tab$se_2))
+
+    coef_diff_row =
+      coef_missing_one |
+      (!is.na(diff_tab$abs_err_coef) & diff_tab$abs_err_coef > max_deviation_tol) |
+      (!is.na(diff_tab$rel_err_coef) & diff_tab$rel_err_coef > max_rel_diff_tol)
+
+    se_diff_row =
+      se_missing_one |
+      (!is.na(diff_tab$abs_err_se) & diff_tab$abs_err_se > max_deviation_tol) |
+      (!is.na(diff_tab$rel_err_se) & diff_tab$rel_err_se > max_rel_diff_tol)
+
+    coef_dev = pmin(as.numeric(diff_tab$abs_err_coef), as.numeric(diff_tab$rel_err_coef))
+    se_dev = pmin(as.numeric(diff_tab$abs_err_se), as.numeric(diff_tab$rel_err_se))
+
+    list(
+      all_diff = any(coef_diff_row | se_diff_row, na.rm = TRUE),
+      coef_diff = any(coef_diff_row, na.rm = TRUE),
+      se_diff = any(se_diff_row, na.rm = TRUE),
+      all_max_dev = max_empty_na(c(coef_dev, se_dev), na.rm = TRUE),
+      all_max_rel = max_empty_na(c(as.numeric(diff_tab$rel_err_coef), as.numeric(diff_tab$rel_err_se)), na.rm = TRUE),
+      coef_max_dev = max_empty_na(coef_dev, na.rm = TRUE),
+      coef_max_rel = max_empty_na(as.numeric(diff_tab$rel_err_coef), na.rm = TRUE),
+      se_max_dev = max_empty_na(se_dev, na.rm = TRUE),
+      se_max_rel = max_empty_na(as.numeric(diff_tab$rel_err_se), na.rm = TRUE)
+    )
+  }
+
+  pair_diff = function(runid, variant1, variant2) {
+    pair = mrb_test_get_regcoef_pair(runid = runid, variant1 = variant1, variant2 = variant2, parcels = parcels)
+    if (is.null(pair$co1) || is.null(pair$co2) || NROW(pair$co1) == 0 || NROW(pair$co2) == 0) {
+      return(eval_diff_tab(NULL))
+    }
+
+    diff_tab = coef_diff_table(pair$co1, pair$co2)
+    diff_tab = mrb_test_filter_ignored_intercept_diff(diff_tab, cmd = get_run_cmd(runid), variant2 = variant2)
+    eval_diff_tab(diff_tab)
+  }
+
+  problem_labels = function(row) {
+    labels = character()
+
+    if (isTRUE(row$error_in_r[[1]])) {
+      labels = c(labels, "R translation/execution failed")
+    }
+
+    if (!isTRUE(row$has_sb[[1]]) && !isTRUE(row$has_rb[[1]])) {
+      labels = c(labels, "No sb or rb results")
+    } else {
+      if (!isTRUE(row$has_sb[[1]]) && isTRUE(row$has_rb[[1]])) {
+        labels = c(labels, "Missing sb results")
+      }
+      if (isTRUE(row$has_sb[[1]]) && !isTRUE(row$has_rb[[1]]) && !isTRUE(row$error_in_r[[1]])) {
+        labels = c(labels, "Missing rb results")
+      }
+    }
+
+    if (isTRUE(row$has_sb[[1]]) && !isTRUE(row$has_so[[1]])) {
+      labels = c(labels, "Missing so results")
+    }
+
+    if (isTRUE(row$sb_so_coef_diff[[1]]) && isTRUE(row$sb_so_se_diff[[1]])) {
+      labels = c(labels, "sb vs so: coef differ & SE differ")
+    } else if (isTRUE(row$sb_so_coef_diff[[1]])) {
+      labels = c(labels, "sb vs so: coef differ")
+    } else if (isTRUE(row$sb_so_se_diff[[1]])) {
+      labels = c(labels, "sb vs so: SE differ")
+    }
+
+    if (isTRUE(row$sb_rb_coef_diff[[1]]) && isTRUE(row$sb_rb_se_diff[[1]])) {
+      labels = c(labels, "sb vs rb: coef differ & SE differ")
+    } else if (isTRUE(row$sb_rb_coef_diff[[1]])) {
+      labels = c(labels, "sb vs rb: coef differ")
+    } else if (isTRUE(row$sb_rb_se_diff[[1]])) {
+      labels = c(labels, "sb vs rb: SE differ")
+    }
+
+    if (length(labels) == 0 && isTRUE(row$is_note[[1]])) {
+      labels = c(labels, "Only note")
+    }
+
+    labels
+  }
+
+  severity_of = function(row) {
+    score = 0L
+
+    if (isTRUE(row$error_in_r[[1]])) {
+      score = score + 1000L
+    }
+    if (!isTRUE(row$has_sb[[1]]) && isTRUE(row$has_rb[[1]])) {
+      score = score + 900L
+    }
+    if (!isTRUE(row$has_sb[[1]]) && !isTRUE(row$has_rb[[1]])) {
+      score = score + 850L
+    }
+    if (isTRUE(row$has_sb[[1]]) && !isTRUE(row$has_rb[[1]]) && !isTRUE(row$error_in_r[[1]])) {
+      score = score + 800L
+    }
+    if (isTRUE(row$has_sb[[1]]) && !isTRUE(row$has_so[[1]])) {
+      score = score + 700L
+    }
+
+    if (isTRUE(row$sb_rb_coef_diff[[1]])) {
+      score = score + 400L
+    }
+    if (isTRUE(row$sb_so_coef_diff[[1]])) {
+      score = score + 350L
+    }
+    if (isTRUE(row$sb_rb_se_diff[[1]])) {
+      score = score + 200L
+    }
+    if (isTRUE(row$sb_so_se_diff[[1]])) {
+      score = score + 150L
+    }
+
+    if (score == 0L && isTRUE(row$is_note[[1]])) {
+      score = 50L
+    }
+
+    score
+  }
+
+  sb_runs = if (!is.null(parcels$regcoef) && NROW(parcels$regcoef) > 0) unique(parcels$regcoef$runid) else integer()
+  rb_runs = if (!is.null(parcels$regcoef_rb) && NROW(parcels$regcoef_rb) > 0) unique(parcels$regcoef_rb$runid) else integer()
+  so_runs = if (!is.null(parcels$regcoef_so) && NROW(parcels$regcoef_so) > 0) unique(parcels$regcoef_so$runid) else integer()
+
   res = tibble(runid = pids)
-
-  sb_runs = unique(parcels$regcoef$runid)
-  rb_runs = unique(parcels$regcoef_rb$runid)
-  so_runs = unique(parcels$regcoef_so$runid)
-
   res$has_sb = res$runid %in% sb_runs
   res$has_rb = res$runid %in% rb_runs
   res$has_so = res$runid %in% so_runs
 
+  res$error_in_r = FALSE
+  res$error_msg = ""
+
   if (!is.null(parcels$reg_rb) && NROW(parcels$reg_rb) > 0) {
-    if (!has_col(parcels$reg_rb,"error_msg")) {
+    if (!has_col(parcels$reg_rb, "error_msg")) {
       parcels$reg_rb$error_msg = ""
     }
-    res = left_join(res, parcels$reg_rb %>% select(runid, error_in_r, error_msg), by = "runid")
-  } else {
-    res$error_in_r = NA
-    res$error_msg = NA
+    tmp = parcels$reg_rb %>%
+      select(runid, error_in_r, error_msg)
+    res = left_join(res, tmp, by = "runid", suffix = c("", "_new")) %>%
+      mutate(
+        error_in_r = coalesce(error_in_r_new, error_in_r),
+        error_msg = coalesce(error_msg_new, error_msg)
+      ) %>%
+      select(-error_in_r_new, -error_msg_new)
   }
 
-  diff = parcels$regcoef_diff
-  if (!is.null(diff) && NROW(diff) > 0) {
-    diff_sb_rb = diff %>% filter(compare_what == "all", variant1 == "sb", variant2 == "rb") %>%
-       select(runid, sb_rb_max_dev = max_deviation, sb_rb_max_rel = max_rel_diff, sb_rb_identical = identical)
-    diff_sb_so = diff %>% filter(compare_what == "all", variant1 == "sb", variant2 == "so") %>%
-       select(runid, sb_so_max_dev = max_deviation, sb_so_max_rel = max_rel_diff, sb_so_identical = identical)
+  pair_res = lapply(res$runid, function(runid) {
+    sb_rb = pair_diff(runid, "sb", "rb")
+    sb_so = pair_diff(runid, "sb", "so")
 
-    res = left_join(res, diff_sb_rb, by = "runid")
-    res = left_join(res, diff_sb_so, by = "runid")
-  } else {
-    res$sb_rb_max_dev = NA_real_
-    res$sb_rb_max_rel = NA_real_
-    res$sb_rb_identical = NA
-    res$sb_so_max_dev = NA_real_
-    res$sb_so_max_rel = NA_real_
-    res$sb_so_identical = NA
-  }
+    tibble(
+      runid = runid,
 
-  res = res %>%
+      sb_rb_diff = sb_rb$all_diff,
+      sb_rb_coef_diff = sb_rb$coef_diff,
+      sb_rb_se_diff = sb_rb$se_diff,
+      sb_rb_max_dev = sb_rb$all_max_dev,
+      sb_rb_max_rel = sb_rb$all_max_rel,
+      sb_rb_coef_max_dev = sb_rb$coef_max_dev,
+      sb_rb_coef_max_rel = sb_rb$coef_max_rel,
+      sb_rb_se_max_dev = sb_rb$se_max_dev,
+      sb_rb_se_max_rel = sb_rb$se_max_rel,
+
+      sb_so_diff = sb_so$all_diff,
+      sb_so_coef_diff = sb_so$coef_diff,
+      sb_so_se_diff = sb_so$se_diff,
+      sb_so_max_dev = sb_so$all_max_dev,
+      sb_so_max_rel = sb_so$all_max_rel,
+      sb_so_coef_max_dev = sb_so$coef_max_dev,
+      sb_so_coef_max_rel = sb_so$coef_max_rel,
+      sb_so_se_max_dev = sb_so$se_max_dev,
+      sb_so_se_max_rel = sb_so$se_max_rel
+    )
+  }) %>% bind_rows()
+
+  res = left_join(res, pair_res, by = "runid") %>%
     mutate(
-      sb_so_diff = has_sb & has_so & (!isTRUE(sb_so_identical) &
-                     (is.na(sb_so_max_dev) | sb_so_max_dev > max_deviation_tol |
-                      is.na(sb_so_max_rel) | sb_so_max_rel > max_rel_diff_tol)),
-      sb_rb_diff = has_sb & has_rb & (!isTRUE(sb_rb_identical) &
-                     (is.na(sb_rb_max_dev) | sb_rb_max_dev > max_deviation_tol |
-                      is.na(sb_rb_max_rel) | sb_rb_max_rel > max_rel_diff_tol)),
-
-      is_problem = (has_sb != has_so) | (has_sb != has_rb & !isTRUE(error_in_r)) | isTRUE(error_in_r) | sb_so_diff | sb_rb_diff,
-
+      is_problem = (has_sb != has_so) | ((has_sb != has_rb) & !error_in_r) | error_in_r | sb_so_diff | sb_rb_diff,
       is_note = !has_sb | !has_rb | !has_so
     )
 
+  combo_li = lapply(seq_len(NROW(res)), function(i) {
+    problem_labels(res[i, , drop = FALSE])
+  })
+
+  res$problem_combo = vapply(combo_li, function(x) paste(x, collapse = "; "), character(1))
+  res$severity = vapply(seq_len(NROW(res)), function(i) severity_of(res[i, , drop = FALSE]), numeric(1))
+
   return(res)
 }
+

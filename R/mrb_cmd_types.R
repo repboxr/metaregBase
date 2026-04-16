@@ -11,3 +11,7 @@ stata_cmds_with_margin = function() {
 stata_cmds_with_exp_coef = function() {
   c("nbreg", "poisson", "gnbreg","etpoisson", "tnbreg","tpoisson", "zinb", "zip", "expoisson")
 }
+
+mrb_cmds_ignore_intercept_in_r = function() {
+  c("areg", "xtreg", "reghdfe", "ivreghdfe", "xtlogit", "xtprobit", "xtpoisson", "clogit")
+}

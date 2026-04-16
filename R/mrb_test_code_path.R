@@ -30,6 +30,7 @@ mrb_test_code_path = function(project_dir, runid, parcels, drf, opts=mrb_test_op
 
   txt_lines = c()
 
+  i = 1
   for (i in seq_len(NROW(run_df))) {
     r_id = run_df$runid[i]
     stata_cmd = run_df$cmdline[i]

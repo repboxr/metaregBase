@@ -1,15 +1,40 @@
+mrb_test_filter_ignored_intercept_diff = function(diff_tab, cmd = NA_character_, variant2 = "rb", ignore_intercept_cmds = mrb_cmds_ignore_intercept_in_r()) {
+  restore.point("mrb_test_filter_ignored_intercept_diff")
+
+  if (is.null(diff_tab) || NROW(diff_tab) == 0) {
+    return(diff_tab)
+  }
+
+  cmd = as.character(cmd)[1]
+  variant2 = as.character(variant2)[1]
+
+  if (variant2 != "rb") {
+    return(diff_tab)
+  }
+  if (is.na(cmd) || !nzchar(cmd) || !cmd %in% ignore_intercept_cmds) {
+    return(diff_tab)
+  }
+
+  diff_tab %>%
+    filter(cterm != "(Intercept)")
+}
+
+
 mrb_test_regcoef_diff_text = function(
   diff_tab,
   variant1 = "rb",
   variant2 = "sb",
+  cmd = NA_character_,
   max_rel_diff_tol = opts$max_rel_diff_tol,
   max_deviation_tol = opts$max_deviation_tol,
-  opts = mrb_test()
+  opts = mrb_test_opts()
 ) {
   restore.point("mrb_test_regcoef_diff_text")
 
+  diff_tab = mrb_test_filter_ignored_intercept_diff(diff_tab, cmd = cmd, variant2 = variant2)
+
   if (is.null(diff_tab) || NROW(diff_tab) == 0) {
-    return(list(text = "- No coefficient comparison rows available.", note = ""))
+    return(list(text = "- No comparison rows available.", note = ""))
   }
 
   # Add safety layers and deviation checks to all rows
@@ -21,11 +46,11 @@ mrb_test_regcoef_diff_text = function(
       # Safe numeric extraction substituting NAs with -Inf for pure sorting purposes
       safe_abs_coef = ifelse(is.na(abs_err_coef), -Inf, abs_err_coef),
       safe_rel_coef = ifelse(is.na(rel_err_coef), -Inf, rel_err_coef),
-      safe_abs_se   = ifelse(is.na(abs_err_se), -Inf, abs_err_se),
-      safe_rel_se   = ifelse(is.na(rel_err_se), -Inf, rel_err_se),
+      safe_abs_se = ifelse(is.na(abs_err_se), -Inf, abs_err_se),
+      safe_rel_se = ifelse(is.na(rel_err_se), -Inf, rel_err_se),
 
       is_coef_diff = !coef_missing_one & (safe_abs_coef > max_deviation_tol | safe_rel_coef > max_rel_diff_tol),
-      is_se_diff   = !se_missing_one & (safe_abs_se > max_deviation_tol | safe_rel_se > max_rel_diff_tol)
+      is_se_diff = !se_missing_one & (safe_abs_se > max_deviation_tol | safe_rel_se > max_rel_diff_tol)
     )
 
   # Note if all coefficients match but SEs differ
@@ -45,7 +70,7 @@ mrb_test_regcoef_diff_text = function(
 
   # Category 2: Wrong overall (focusing on SEs). Only added if the SE deviation dominates the Coef deviation
   max_rel_coef = suppressWarnings(max(tab$safe_rel_coef, na.rm = TRUE))
-  max_rel_se   = suppressWarnings(max(tab$safe_rel_se, na.rm = TRUE))
+  max_rel_se = suppressWarnings(max(tab$safe_rel_se, na.rm = TRUE))
 
   cat_se = tibble()
   if (max_rel_se > max_rel_coef && max_rel_se > max_rel_diff_tol) {
@@ -96,7 +121,7 @@ mrb_test_regcoef_diff_text = function(
   out = paste0(capture.output(print(as.data.frame(show), row.names = FALSE, right = FALSE)), collapse = "\n")
 
   text = paste0(
-    "Examples of coefficient mismatches:\n\n```text\n",
+    "Examples of mismatches (Coefficients or SEs):\n\n```text\n",
     out,
     "\n```"
   )
@@ -106,8 +131,10 @@ mrb_test_regcoef_diff_text = function(
 
 
 
-mrb_test_coef_diff_stats = function(diff_tab) {
+mrb_test_coef_diff_stats = function(diff_tab, cmd = NA_character_, variant2 = "rb") {
   restore.point("mrb_test_coef_diff_stats")
+
+  diff_tab = mrb_test_filter_ignored_intercept_diff(diff_tab, cmd = cmd, variant2 = variant2)
 
   if (is.null(diff_tab) || NROW(diff_tab) == 0) {
     return(mrb_test_empty_coef_diff_stats())
@@ -153,6 +180,9 @@ mrb_test_get_regcoef_pair = function(runid, variant1 = "rb", variant2 = "sb", pa
   }
   if (!is.null(parcels$regcoef_rb) && NROW(parcels$regcoef_rb) > 0) {
     li[[length(li) + 1]] = parcels$regcoef_rb
+  }
+  if (!is.null(parcels$regcoef_so) && NROW(parcels$regcoef_so) > 0) {
+    li[[length(li) + 1]] = parcels$regcoef_so
   }
   if (length(li) == 0) {
     return(list(co1 = NULL, co2 = NULL))

@@ -321,11 +321,14 @@ mrb_agg_stata_regcoef = function(mrb, file_prefix="reg_", dir = file.path(mrb$mr
       }
       df$runid = rep(runid, NROW(df))
       df$variant = rep(variant, NROW(df))
-      df$cmd = run_df$cmd[runid]
+
+      row_idx = match(runid, run_df$runid)
+      df$cmd = rep(run_df$cmd[row_idx], NROW(df))
     }
     return(df)
   })
   res = bind_rows(li)
   res
 }
+
 
