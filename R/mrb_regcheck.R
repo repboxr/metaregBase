@@ -1,9 +1,9 @@
 # FILE: /home/rstudio/repbox/metaregBase/R/mrb_regcheck.R
 
 #' Assemble the 'regcheck' parcel checking cross-language replication success
-#' 
+#'
 #' Evaluates the success of regression outputs and maps any mismatches
-#' to a standardized `regcheck` parcel. 
+#' to a standardized `regcheck` parcel.
 mrb_make_regcheck_parcel = function(mrb, save = TRUE) {
   restore.point("mrb_make_regcheck_parcel")
 
@@ -15,25 +15,20 @@ mrb_make_regcheck_parcel = function(mrb, save = TRUE) {
     mrb$parcels = parcels
   }
 
-  if (isTRUE(mrb$is_partial_run)) {
-    pids = mrb$partial_pids
-  } else {
-    pids = unique(c(
-      if (!is.null(parcels$reg)) parcels$reg$runid else integer(),
-      if (!is.null(parcels$reg_rb)) parcels$reg_rb$runid else integer(),
-      if (!is.null(parcels$regcoef_so)) parcels$regcoef_so$runid else integer(),
-      if (!is.null(mrb$drf$pids)) mrb$drf$pids else integer()
-    ))
-  }
+  pids = unique(c(
+    if (!is.null(parcels$reg)) parcels$reg$runid else integer(),
+    if (!is.null(parcels$reg_rb)) parcels$reg_rb$runid else integer(),
+    if (!is.null(parcels$regcoef_so)) parcels$regcoef_so$runid else integer(),
+    if (!is.null(mrb$drf$pids)) mrb$drf$pids else integer()
+  ))
 
   if (length(pids) == 0) return(mrb)
 
-  repair_level = if (!is.null(mrb$repair_level)) as.integer(mrb$repair_level) else 0L
-
   res_li = lapply(pids, function(pid) {
+    # Boolean checks of run existence
     so_did_run = !is.null(parcels$regcoef_so) && pid %in% parcels$regcoef_so$runid
     sb_did_run = !is.null(parcels$reg) && pid %in% parcels$reg$runid
-    
+
     rb_did_run = FALSE
     error_msg = ""
     if (!is.null(parcels$reg_rb) && pid %in% parcels$reg_rb$runid) {
@@ -42,6 +37,7 @@ mrb_make_regcheck_parcel = function(mrb, save = TRUE) {
       error_msg = if (!is.na(row$error_msg)) row$error_msg else ""
     }
 
+    # Default parameters to return
     sb_so_identical = NA
     rb_sb_coef_same = NA
     rb_sb_coef_max_dev = NA_real_
@@ -50,6 +46,7 @@ mrb_make_regcheck_parcel = function(mrb, save = TRUE) {
     problem = ""
     comment = ""
 
+    # Assess discrepancies via Diff summaries
     if (sb_did_run && so_did_run) {
       co_sb = parcels$regcoef[parcels$regcoef$runid == pid, , drop = FALSE]
       co_so = parcels$regcoef_so[parcels$regcoef_so$runid == pid, , drop = FALSE]
@@ -76,6 +73,7 @@ mrb_make_regcheck_parcel = function(mrb, save = TRUE) {
       }
     }
 
+    # Evaluate any detected problem strings
     if (!rb_did_run) {
       problem = paste0("R replication failed: ", error_msg)
     } else if (!sb_did_run) {
@@ -102,26 +100,17 @@ mrb_make_regcheck_parcel = function(mrb, save = TRUE) {
       rb_sb_coef_max_dev = rb_sb_coef_max_dev,
       rb_sb_se_same = rb_sb_se_same,
       rb_sb_se_max_dev = rb_sb_se_max_dev,
-      rb_repair_level = repair_level,
       problem = problem,
       comment = comment
     )
   })
 
-  new_regcheck = dplyr::bind_rows(res_li)
-
-  if (isTRUE(mrb$is_partial_run) && !is.null(parcels$regcheck)) {
-    old_regcheck = parcels$regcheck
-    old_kept = old_regcheck[!old_regcheck$runid %in% pids, , drop = FALSE]
-    regcheck = dplyr::bind_rows(old_kept, new_regcheck)
-  } else {
-    regcheck = new_regcheck
-  }
+  regcheck = dplyr::bind_rows(res_li)
 
   if (save) {
     repboxDB::repdb_save_parcels(list(regcheck = regcheck), file.path(mrb$project_dir, "repdb"), check = FALSE)
   }
-  
+
   mrb$parcels$regcheck = regcheck
   return(mrb)
 }

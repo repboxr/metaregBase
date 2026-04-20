@@ -21,6 +21,7 @@ mrb_run_all = function(project_dir, drf=repboxDRF::drf_load(project_dir)) {
   mrb = mrb_agg_stata(mrb)
   mrb = mrb_run_r_base(mrb)
   mrb = mrb_run_r_reg(mrb)
+  mrb = mrb_make_regcheck_parcel(mrb)
   mrb
 }
 

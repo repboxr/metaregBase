@@ -38,8 +38,13 @@ mrb_run_r_reg = function(mrb, just_pids=NULL) {
     cat("\nNo pids to process.\n")
     return(mrb)
   }
+
   if (!is.null(just_pids)) {
     pids = just_pids
+    mrb$is_partial_run = TRUE
+    mrb$partial_pids = just_pids
+  } else {
+    mrb$is_partial_run = FALSE
   }
 
   all_step_parcels = list()
@@ -57,6 +62,7 @@ mrb_run_r_reg = function(mrb, just_pids=NULL) {
 
   mrb
 }
+
 
 
 #' Process a single regression, expand syntax, and format standard parcels
@@ -224,7 +230,6 @@ mrb_get_regression_data = function(runid, drf, reg=NULL, regvar, regxvar = NULL)
   return(dat)
 }
 
-
 # The step parcels are generated in mrb_r
 mrb_make_r_reg_parcels = function(mrb, save=TRUE) {
   restore.point("mrb_make_r_reg_parcels")
@@ -239,10 +244,26 @@ mrb_make_r_reg_parcels = function(mrb, save=TRUE) {
   combine_steps = function(field) {
     res_list = lapply(all_step_parcels, function(x) x[[field]])
     res_list = res_list[!sapply(res_list, is.null)]
-    if (length(res_list) == 0) return(tibble())
-    parcel = bind_rows(res_list)
-    repdb_check_data(parcel, table=field)
-    parcel
+    if (length(res_list) == 0) {
+      new_data = tibble()
+    } else {
+      new_data = bind_rows(res_list)
+    }
+
+    if (isTRUE(mrb$is_partial_run) && !is.null(mrb$parcels[[field]])) {
+      old_data = mrb$parcels[[field]]
+      if (NROW(old_data) > 0 && NROW(new_data) > 0) {
+        old_kept = old_data[!old_data$runid %in% mrb$partial_pids, , drop = FALSE]
+        new_data = bind_rows(old_kept, new_data)
+      } else if (NROW(old_data) > 0 && NROW(new_data) == 0) {
+        new_data = old_data
+      }
+    }
+
+    if (NROW(new_data) > 0) {
+      repdb_check_data(new_data, table=field)
+    }
+    new_data
   }
 
   parcels$reg_rb = combine_steps("reg_rb")
@@ -260,6 +281,7 @@ mrb_make_r_reg_parcels = function(mrb, save=TRUE) {
   mrb$parcels[names(parcels)] = parcels
   return(mrb)
 }
+
 
 
 

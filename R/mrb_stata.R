@@ -127,7 +127,7 @@ repbox_write_dprobit_coef_se "',outdir, "/dprobit_", runid, ".csv\n")
     # 'capture erase "', paste0(outdir, "/regmacro_", runid, "__sb_mem.txt"), '"\n',
     # 'capture erase "', paste0(outdir, "/dprobit_", runid, ".csv"), '"\n',
     # 'capture erase "', paste0(outdir, "/reg_", runid, "__sb_exp.tsv"), '"\n',
-    cap_str, 'ereturn clear\n',
+    #cap_str, 'ereturn clear\n',
     cap_str, stata_code,
     '\n
 ', cap_str, 'parmest, label saving("',outfile,'", replace)

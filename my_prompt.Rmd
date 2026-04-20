@@ -1412,6 +1412,8 @@ mrb_run_all = function(project_dir, drf=repboxDRF::drf_load(project_dir)) {
   restore.point("mrb_run_all")
   mrb = mrb_init(project_dir, drf=drf)
   mrb = mrb_full_stata_script(mrb)
+  # removes previous mrb regression output files
+  mrb_clear_stata_reg_out(project_dir)
   mrb = mrb_run_stata_script(mrb)
   mrb = mrb_agg_stata(mrb)
   mrb = mrb_run_r_base(mrb)
@@ -1419,18 +1421,26 @@ mrb_run_all = function(project_dir, drf=repboxDRF::drf_load(project_dir)) {
   mrb
 }
 
-mrb_init = function(project_dir=drf$project_dir, drf=NULL) {
+mrb_init = function(project_dir=drf$project_dir, drf=NULL,use_mcache=TRUE, mcache_files = use_mcache, mcache_runid=use_mcache, mcache_clear = TRUE) {
   project_dir = normalizePath(project_dir)
   if (is.null(drf)) {
     drf = drf_load(project_dir)
   }
 
+  if (mcache_files | mcache_runid) {
+    drf = repboxDRF:::drf_enable_mcache(drf,use_file_cache = mcache_files, use_runid_cache = mcache_runid,  clear = mcache_clear)
+  }
 
-  mrb = list(drf=drf, project_dir=project_dir, repdb_dir = file.path(project_dir, "repdb"), mrb_dir = file.path(project_dir, "metareg","base"), parcels=drf$parcels, reg_runids = unique(drf$path_df$pid))
+  mrb = list(
+    drf = drf,
+    project_dir = project_dir,
+    repdb_dir = file.path(project_dir, "repdb"),
+    mrb_dir = file.path(project_dir, "metareg", "base"),
+    parcels = drf$parcels,
+    reg_runids = unique(drf$path_df$pid)
+  )
   mrb
 }
-
-
 ```
 # END OF FILE: /home/rstudio/repbox/metaregBase/R/mrb.R
 
@@ -3258,7 +3268,13 @@ mrb_full_stata_script = function(mrb, capture=TRUE) {
     dir.create(outdir, recursive = TRUE)
   }
 
-  code_df = repboxDRF::drf_stata_code_df(drf=mrb$drf)
+  # We want to inject caches after some commands that cannot be effectively translated
+  # to R.
+  # Currently that is xi as it is hard to find the same ordering of generated
+  # dummy variables as Stata
+  cache_cmds = "xi"
+
+  code_df = repboxDRF::drf_stata_code_df(drf=mrb$drf,cache_after_cmd = cache_cmds)
   code_df = code_df %>%
     drf_code_adapt(mrb_code_reg_stata, just_path_pos="end", run_df=run_df, outdir=outdir, capture=capture) %>%
     drf_code_stata_path_header()
@@ -3271,8 +3287,12 @@ mrb_full_stata_script = function(mrb, capture=TRUE) {
 }
 
 drf_code_write = function(code_df, file) {
+  restore.point("drf_code_write")
   dir = dirname(file)
   if (!dir.exists(dir)) dir.create(dir, recursive = TRUE)
+  if (has_col(code_df,"scalar_stata_code")) {
+    code_df$pre = paste0(na.val(code_df$scalar_stata_code,""),code_df$pre)
+  }
   txt = paste0(code_df$pre, code_df$code, code_df$post, collapse="\n")
   write_utf8(txt, file)
   invisible(txt)
@@ -3315,15 +3335,15 @@ repbox_write_dprobit_coef_se "',outdir, "/dprobit_", runid, ".csv\n")
   }
 
   code = paste0(
-    'capture erase "', outfile, '"\n',
-    'capture erase "', scalar_outfile, '"\n',
-    'capture erase "', macro_outfile, '"\n',
-    'capture erase "', paste0(outdir, "/reg_", runid, "__sb_mem.dta"), '"\n',
-    'capture erase "', paste0(outdir, "/regscalar_", runid, "__sb_mem.txt"), '"\n',
-    'capture erase "', paste0(outdir, "/regmacro_", runid, "__sb_mem.txt"), '"\n',
-    'capture erase "', paste0(outdir, "/dprobit_", runid, ".csv"), '"\n',
-    'capture erase "', paste0(outdir, "/reg_", runid, "__sb_exp.tsv"), '"\n',
-    cap_str, 'ereturn clear\n',
+    # 'capture erase "', outfile, '"\n',
+    # 'capture erase "', scalar_outfile, '"\n',
+    # 'capture erase "', macro_outfile, '"\n',
+    # 'capture erase "', paste0(outdir, "/reg_", runid, "__sb_mem.dta"), '"\n',
+    # 'capture erase "', paste0(outdir, "/regscalar_", runid, "__sb_mem.txt"), '"\n',
+    # 'capture erase "', paste0(outdir, "/regmacro_", runid, "__sb_mem.txt"), '"\n',
+    # 'capture erase "', paste0(outdir, "/dprobit_", runid, ".csv"), '"\n',
+    # 'capture erase "', paste0(outdir, "/reg_", runid, "__sb_exp.tsv"), '"\n',
+    #cap_str, 'ereturn clear\n',
     cap_str, stata_code,
     '\n
 ', cap_str, 'parmest, label saving("',outfile,'", replace)
@@ -3333,6 +3353,20 @@ repbox_write_dprobit_coef_se "',outdir, "/dprobit_", runid, ".csv\n")
   )
   code
 }
+
+
+mrb_clear_stata_reg_out = function(project_dir, runids=NULL) {
+  reg_out_dir = file.path(project_dir, "metareg/base/stata_reg_out")
+  del_files = list.files(reg_out_dir, "^.*\\.(dta|txt|csv|tsv)$",full.names = TRUE)
+  if (!is.null(runids)) {
+    pattern = paste0("(",paste0("_", runids, "_", collapse="|"),")")
+    use = stri_detect_regex(del_files, pattern)
+    del_files = del_files[use]
+  }
+  file.remove(del_files)
+
+}
+
 ```
 # END OF FILE: /home/rstudio/repbox/metaregBase/R/mrb_stata.R
 
@@ -4881,7 +4915,7 @@ drf_stata_cmd_types = function() {
     restore = c("restore"),
     # Commands that modify data and can be translated to R
     mod = c("g","ge","gen","generate","replace","drop","keep","rename","merge","egen","xtset","tsset", "xtile","pctile","append","tabulate","tabul","tabu", "tab","ta","encode","predict","xi", "collapse", "sort","so","tab1", "winsor"),
-    scalar = c("scalar"),
+    #scalar = c("scalar"),
     # Commands that modify data but cannot be translated to R
     # predict also needs cache because it may use
     # results from previous regression
@@ -4900,7 +4934,9 @@ drf_stata_cmd_types = function() {
 
 drf_stata_cmd_types_vec = function() {
   return(c(
-u="load", us="load", use="load", insheet="load", infix="load", import="load", sysuse="load", guse="load", gzuse="load", preserve="preserve", restore="restore", g="mod", ge="mod", gen="mod", generate="mod", replace="mod", drop="mod", keep="mod", rename="mod", merge="mod", egen="mod", xtset="mod", tsset="mod", xtile="mod", pctile="mod", append="mod", tabulate="mod", tabul="mod", tabu="mod", tab="mod", ta="mod", encode="mod", predict="mod", xi="mod", collapse="mod", sort="mod", so="mod", tab1="mod", winsor="mod", tabulate="mod", tabul="mod", tabu="mod", tab="mod", ta="mod", tab1="mod", reg="reg", areg="reg", ivregress="reg", ivreg="reg", ivreg2="reg", sureg="reg", reghdfe="reg", reg2hdfe="reg", xtreg="reg", xtivreg2="reg", xtlogit="reg", xtprobit="reg", xttobit="reg", regress="reg", cgmreg="reg", intreg="reg", boxcox="reg", qreg="reg", truncreg="reg", cnsreg="reg", eivreg="reg", nl="reg", rreg="reg", bsqreg="reg", sqreg="reg", iqreg="reg", vwls="reg", sem="reg", gsem="reg", glm="reg", cloglog="reg", logit="reg", logistic="reg", blogit="reg", glogit="reg", binreg="reg", scobit="reg", probit="reg", dprobit="reg", ivprobit="reg", bprobit="reg", gprobit="reg", hetprobit="reg", heckprobit="reg", biprobit="reg", tobit="reg", ivtobit="reg", clogit="reg", obprobit="reg", ologit="reg", heckoprobit="reg", rologit="reg", asroprobit="reg", slogit="reg", mlogit="reg", asclogit="reg", nlogit="reg", asmprobit="reg", mprobit="reg", poisson="reg", ivpoisson="reg", nbreg="reg", gnbreg="reg", tpoisson="reg", tnbreg="reg", zip="reg", zinb="reg", exlogistic="reg", expoisson="reg", arch="reg", frontier="reg", reg3="reg", heckman="reg", etregress="reg", etpoisson="reg", arima="reg", arfima="reg", newey="reg", var="reg", svar="reg", vec="reg", dfactor="reg", ppmlhdfe="reg", svyreg="reg", ppml="reg", rd="quasi_reg", rdrobust="quasi_reg", psmatch2="quasi_reg", leebounds="quasi_reg", a2reg="quasi_reg", xtabond2="quasi_reg", altrdrobust="quasi_reg", hausman="quasi_reg", stcox="quasi_reg", xtivreg="quasi_reg", ivreghdfe="quasi_reg", condivreg="quasi_reg", oprobit="quasi_reg", xtpoisson="quasi_reg", newey2="quasi_reg", hetprob="quasi_reg", reg2hdfespatial="quasi_reg", outreg2="post_reg", estadd="post_reg", estimates="post_reg", predict="post_reg", test="post_reg", matrix="post_reg", est="post_reg", outreg="post_reg", eststo="post_reg", testparm="post_reg", lincom="post_reg", esttab="post_reg", margins="post_reg", estout="post_reg", estat="post_reg", nlcom="post_reg", plotcoeffs="post_reg", mfx="post_reg", boottest="post_reg", regsave="post_reg", center_estimates="post_reg", estimate="post_reg", est2vec="post_reg", suest="post_reg", fitstat="post_reg", parmest="post_reg", post="post_reg", estpost="post_reg", savereg="post_reg", wild="post_reg", rivtest="post_reg", sigstar2="post_reg", modl="post_reg", svmat="post_reg", sig_p="post_reg", ttest="post_reg", lincomestadd="post_reg", coefplot="post_reg", eret2="post_reg", get_coef="post_reg", cgmwildboot="post_reg", vareffects="post_reg", bootwildct="post_reg", post_param="post_reg", avplot="post_reg", addtotable="post_reg", margin="post_reg", vce2way="post_reg", save_results="post_reg", ivstack="post_reg", predictnl="post_reg", spatdiag="post_reg", parmby="post_reg", testnl="post_reg", b_xt="post_reg", V_xt="post_reg", p_vals="post_reg", inteff="post_reg", est2tex="post_reg", meff="post_reg", marginsplot="post_reg", iv_stack="post_reg", dfuller="post_reg", ivhettest="post_reg", pValueFormatting="post_reg", estwrite="post_reg", dfbeta="post_reg", margeff="post_reg", modltbl="post_reg", outsheet="post_reg", outtex="post_reg", lincomest="post_reg", mfx2="post_reg", addstars="post_reg", scalar="scalar", xtset="xtset",tsset="xtset"
+u="load", us="load", use="load", insheet="load", infix="load", import="load", sysuse="load", guse="load", gzuse="load", preserve="preserve", restore="restore", g="mod", ge="mod", gen="mod", generate="mod", replace="mod", drop="mod", keep="mod", rename="mod", merge="mod", egen="mod", xtset="mod", tsset="mod", xtile="mod", pctile="mod", append="mod", tabulate="mod", tabul="mod", tabu="mod", tab="mod", ta="mod", encode="mod", predict="mod", xi="mod", collapse="mod", sort="mod", so="mod", tab1="mod", winsor="mod", tabulate="mod", tabul="mod", tabu="mod", tab="mod", ta="mod", tab1="mod", reg="reg", areg="reg", ivregress="reg", ivreg="reg", ivreg2="reg", sureg="reg", reghdfe="reg", reg2hdfe="reg", xtreg="reg", xtivreg2="reg", xtlogit="reg", xtprobit="reg", xttobit="reg", regress="reg", cgmreg="reg", intreg="reg", boxcox="reg", qreg="reg", truncreg="reg", cnsreg="reg", eivreg="reg", nl="reg", rreg="reg", bsqreg="reg", sqreg="reg", iqreg="reg", vwls="reg", sem="reg", gsem="reg", glm="reg", cloglog="reg", logit="reg", logistic="reg", blogit="reg", glogit="reg", binreg="reg", scobit="reg", probit="reg", dprobit="reg", ivprobit="reg", bprobit="reg", gprobit="reg", hetprobit="reg", heckprobit="reg", biprobit="reg", tobit="reg", ivtobit="reg", clogit="reg", obprobit="reg", ologit="reg", heckoprobit="reg", rologit="reg", asroprobit="reg", slogit="reg", mlogit="reg", asclogit="reg", nlogit="reg", asmprobit="reg", mprobit="reg", poisson="reg", ivpoisson="reg", nbreg="reg", gnbreg="reg", tpoisson="reg", tnbreg="reg", zip="reg", zinb="reg", exlogistic="reg", expoisson="reg", arch="reg", frontier="reg", reg3="reg", heckman="reg", etregress="reg", etpoisson="reg", arima="reg", arfima="reg", newey="reg", var="reg", svar="reg", vec="reg", dfactor="reg", ppmlhdfe="reg", svyreg="reg", ppml="reg", rd="quasi_reg", rdrobust="quasi_reg", psmatch2="quasi_reg", leebounds="quasi_reg", a2reg="quasi_reg", xtabond2="quasi_reg", altrdrobust="quasi_reg", hausman="quasi_reg", stcox="quasi_reg", xtivreg="quasi_reg", ivreghdfe="quasi_reg", condivreg="quasi_reg", oprobit="quasi_reg", xtpoisson="quasi_reg", newey2="quasi_reg", hetprob="quasi_reg", reg2hdfespatial="quasi_reg", outreg2="post_reg", estadd="post_reg", estimates="post_reg", predict="post_reg", test="post_reg", matrix="post_reg", est="post_reg", outreg="post_reg", eststo="post_reg", testparm="post_reg", lincom="post_reg", esttab="post_reg", margins="post_reg", estout="post_reg", estat="post_reg", nlcom="post_reg", plotcoeffs="post_reg", mfx="post_reg", boottest="post_reg", regsave="post_reg", center_estimates="post_reg", estimate="post_reg", est2vec="post_reg", suest="post_reg", fitstat="post_reg", parmest="post_reg", post="post_reg", estpost="post_reg", savereg="post_reg", wild="post_reg", rivtest="post_reg", sigstar2="post_reg", modl="post_reg", svmat="post_reg", sig_p="post_reg", ttest="post_reg", lincomestadd="post_reg", coefplot="post_reg", eret2="post_reg", get_coef="post_reg", cgmwildboot="post_reg", vareffects="post_reg", bootwildct="post_reg", post_param="post_reg", avplot="post_reg", addtotable="post_reg", margin="post_reg", vce2way="post_reg", save_results="post_reg", ivstack="post_reg", predictnl="post_reg", spatdiag="post_reg", parmby="post_reg", testnl="post_reg", b_xt="post_reg", V_xt="post_reg", p_vals="post_reg", inteff="post_reg", est2tex="post_reg", meff="post_reg", marginsplot="post_reg", iv_stack="post_reg", dfuller="post_reg", ivhettest="post_reg", pValueFormatting="post_reg", estwrite="post_reg", dfbeta="post_reg", margeff="post_reg", modltbl="post_reg", outsheet="post_reg", outtex="post_reg", lincomest="post_reg", mfx2="post_reg", addstars="post_reg",
+    #scalar="scalar",
+    xtset="xtset",tsset="xtset"
     ))
 }
 
@@ -4932,6 +4968,32 @@ pide_possible_mod_cmd_real_mod = function(run.df) {
 
 # FILE: /home/rstudio/repbox/repboxDRF/R/drf_cache_files.R
 ```
+example = function() {
+  project_dir = "~/repbox/projects/aejapp_1_3_4"
+  drf = drf_load(project_dir)
+
+  run_df = drf$run_df
+  names(run_df)
+  path_df = drf$path_df
+  cached_runids = drf_get_cached_runids(project_dir)
+}
+
+
+
+# runids that currently have file caches
+drf_get_cached_runids = function(project_dir=drf$project_dir, drf) {
+  cache_dir = file.path(project_dir, "drf/cached_dta")
+  files = list.files(cache_dir,full.names = FALSE)
+  as.integer(str.left.of(files,"_"))
+}
+
+
+
+drf_find_save_cache_locations = function(drf, cache_runids, just_pids=NULL) {
+
+}
+
+
 drf_import_stata_caches = function(drf, move = TRUE) {
   restore.point("drf_import_stata_caches")
   src_dir = file.path(drf$project_dir, "repbox", "stata", "cached_dta")
@@ -4969,6 +5031,9 @@ drf_import_stata_caches = function(drf, move = TRUE) {
   return(drf)
 }
 
+
+
+
 drf_is_cache_safe = function(skipped_df, remaining_df) {
   # Heuristic 1: A cache replaces the dataset context but NOT macro memory context.
   # So, if skipped commands defined any memory elements (local, global, scalar, matrix),
@@ -4984,7 +5049,7 @@ drf_is_cache_safe = function(skipped_df, remaining_df) {
   return(TRUE)
 }
 
-drf_apply_caches = function(drf) {
+drf_apply_caches = function(drf, just_pids=NULL) {
   restore.point("drf_apply_caches")
   if (is.null(drf$cache_df) || NROW(drf$cache_df) == 0) return(drf)
 
@@ -4996,6 +5061,9 @@ drf_apply_caches = function(drf) {
   path_df = drf$path_df
   run_df = drf$run_df
   pids = unique(path_df$pid)
+  if (!is.null(just_pids)) {
+    pids = intersect(pids, just_pids)
+  }
 
   new_path_df_list = vector("list", length(pids))
 
@@ -5045,212 +5113,6 @@ drf_apply_caches = function(drf) {
 -----------------------------------------------------------
 
 
-# FILE: /home/rstudio/repbox/repboxDRF/R/drf_cache.R
-```
-drf_cache_info = function() {
-  cache = getOption("repboxDRF.mcache")
-  if (is.null(cache)) {
-    cat("\nNo drf_cache stored.\n")
-    return(invisible())
-  }
-  cat("\nCache for ", cache$project_dir)
-
-  cat("\ndata_for_runid:\n")
-  print(names(cache$data_for_runid))
-
-  cat("\ndata_for_file:\n")
-  print(names(cache$data_for_file))
-
-  cat("\nfile_mcache_cand:\n")
-  cat(paste0(cache$file_mcache_cand$file, collapse=", "))
-  cat("\n")
-
-  cat("\nrunid_mcache_cand:\n runids:")
-  cat(paste0(cache$runid_mcache_cand$runid, collapse=", "))
-  cat("\n")
-
-  invisible()
-}
-
-drf_cache_object = function(project_dir) {
-  getOption("repboxDRF.mcache")
-}
-
-drf_has_cache = function(runid=NULL,file=NULL, project_dir = NULL) {
-  drf_has_mcache(runid,file, project_dir)
-}
-
-drf_cached_data = function(runid=NULL, file=NULL, project_dir = NULL) {
-  drf_get_mcache_data(runid,file, project_dir)
-}
-
-
-drf_init_mcache = function(project_dir,file_mcache_cand = NULL, runid_mcache_cand=NULL,  clear=FALSE) {
-  restore.point("drf_init_mcache")
-  cache = getOption("repboxDRF.mcache")
-
-  if (!clear & isTRUE(cache$project_dir == project_dir)) return(cache)
-  cache = new.env(parent=emptyenv())
-
-  cache$project_dir = project_dir
-  cache$data_for_runid = new.env(hash=TRUE, parent=emptyenv())
-  cache$data_for_file = new.env(hash=TRUE, parent=emptyenv())
-  cache$file_mcache_cand = file_mcache_cand
-  cache$runid_mcache_cand = runid_mcache_cand
-  options(repboxDRF.mcache = cache)
-  invisible(cache)
-}
-
-
-drf_set_file_mcache_cand = function(cache_cand,project_dir=NULL, field="file_mcache_cand") {
-  restore.point("drf_set_file_mcache_cand")
-  cache = getOption("repboxDRF.mcache")
-  new_cache = FALSE
-  if (is.null(cache))  {
-    new_cache = TRUE
-  } else if (!is.null(project_dir)) {
-    if (!isTRUE(cache$project_dir == project_dir))
-      new_cache = TRUE
-  }
-  if (new_cache) {
-    cache = drf_init_mcache(project_dir=project_dir)
-  }
-  cache[[field]] = cache_cand
-  invisible(cache)
-}
-
-drf_set_runid_mcache_cand = function(cache_cand,project_dir=NULL, field="runid_mcache_cand") {
-  drf_set_file_mcache_cand(cache_cand,project_dir, field)
-}
-
-
-drf_store_if_mcache_cand = function(data, runid=NULL, file=NULL, project_dir=NULL, overwrite=FALSE) {
-  restore.point("drf_save_if_mcache_cand")
-  if (!overwrite) {
-    if (drf_has_mcache(runid, file, project_dir)) return(FALSE)
-  }
-  cache = getOption("repboxDRF.mcache")
-  if (!is.null(runid)) {
-    do_store = runid %in% cache$runid_mcache_cand$runid
-  } else if (!is.null(file)) {
-    do_store = file %in% cache$file_mcache_cand$file
-  }
-  if (!do_store) return(FALSE)
-  drf_store_mcache(data, runid=runid, file=file, project_dir=project_dir)
-}
-
-
-drf_has_mcache = function(runid=NULL, file=NULL, project_dir = NULL) {
-  cache = getOption("repboxDRF.mcache")
-  if (is.null(cache)) return(FALSE)
-  if (!is.null(project_dir)) {
-    if (!isTRUE(cache$project_dir == project_dir))
-      return(FALSE)
-  }
-  if (!is.null(runid)) {
-    exists(paste0("r", runid), cache$data_for_runid)
-  } else if (!is.null(file)) {
-    exists(paste0(file), cache$data_for_file)
-  } else {
-    stop("provide runid or file")
-  }
-}
-
-
-drf_get_mcache_data = function(runid=NULL,file=NULL, project_dir = NULL) {
-
-  cache = getOption("repboxDRF.mcache")
-  if (is.null(cache)) return(NULL)
-  if (!is.null(project_dir)) {
-    if (!isTRUE(cache$project_dir == project_dir)) return(NULL)
-  }
-  if (!is.null(runid)) {
-    get(paste0("r", runid), envir=cache$data_for_runid)
-  } else if (!is.null(file)) {
-    cache$data_for_file[[file]]
-  } else {
-    stop("provide runid or file")
-  }
-}
-
-drf_store_mcache = function(data, runid=NULL, file=NULL, project_dir=NULL) {
-  cache = drf_init_mcache(project_dir, clear=FALSE)
-  if (!is.null(runid)) {
-    cache$data_for_runid[[paste0("r", runid)]] = data
-  } else if (!is.null(file)) {
-    cache$data_for_file[[file]] = data
-  } else {
-    stop("provide runid or file")
-  }
-  invisible(cache)
-}
-
-drf_find_file_mcache_cand = function(path_df=drf$path_df, run_df = drf$run_df, drf=NULL) {
-  restore.point("drf_find_file_mcache_cand")
-  names(path_df)
-  drf_require(has_col(path_df, "found_path"), "path_df has not column 'found_path' make sure drf_add_path_df_cols_for_cache was called.", drf)
-
-  runids = unique(path_df$runid)
-  path_df %>%
-    filter(runid %in% runids, found_path != "") %>%
-    group_by(found_path) %>%
-    summarize(num_pid = n_distinct(pid)) %>%
-    unique() %>%
-    rename(file=found_path)
-}
-
-
-# Maximum cache:
-# whenever the result of a runid can be used twice and is not dominated
-# cache the result
-#
-# The result of a runid can be used twice if at least two pid use the same runid
-# It is not dominated if there is no other larger runid that uses exactly the
-# same pid. We then rather want to cache the result from the larger runid
-# Not that execution sequence will never violate the order of runids
-drf_find_runid_mcache_cand = function(path_df=drf$path_df,ignore_load=TRUE, drf=NULL) {
-  restore.point("drf_find_max_cache_runids")
-
-  df = path_df %>%
-    # only use runid that
-    filter(is_load_mod)
-  if (ignore_load) {
-    df = df %>% filter(cmd_type != "load")
-  }
-
-  df %>%
-    group_by(runid) %>%
-    summarize(
-      num_pid = n(),
-      pid_str = paste0(sort(pid), collapse=",")
-    ) %>%
-    # there at least two pathes with the same runid
-    filter(num_pid >= 2) %>%
-    # get for every unique path combination
-    # the largest runid
-    group_by(pid_str) %>%
-    filter(runid == max(runid))
-}
-
-
-
-drf_path_df_to_split_df = function(path_df) {
-  split_df  = path_df %>%
-    group_by(runid) %>%
-    mutate(
-      earliest_pid = min(pid)
-    ) %>%
-    group_by(pid, earliest_pid) %>%
-    slice(n())
-}
-
-
-```
-# END OF FILE: /home/rstudio/repbox/repboxDRF/R/drf_cache.R
-
------------------------------------------------------------
-
-
 # FILE: /home/rstudio/repbox/repboxDRF/R/drf_create.R
 ```
 # Creates a new DRF
@@ -5291,6 +5153,9 @@ drf_create = function(project_dir, parcels=list(), acmds = drf_acmds(), overwrit
 
   drf$run_df = run_df
 
+  drf = drf_add_scalar_map(drf)
+  drf = drf_add_dep_df(drf)
+
   drf$pids = drf_find_pid(drf$run_df, drf$acmds)
 
   drf$path_df = drf_make_paths(drf)
@@ -5305,7 +5170,9 @@ drf_create = function(project_dir, parcels=list(), acmds = drf_acmds(), overwrit
   # Save path_df index AFTER caches have definitively resolved the shortest paths
   drf$index_df = drf_save_path_df(drf=drf)
 
+
   drf = drf_make_r_trans_parcel(drf)
+
   invisible(drf)
 }
 
@@ -5348,6 +5215,351 @@ require_drf_dir = function(drf_dir) {
 }
 ```
 # END OF FILE: /home/rstudio/repbox/repboxDRF/R/drf_create.R
+
+-----------------------------------------------------------
+
+
+# FILE: /home/rstudio/repbox/repboxDRF/R/drf_deps.R
+```
+# scalar dependencies between Stata commans
+example = function() {
+  library(repboxDRF)
+  project_dir = "~/repbox/projects_test/test"
+  drf = drf_load(project_dir)
+  drf = drf_add_scalar_map(drf)
+  drf = drf_add_dep_df(drf)
+}
+
+drf_add_scalar_map = function(drf) {
+  project_dir = drf$project_dir
+  drf$parcels = repboxDB::repdb_load_parcels(project_dir, "stata_scalar", drf$parcels)
+  scalar_df = drf$parcels$stata_scalar
+  drf$scalar_map = NULL
+  if (NROW(scalar_df)==0) {
+    return(drf)
+  }
+  run_df = drf$run_df
+  scalar_vars = unique(scalar_df$scalar_var)
+  scalar_rx = paste0("\\b(", paste0(scalar_vars, collapse="|"), ")")
+
+  # rows in run_df that use at least one of the scalars
+  rows = which(stringi::stri_detect_regex(run_df$cmdline,scalar_rx) & run_df$cmd != "scalar")
+  if (NROW(scalar_df)==0) {
+    return(drf)
+  }
+
+  runids = run_df$runid[rows]
+  ma_li = stringi::stri_extract_all_regex(run_df$cmdline[rows], scalar_rx, simplify = FALSE)
+
+  scalar_map = bind_rows(lapply(seq_along(runids), function(i) {
+    as.data.frame(list(runid=runids[i], scalar_var = unique(ma_li[[i]])))
+  }))
+
+  drf$scalar_map = scalar_map %>%
+    left_join(
+      scalar_df %>% select(scalar_var, source_runid=runid,scalar_val),
+      by = join_by(
+        scalar_var,
+        closest(runid >= source_runid)
+      ),
+      relationship = "many-to-one"
+    )
+
+  outfile = file.path(drf$project_dir,"drf/scalar_map.Rds")
+  saveRDS(drf$scalar_map, outfile)
+  drf = drf_scalar_map_to_scalar_code(drf)
+
+  drf
+}
+
+drf_scalar_map_to_scalar_code = function(drf) {
+  scalar_map = drf$scalar_map
+  drf$scalar_code = scalar_map %>%
+    group_by(runid) %>%
+    summarize(
+      scalar_stata_code = paste0("scalar ", scalar_var, " = ", scalar_val,"\n", collapse=""),
+      scalar_r_code = paste0(scalar_var, " = ", scalar_val,"\n", collapse="")
+    )
+  drf
+
+}
+
+
+#' Compute r(), e() or xi dependencies between run_df commands
+drf_add_dep_df = function(drf) {
+  restore.point("drf_make_deps_df")
+  run_df = drf$run_df
+
+  cmdlines = run_df$cmdline
+
+  run_df$code = run_df$cmdline
+
+  rx_or = function(els) {
+    els = stringi::stri_replace_all_fixed(els, "(","\\(")
+    els = stringi::stri_replace_all_fixed(els, ")","\\)")
+    paste0("\\b(", paste0(els, collapse="|"), ")")
+  }
+
+  make_r_cmds = stata_make_r_cmds()
+
+  run_df = run_df %>% mutate(
+    uses_e =  stringi::stri_detect_regex(code, rx_or(c("e(sample)", "e(N)", "e(r2)", "e(df_r)", "e(rmse)", "e(b)", "e(V)"))),
+    uses_r =  stringi::stri_detect_regex(code, "\\br\\("),
+    uses_xi = stringi::stri_detect_fixed(code, "\\b_I[a-zA-Z0-9_]+"),
+    makes_e = run_df$cmd_type %in% c("reg","quasi_reg"),
+    makes_r = cmd %in% stata_make_r_cmds()
+  )
+
+  run_df$makes_xi = run_df$cmd == "xi"
+  rows = which(run_df$cmd_type %in%  c("reg","quasi_reg"))
+  mxi = stringi::stri_detect_regex(run_df$code[rows], "\\bxi\\:")
+  run_df$makes_xi[rows[mxi]] = TRUE
+
+
+  # e() dependencies (via regression commands)
+  make_df = run_df %>%
+    filter(cmd_type %in% c("reg","quasi_reg")) %>%
+    select(source_runid=runid)
+
+  edep_df = run_df %>%
+    filter(stringi::stri_detect_regex(cmdline, rx_or(c("e(sample)", "e(N)", "e(r2)", "e(df_r)", "e(rmse)", "e(b)", "e(V)")))) %>%
+    select(runid) %>%
+    mutate(dep_type = "e") %>%
+    left_join(make_df,by = join_by(closest(runid > source_runid)),relationship = "many-to-one")
+
+  # r() dependencies (via commands like summarize)
+  make_df = run_df %>%
+    filter(cmd %in% stata_make_r_cmds()) %>%
+    select(source_runid=runid)
+
+  rdep_df = run_df %>%
+    filter(stringi::stri_detect_regex(cmdline, "\\br\\(")) %>%
+    select(runid) %>%
+    mutate(dep_type = "r") %>%
+    left_join(make_df,by = join_by(closest(runid > source_runid)),relationship = "many-to-one")
+
+  # xi dependencies (via xi or xi:)
+  makes_xi = run_df$cmd == "xi"
+  rows = which(run_df$cmd_type %in%  c("reg","quasi_reg"))
+  mxi = stringi::stri_detect_regex(run_df$cmdline[rows], "\\bxi\\:")
+  makes_xi[rows[mxi]] = TRUE
+
+  make_df = data.frame(source_runid = run_df$runid[makes_xi])
+
+  xidep_df = run_df %>%
+    filter(stringi::stri_detect_regex(cmdline, "\\b_I[a-zA-Z0-9_]+")) %>%
+    select(runid) %>%
+    mutate(dep_type = "xi") %>%
+    left_join(make_df,by = join_by(closest(runid > source_runid)),relationship = "many-to-one")
+
+  drf$dep_df = bind_rows(edep_df, rdep_df, xidep_df)
+  outfile = file.path(drf$project_dir,"drf/dep_df.Rds")
+  saveRDS(drf$dep_df, outfile)
+
+  drf
+}
+
+
+
+stata_make_r_cmds = function() {
+
+  abbr = function(long, short) {
+    stringi::stri_sub(long, 1, nchar(short):nchar(long))
+  }
+
+  cmds = c(
+    abbr("summarize", "su"),
+    abbr("centile", "cen"),
+    abbr("count", "cou"),
+    "correlate",
+    "corr",
+    "pwcorr",
+    "tabstat",
+    abbr("describe", "desc"),
+    "ds",
+    abbr("codebook", "codeb"),
+    abbr("inspect", "ins"),
+    abbr("levelsof", "lev"),
+    abbr("duplicates", "dup"),
+    abbr("oneway", "onew"),
+    abbr("ttest", "tt"),
+    abbr("prtest", "prt"),
+    abbr("sdtest", "sdt"),
+    abbr("ranksum", "ra"),
+    abbr("signrank", "signr"),
+    abbr("signtest", "signt"),
+    abbr("kwallis", "kwa"),
+    "tab1",
+    "tab2",
+    "tabi",
+    "pctile"
+  )
+
+  sort(unique(cmds))
+}
+#
+# # list of stata commands that generate particular r() values, like r(mean), r(median) etc
+# stata_r_cmds = function() {
+#   add_cmd = function(long, short, ...) {
+#     if (long != short) {
+#       cmds = stringi::stri_sub(long, 1, nchar(short):nchar(long))
+#     } else {
+#       cmds = long
+#     }
+#     list(cmd = list(cmds), r_var = list(c(...)))
+#   }
+#
+#   li = list(
+#     add_cmd(
+#       "summarize", "su",
+#       "N", "sum_w", "mean", "Var", "sd", "min", "max", "sum",
+#       "p1", "p5", "p10", "p25", "p50", "p75", "p90", "p95", "p99",
+#       "skewness", "kurtosis"
+#     ),
+#
+#     add_cmd(
+#       "centile", "cen",
+#       "N", "n_cent", "c_#", "lb_#", "ub_#", "centiles"
+#     ),
+#
+#     add_cmd(
+#       "count", "cou",
+#       "N"
+#     ),
+#
+#     add_cmd(
+#       "correlate", "corr",
+#       "N", "rho", "cov_12", "Var_1", "Var_2", "sum_w", "C"
+#     ),
+#
+#     add_cmd(
+#       "pwcorr", "pwcorr",
+#       "N", "rho", "C"
+#     ),
+#
+#     add_cmd(
+#       "tabstat", "tabstat",
+#       "StatTotal", "Stat#", "name#"
+#     ),
+#
+#     add_cmd(
+#       "describe", "desc",
+#       "N", "k", "width", "changed", "datalabel", "varlist", "sortlist"
+#     ),
+#
+#     add_cmd(
+#       "ds", "ds",
+#       "varlist"
+#     ),
+#
+#     add_cmd(
+#       "codebook", "codeb",
+#       "cons", "labelnotfound", "notlabeled",
+#       "str_type", "str_leading", "str_trailing", "str_embedded", "str_embedded0"
+#     ),
+#
+#     add_cmd(
+#       "inspect", "ins",
+#       "N", "N_neg", "N_0", "N_pos", "N_negint", "N_posint", "N_unique", "N_undoc"
+#     ),
+#
+#     add_cmd(
+#       "levelsof", "lev",
+#       "N", "r", "levels"
+#     ),
+#
+#     add_cmd(
+#       "duplicates", "dup",
+#       "N", "unique_value", "N_drop"
+#     ),
+#
+#     add_cmd(
+#       "oneway", "onew",
+#       "N", "df_m", "F", "df_r", "mss", "rss", "chi2bart", "df_bart", "ANOVA"
+#     ),
+#
+#     add_cmd(
+#       "ttest", "tt",
+#       "N_1", "N_2",
+#       "mu_1", "mu_2", "mu_diff", "mu_combined",
+#       "sd", "sd_1", "sd_2", "sd_diff",
+#       "se", "se_1", "se_2", "se_combined",
+#       "lb_1", "ub_1", "lb_2", "ub_2", "lb_diff", "ub_diff", "lb_combined", "ub_combined",
+#       "t", "df_t", "p_l", "p", "p_u", "level"
+#     ),
+#
+#     add_cmd(
+#       "prtest", "prt",
+#       "N", "N1", "N2",
+#       "P", "P1", "P2", "P_diff",
+#       "se", "se1", "se2", "se_diff", "se_diff0",
+#       "lb", "ub", "lb1", "ub1", "lb2", "ub2", "lb_diff", "ub_diff",
+#       "z", "p_l", "p", "p_u", "level",
+#       "K", "M", "rho", "CV_cluster"
+#     ),
+#
+#     add_cmd(
+#       "sdtest", "sdt",
+#       "N", "p_l", "p_u", "p", "F",
+#       "sd", "sd_1", "sd_2",
+#       "df", "df_1", "df_2", "chi2"
+#     ),
+#
+#     add_cmd(
+#       "ranksum", "ra",
+#       "N", "N_1", "N_2", "z", "Var_a",
+#       "group1", "sum_obs", "sum_exp",
+#       "p", "p_l", "p_u", "p_exact"
+#     ),
+#
+#     add_cmd(
+#       "signrank", "signr",
+#       "N", "N_pos", "N_neg", "N_tie", "z", "Var_a",
+#       "sum_pos", "sum_neg",
+#       "p", "p_l", "p_u", "p_exact", "p_l_exact", "p_u_exact"
+#     ),
+#
+#     add_cmd(
+#       "signtest", "signt",
+#       "N", "N_pos", "N_neg", "N_tie", "p", "p_l", "p_u"
+#     ),
+#
+#     add_cmd(
+#       "kwallis", "kwa",
+#       "df", "chi2", "chi2_adj"
+#     ),
+#
+#     add_cmd(
+#       "tab1", "tab1",
+#       "N", "r", "collection"
+#     ),
+#
+#     add_cmd(
+#       "tab2", "tab2",
+#       "N", "r", "c", "chi2", "p", "p_exact", "p1_exact",
+#       "chi2_lr", "p_lr", "CramersV", "gamma", "ase_gam", "taub", "ase_taub",
+#       "collection"
+#     ),
+#
+#     add_cmd(
+#       "tabi", "tabi",
+#       "N", "r", "c", "chi2", "p", "p_exact", "p1_exact",
+#       "chi2_lr", "p_lr", "CramersV", "gamma", "ase_gam", "taub", "ase_taub",
+#       "collection"
+#     )
+#   )
+#
+#   library(dplyr)
+#
+#   stata_r_cmds_df = dplyr::bind_rows(li) %>%
+#     tidyr::unnest(cmd) %>%
+#     tidyr::unnest(r_var) %>%
+#     dplyr::distinct()
+#
+#   stata_r_cmds_df
+# }
+```
+# END OF FILE: /home/rstudio/repbox/repboxDRF/R/drf_deps.R
 
 -----------------------------------------------------------
 
@@ -5437,6 +5649,244 @@ drf_get_filter_code = function(runid, drf, parcels=drf$parcels) {
 -----------------------------------------------------------
 
 
+# FILE: /home/rstudio/repbox/repboxDRF/R/drf_mcache.R
+```
+example = function() {
+  drf_mcache_info()
+}
+
+drf_mcache_info = function() {
+  cache = getOption("repboxDRF.mcache")
+  if (is.null(cache)) {
+    cat("\nNo drf_cache stored.\n")
+    return(invisible())
+  }
+  cat("\nCache for ", cache$project_dir)
+
+  cat("\ndata_for_runid:\n")
+  print(names(cache$data_for_runid))
+
+  cat("\ndata_for_file:\n")
+  print(names(cache$data_for_file))
+
+  cat("\nfile_mcache_cand:\n")
+  cat(paste0(cache$file_mcache_cand$file, collapse=", "))
+  cat("\n")
+
+  cat("\nrunid_mcache_cand:\n runids:")
+  cat(paste0(cache$runid_mcache_cand$runid, collapse=", "))
+  cat("\n")
+
+  invisible()
+}
+
+drf_mcache_object = function(project_dir) {
+  getOption("repboxDRF.mcache")
+}
+
+drf_has_mcache = function(runid=NULL,file=NULL, project_dir = NULL) {
+  drf_has_mcache(runid,file, project_dir)
+}
+
+drf_cached_data = function(runid=NULL, file=NULL, project_dir = NULL) {
+  drf_get_mcache_data(runid,file, project_dir)
+}
+
+
+drf_init_mcache = function(project_dir,file_mcache_cand = NULL, runid_mcache_cand=NULL,  clear=FALSE) {
+  restore.point("drf_init_mcache")
+  cache = getOption("repboxDRF.mcache")
+
+  if (!clear & isTRUE(cache$project_dir == project_dir)) return(cache)
+  cache = new.env(parent=emptyenv())
+
+  cache$project_dir = project_dir
+  cache$data_for_runid = new.env(hash=TRUE, parent=emptyenv())
+  cache$data_for_file = new.env(hash=TRUE, parent=emptyenv())
+  cache$file_mcache_cand = file_mcache_cand
+  cache$runid_mcache_cand = runid_mcache_cand
+  options(repboxDRF.mcache = cache)
+  invisible(cache)
+}
+
+drf_enable_mcache = function(drf, clear = FALSE, use_file_cache = TRUE, use_runid_cache = TRUE) {
+  restore.point("drf_enable_mcache")
+
+
+  if (!has_col(drf$path_df, "found_path")) {
+    drf$path_df = drf_add_path_df_cols_for_cache(drf=drf)
+  }
+
+  #drf_require(has_col(path_df, "found_path"), "path_df has not column 'found_path' make sure drf_add_path_df_cols_for_cache was called.", drf)
+
+  project_dir = drf$project_dir
+  drf_init_mcache(project_dir = project_dir, clear = clear)
+
+  if (use_file_cache) {
+    file_mcache_cand = drf_find_file_mcache_cand(drf = drf)
+    drf_set_file_mcache_cand(file_mcache_cand, project_dir = project_dir)
+  }
+
+  if (use_runid_cache) {
+    runid_mcache_cand = drf_find_runid_mcache_cand(drf = drf)
+    drf_set_runid_mcache_cand(runid_mcache_cand, project_dir = project_dir)
+  }
+
+  invisible(drf)
+}
+
+
+drf_set_file_mcache_cand = function(cache_cand,project_dir=NULL, field="file_mcache_cand") {
+  restore.point("drf_set_file_mcache_cand")
+  cache = getOption("repboxDRF.mcache")
+  new_cache = FALSE
+  if (is.null(cache))  {
+    new_cache = TRUE
+  } else if (!is.null(project_dir)) {
+    if (!isTRUE(cache$project_dir == project_dir))
+      new_cache = TRUE
+  }
+  if (new_cache) {
+    cache = drf_init_mcache(project_dir=project_dir)
+  }
+  cache[[field]] = cache_cand
+  invisible(cache)
+}
+
+drf_set_runid_mcache_cand = function(cache_cand,project_dir=NULL, field="runid_mcache_cand") {
+  drf_set_file_mcache_cand(cache_cand,project_dir, field)
+}
+
+
+drf_store_if_mcache_cand = function(data, runid=NULL, file=NULL, project_dir=NULL, overwrite=FALSE) {
+  restore.point("drf_save_if_mcache_cand")
+  if (!overwrite) {
+    if (drf_has_mcache(runid, file, project_dir)) return(FALSE)
+  }
+  cache = getOption("repboxDRF.mcache")
+  if (!is.null(runid)) {
+    do_store = runid %in% cache$runid_mcache_cand$runid
+  } else if (!is.null(file)) {
+    do_store = file %in% cache$file_mcache_cand$file
+  }
+  if (!do_store) return(FALSE)
+  drf_store_mcache(data, runid=runid, file=file, project_dir=project_dir)
+}
+
+
+drf_has_mcache = function(runid=NULL, file=NULL, project_dir = NULL) {
+  cache = getOption("repboxDRF.mcache")
+  if (is.null(cache)) return(FALSE)
+  if (!is.null(project_dir)) {
+    if (!isTRUE(cache$project_dir == project_dir))
+      return(FALSE)
+  }
+  if (!is.null(runid)) {
+    exists(paste0("r", runid), cache$data_for_runid)
+  } else if (!is.null(file)) {
+    exists(paste0(file), cache$data_for_file)
+  } else {
+    stop("provide runid or file")
+  }
+}
+
+
+drf_get_mcache_data = function(runid=NULL,file=NULL, project_dir = NULL) {
+  restore.point("drf_get_mcache_data")
+  cache = getOption("repboxDRF.mcache")
+  if (is.null(cache)) return(NULL)
+  if (!is.null(project_dir)) {
+    if (!isTRUE(cache$project_dir == project_dir)) return(NULL)
+  }
+  if (!is.null(runid)) {
+    cname = paste0("r", runid)
+    if (!exists(cname, cache$data_for_runid)) return(NULL)
+    get(cname, envir=cache$data_for_runid)
+  } else if (!is.null(file)) {
+    cache$data_for_file[[file]]
+  } else {
+    stop("provide runid or file")
+  }
+}
+
+drf_store_mcache = function(data, runid=NULL, file=NULL, project_dir=NULL) {
+  cache = drf_init_mcache(project_dir, clear=FALSE)
+  if (!is.null(runid)) {
+    cache$data_for_runid[[paste0("r", runid)]] = data
+  } else if (!is.null(file)) {
+    cache$data_for_file[[file]] = data
+  } else {
+    stop("provide runid or file")
+  }
+  invisible(cache)
+}
+
+drf_find_file_mcache_cand = function(path_df=drf$path_df, run_df = drf$run_df, drf=NULL) {
+  restore.point("drf_find_file_mcache_cand")
+  names(path_df)
+  drf_require(has_col(path_df, "found_path"), "path_df has not column 'found_path' make sure drf_add_path_df_cols_for_cache was called.", drf)
+
+  runids = unique(path_df$runid)
+  path_df %>%
+    filter(runid %in% runids, found_path != "") %>%
+    group_by(found_path) %>%
+    summarize(num_pid = n_distinct(pid)) %>%
+    unique() %>%
+    rename(file=found_path)
+}
+
+
+# Maximum cache:
+# whenever the result of a runid can be used twice and is not dominated
+# cache the result
+#
+# The result of a runid can be used twice if at least two pid use the same runid
+# It is not dominated if there is no other larger runid that uses exactly the
+# same pid. We then rather want to cache the result from the larger runid
+# Not that execution sequence will never violate the order of runids
+drf_find_runid_mcache_cand = function(path_df=drf$path_df,ignore_load=TRUE, drf=NULL) {
+  restore.point("drf_find_max_cache_runids")
+
+  df = path_df %>%
+    # only use runid that
+    filter(is_load_mod)
+  if (ignore_load) {
+    df = df %>% filter(cmd_type != "load")
+  }
+
+  df %>%
+    group_by(runid) %>%
+    summarize(
+      num_pid = n(),
+      pid_str = paste0(sort(pid), collapse=",")
+    ) %>%
+    # there at least two pathes with the same runid
+    filter(num_pid >= 2) %>%
+    # get for every unique path combination
+    # the largest runid
+    group_by(pid_str) %>%
+    filter(runid == max(runid))
+}
+
+
+
+drf_path_df_to_split_df = function(path_df) {
+  split_df  = path_df %>%
+    group_by(runid) %>%
+    mutate(
+      earliest_pid = min(pid)
+    ) %>%
+    group_by(pid, earliest_pid) %>%
+    slice(n())
+}
+
+
+```
+# END OF FILE: /home/rstudio/repbox/repboxDRF/R/drf_mcache.R
+
+-----------------------------------------------------------
+
+
 # FILE: /home/rstudio/repbox/repboxDRF/R/drf_paths.R
 ```
 # part of DAP function
@@ -5463,6 +5913,16 @@ drf_make_paths = function(drf) {
       cmd_type = type_vec[cmd]
     )
 
+  dep_df = drf$dep_df
+
+  run_df = run_df %>%
+  mutate(
+    is_mod =  cmd %in% stata2r::stata_data_manip_cmds |
+      runid %in% dep_df$source_runid |
+      cmd_type %in% c("mod","load")
+  )
+  run_df$is_mod[run_df$cmd=="scalar"] = FALSE
+
   # Split run_df by root_file_path and compute path_df
   # Then merge path_df again for all run_df
   srun_li = split(run_df,run_df$root_file_path)
@@ -5486,9 +5946,11 @@ find_one_root_data_paths = function(srun_df, pid) {
   # --- OPTIMIZATION: Compute data modification flags globally ONCE ---
   # We check the entire run block to resolve dependencies accurately and quickly
   # rather than doing this inside the loop for every path
-  stata_code = gsub("\n", " ", srun_df$cmdline, fixed = TRUE)
-  cmd_df = stata2r::s2r_check_mod(stata_code)
-  srun_df$is_mod = cmd_df$is_mod
+
+
+  #stata_code = gsub("\n", " ", srun_df$cmdline, fixed = TRUE)
+  #cmd_df = stata2r::s2r_check_mod(stata_code)
+  #srun_df$is_mod = cmd_df$is_mod
   # -------------------------------------------------------------------
 
   spid_rows = match(pid, srun_df$runid)
@@ -5662,10 +6124,16 @@ drf_load = function(project_dir, parcels=list()) {
   drf = list(project_dir = project_dir, drf_dir = file.path(project_dir, "drf"), parcels = parcels)
   drf$parcels = repboxDB::repdb_load_parcels(project_dir, c("stata_run_cmd", "r_trans"), parcels=parcels)
   drf$run_df = drf_make_run_df(drf=drf,add_rcode = TRUE)
+
+  drf$dep_df = read_rds_or_null(file.path(project_dir, "drf/dep_df.Rds"))
+  drf$scalar_map = read_rds_or_null(file.path(project_dir, "drf/scalar_map.Rds"))
+  drf = drf_scalar_map_to_scalar_code(drf)
+
   drf$path_df = drf_load_path_df(drf=drf)
   drf$path_df = drf_add_path_df_cols_for_cache(drf=drf)
   drf$runids = drf_runids(drf)
   drf$pids= drf_pids(drf)
+
   drf
 }
 
@@ -5768,7 +6236,6 @@ example = function() {
 
   drf = drf_load(project_dir)
   drf$sc_df = drf_stata_code_df(drf, path_merge = "load_natural")
-  drf$rc_df = drf_rcode_df(drf)
 }
 
 
@@ -5796,7 +6263,7 @@ drf_make_r_trans_parcel = function(drf) {
 
 
 
-drf_run_df_create_rcode = function(run_df=drf$run_df, runids=drf_runids(drf), drf=NULL) {
+drf_run_df_create_rcode = function(run_df=drf$run_df, runids=drf_runids(drf), scalar_code = drf$scalar_code, drf=NULL) {
   restore.point("drf_run_df_create_rcode")
 
   if (!has_col(run_df, "rcode")) {
@@ -5854,35 +6321,43 @@ drf_run_df_create_rcode = function(run_df=drf$run_df, runids=drf_runids(drf), dr
     }
   }
   run_df$rcode = na.val(run_df$rcode, "")
+  if (NROW(scalar_code)>0) {
+    run_df = run_df %>%
+      left_join(scalar_code %>% select(runid, scalar_r_code), by="runid") %>%
+      mutate(scalar_r_code = na.val(scalar_r_code, "")) %>%
+      mutate(rcode = ifelse(rcode=="", rcode, paste0(scalar_r_code, rcode))) %>%
+      select(-scalar_r_code)
+  }
+
 
   run_df
 }
 
 
-
-drf_rcode_df = function(drf,runids=NULL, path_merge = c("none", "load", "natural", "load_natural")[4], update_rcode = FALSE) {
-  restore.point("drf_rcode_df")
-
-  # perform path merge like as for stata code
-  sc_df = drf_stata_code_df(drf, runids=runids, path_merge=path_merge)
-  runids = unique(rc_df$runid)
-
-  run_df = drf$run_df
-  if (update_rcode) {
-    run_df = drf_run_df_create_rcode(run_df, runids=runids)
-  }
-
-  run_df = drf$run_df %>%
-    filter(runid %in% runids)
-
-  rc_df = rc_df %>%
-    left_join(run_df %>% select(runid, cmdline,rcode), by="runid") %>%
-    mutate(code = rcode, pre = "", post="")
-  rc_df
-}
-
-
-
+#
+# drf_rcode_df = function(drf,runids=NULL, path_merge = c("none", "load", "natural", "load_natural")[4], update_rcode = FALSE) {
+#   restore.point("drf_rcode_df")
+#
+#   # perform path merge like as for stata code
+#   sc_df = drf_stata_code_df(drf, runids=runids, path_merge=path_merge)
+#   runids = unique(rc_df$runid)
+#
+#   run_df = drf$run_df
+#   if (update_rcode) {
+#     run_df = drf_run_df_create_rcode(run_df, runids=runids)
+#   }
+#
+#   run_df = drf$run_df %>%
+#     filter(runid %in% runids)
+#
+#   rc_df = rc_df %>%
+#     left_join(run_df %>% select(runid, cmdline,rcode), by="runid") %>%
+#     mutate(code = rcode, pre = "", post="")
+#   rc_df
+# }
+#
+#
+#
 ```
 # END OF FILE: /home/rstudio/repbox/repboxDRF/R/drf_r_code.R
 
@@ -5962,10 +6437,10 @@ example = function() {
   drf_set_file_mcache_cand(file_mcache_cand, project_dir)
   drf_set_runid_mcache_cand(runid_mcache_cand, project_dir)
 
-  class(drf_cache_object())
-  names(drf_cache_object())
+  class(drf_mcache_object())
+  names(drf_mcache_object())
 
-  drf_cache_info()
+  drf_mcache_info()
 
   data = drf_get_data(pid, drf=drf,update_rcode = TRUE)
 
@@ -5984,7 +6459,6 @@ example = function() {
 #' @param update_rcode Set TRUE if the repbox code for R translation has been updated and the old R code is no longer up-to-date. Mostly relevant during development of the repbox package.
 #' @param exec_env in which environment shall the R code that loads and modifies the data be evaluated, default a new env.
 #' @param pid Alias for runid in this command (pid stands for path ID which is the runid of the final command in a path from path_df)
-
 drf_get_data = function(runid=pid, drf, filtered=TRUE, before=TRUE, update_rcode=FALSE, exec_env = new.env(parent = globalenv()), pid=NULL) {
   restore.point("drf_get_data")
   if (is.null(runid)) {
@@ -5994,6 +6468,15 @@ drf_get_data = function(runid=pid, drf, filtered=TRUE, before=TRUE, update_rcode
   if (!runid %in% runids) {
     stop("runid is not part of any DRF path. We only build paths that lead to a successfully run regression.")
   }
+
+  can_use_runid_mcache = isTRUE(filtered) & isTRUE(before)
+  if (can_use_runid_mcache) {
+    data = drf_cached_data(runid = runid, project_dir = drf$project_dir)
+    if (!is.null(data)) {
+      return(data)
+    }
+  }
+
   path_df = drf$path_df
   pid = first(path_df$pid[path_df$runid == runid])
 
@@ -6014,13 +6497,15 @@ drf_get_data = function(runid=pid, drf, filtered=TRUE, before=TRUE, update_rcode
   rows = match(exec_runids, run_df$runid)
   rows = rows[run_df$rcode[rows] != ""]
 
-  rcode = run_df$rcode[rows]
+  run_df = run_df[rows,]
+
+  rcode = run_df$rcode
 
   if (length(rcode)==0) {
     stop("No R code found for getting data. That looks like a bug.")
   }
 
-  # --- INJECT CACHE LOAD CODE IF APPLICABLE ---
+  # INJECT CACHE LOAD CODE IF APPLICABLE ---
   if (length(exec_runids) > 0) {
     first_runid = exec_runids[1]
     first_row = match(first_runid, run_df$runid)
@@ -6034,7 +6519,6 @@ drf_get_data = function(runid=pid, drf, filtered=TRUE, before=TRUE, update_rcode
       rcode[1] = cache_load_code
     }
   }
-  # --------------------------------------------
 
   if (filtered) {
     filter_code = drf_get_filter_code(pid, drf)
@@ -6048,10 +6532,19 @@ drf_get_data = function(runid=pid, drf, filtered=TRUE, before=TRUE, update_rcode
   exec_env$project_dir = drf$project_dir
   eval(rcode_call, envir = exec_env)
 
-  # Crucial: Always return the manipulated data frame explicitly
-  exec_env$data
+  data = exec_env$data
+
+  if (can_use_runid_mcache) {
+    drf_store_if_mcache_cand(data, runid = runid, project_dir = drf$project_dir)
+  }
+
+  data
 }
 
+# eval r code stepwise with try catch: return error info
+drf_eval_r_code_stepwise = function(rcode, env) {
+
+}
 ```
 # END OF FILE: /home/rstudio/repbox/repboxDRF/R/drf_run_r.R
 
@@ -6063,6 +6556,7 @@ drf_get_data = function(runid=pid, drf, filtered=TRUE, before=TRUE, update_rcode
 example = function() {
   # Should point to this project dir
   project_dir = "~/repbox/projects/aejapp_11_2_10"
+  project_dir = "~/repbox/projects_test/test"
 
   if (FALSE)
     rstudioapi::filesPaneNavigate(project_dir)
@@ -6085,7 +6579,7 @@ example = function() {
 
 
 
-drf_stata_code_df = function(drf,runids=NULL, path_merge = c("none", "load", "natural", "load_natural")[4]) {
+drf_stata_code_df = function(drf,runids=NULL, path_merge = c("none", "load", "natural", "load_natural")[4], cache_after_runids = drf$cache_after_runids, cache_after_cmd=drf$cache_after_cmd) {
   restore.point("drf_stata_code_skel")
   project_dir = drf$project_dir
   pids = runids
@@ -6116,6 +6610,7 @@ drf_stata_code_df = function(drf,runids=NULL, path_merge = c("none", "load", "na
 
   run_df = drf_replace_run_df_code_data_path(run_df = run_df, drf=drf)
   run_df$data_path = run_df$org_data_path
+  run_df = drf_code_stata_add_save_cache(project_dir = project_dir, run_df=run_df,cache_after_runids = cache_after_runids, cache_after_cmd = cache_after_cmd)
 
   path_li = split(path_df, path_df$pid)
   code_li = NULL
@@ -6254,6 +6749,14 @@ drf_stata_code_df = function(drf,runids=NULL, path_merge = c("none", "load", "na
     code_li[[counter]] = rdf
   }
   sc_df = bind_rows(code_li)
+
+  # we now add scalar definitions from scalar map
+  sc_df = sc_df %>%
+    left_join(drf$scalar_code, by="runid") %>%
+    mutate(
+      scalar__stata_code = na.val(scalar_stata_code,""),
+      scalar_r_code = na.val(scalar_r_code,"")
+    )
   sc_df
 }
 
@@ -6319,6 +6822,33 @@ restore\n",
   sc_df
 }
 
+drf_code_stata_add_save_cache = function(project_dir, run_df, cache_after_runids=NULL, cache_after_cmd=NULL) {
+  restore.point("drf_code_stata_add_save_cache")
+
+
+
+  runids = cache_after_runids
+  if (!is.null(cache_after_cmd)) {
+    runids = union(runids, run_df$runid[run_df$cmd %in% cache_after_cmd])
+  }
+  if (length(runids)==0) return(run_df)
+  cache_dir = file.path(project_dir, "drf","cached_dta")
+  if (!dir.exists(cache_dir)) dir.create(cache_dir)
+  cache_files = paste0(cache_dir, "/", runids,"_cache.dta")
+
+  # don't store if cache already exists
+  has = file.exists(cache_files)
+  runids = runids[!has]
+  cache_files = cache_files[!has]
+  if (length(runids)==0) return(run_df)
+  # since no replace option does not overwrite
+  # error is ignored because of capture
+  save_code = paste0('\ncapture save "', cache_files,'"\n')
+  rows = match(runids, run_df$runid)
+  run_df$code[rows] = paste0(run_df$code[rows], save_code)
+  run_df
+
+}
 
 drf_code_stata_path_header = function(sc_df, header_tpl = "\n***** Path for runid={{pid}} ****\n\n", to_col="pre", append_mode = c("overwrite", "left", "right")[1]) {
   drf_code_adapt(sc_df, function(code_df, ...) {
@@ -7986,7 +8516,7 @@ rb_run_gha_stata_reproduction = function(project_dir, postprocess=FALSE, overwri
     timeout = timeout,
     create_mod_dir = TRUE,
     capture_reg_info = TRUE,
-    capture_scalar_info = TRUE,
+    capture_scalars = TRUE,
     stop.on.error = TRUE,
     work_dir = "gha_work",
     output_dir = "gha_output/bundle",
@@ -8003,7 +8533,9 @@ rb_run_gha_stata_reproduction = function(project_dir, postprocess=FALSE, overwri
 
   repboxGithub::copy_r_package("/home/rstudio/repbox/repboxRun",dest_parent_dir = "~/repbox/gha/gha_rp/pkgs", overwrite = TRUE)
   repboxGithub::copy_r_package("/home/rstudio/repbox/repboxStata",dest_parent_dir = "~/repbox/gha/gha_rp/pkgs", overwrite=TRUE)
-  #repboxGithub::copy_r_package("/home/rstudio/repbox/GithubActions",dest_parent_dir = "~/repbox/gha/gha_rp/pkgs")
+  repboxGithub::copy_r_package("/home/rstudio/repbox/repboxUtils",dest_parent_dir = "~/repbox/gha/gha_rp/pkgs", overwrite=TRUE)
+
+    #repboxGithub::copy_r_package("/home/rstudio/repbox/GithubActions",dest_parent_dir = "~/repbox/gha/gha_rp/pkgs")
   # ------------------------------------------------------------
   # 3. Commit and push the updated gha_rp/run_config.R
   # ------------------------------------------------------------
@@ -10306,7 +10838,7 @@ example = function() {
     overwrite = FALSE,
     create_mod_dir = TRUE,
     capture_reg_info = TRUE,
-    capture_scalar_info = TRUE
+    capture_scalars = TRUE
   )
 
   rb = rb_postprocess_stata_reproduction(
@@ -10369,10 +10901,10 @@ rb_run_stata_reproduction_raw = function(
   overwrite = FALSE,
   create_mod_dir = TRUE,
   capture_reg_info = TRUE,
-  capture_scalar_info = TRUE,
+  capture_scalars = TRUE,
   stata_opts = repbox_stata_opts(
     extract.reg.info = capture_reg_info,
-    extract.scalar.vals = capture_scalar_info
+    extract.scalar.vals = capture_scalars
   ),
   input_zip = NULL,
   manifest_extra = list()
@@ -10414,7 +10946,7 @@ rb_run_stata_reproduction_raw = function(
   dir.create(repbox_stata_dir, recursive = TRUE, showWarnings = FALSE)
 
   stata_opts$extract.reg.info = isTRUE(capture_reg_info)
-  stata_opts$extract.scalar.vals = isTRUE(capture_scalar_info)
+  stata_opts$extract.scalar.vals = isTRUE(capture_scalars)
 
   parcels = repbox_project_run_stata(
     project_dir = project_dir,
@@ -10508,14 +11040,14 @@ rb_run_stata_reproduction = function(
   overwrite = FALSE,
   create_mod_dir = TRUE,
   capture_reg_info = TRUE,
-  capture_scalar_info = TRUE,
+  capture_scalars = TRUE,
   build_run_info = TRUE,
   build_do_run_info = TRUE,
   build_reg_info = capture_reg_info,
   build_drf = build_reg_info,
   stata_opts = repbox_stata_opts(
     extract.reg.info = capture_reg_info,
-    extract.scalar.vals = capture_scalar_info
+    extract.scalar.vals = capture_scalars
   ),
   input_zip = NULL,
   manifest_extra = list()
@@ -10535,7 +11067,7 @@ rb_run_stata_reproduction = function(
       overwrite = overwrite,
       create_mod_dir = create_mod_dir,
       capture_reg_info = capture_reg_info,
-      capture_scalar_info = capture_scalar_info,
+      capture_scalars = capture_scalars,
       stata_opts = stata_opts,
       input_zip = input_zip,
       manifest_extra = manifest_extra
@@ -11525,6 +12057,86 @@ is_negative = function(n) {
 # Your Task
 ##################################
 
+I need to implement proper checks, error logs and possibility to repair failed metaregBase reproductions for particular regressions.
 
+Look at the current code and first give a verbal proposal how to best account for the following points. Later you can also suggest concrete code changes.
+
+- The metaregBase reproduction can fail in different steps, e.g. Stata reproduction or R reproductio, for particular regressions. Currently an error is thrown or just results don't map. I want the option that errors can be captured and the failure is documented. In the end I want to have a parcel regcheck with the following fields:
+
+name: regcheck
+
+descr: |
+  Check metaregBase reproduction of regression results
+
+  We compare 3 variants:
+  so: original replication using the repboxStata code injection
+  sb: metaregBase Stata replication
+  rb: metaregBase R replication
+
+unique_index:
+  main_index: [runid]
+
+fields:
+  runid:
+    type: int
+
+  reg_ok:
+    type: bool
+    descr: Is the regression fully ok, i.e. so, sb and rb ran and yield same results.
+
+  so_did_run:
+    type: bool
+    descr: Did the original Stata reproduction of the regression run without error
+
+  sb_did_run:
+    type: bool
+    descr: Did the metareg base Stata replication of the regression run without error
+
+  rb_did_run:
+    type: bool
+    descr: Did the metareg base R replication of the regression run without error
+
+  sb_so_identical:
+    type: bool
+    descr: Are the sb and so results identical?
+
+  rb_sb_coef_same:
+    type: bool
+    descr: Are the rb and sb coefficients the same within 1% tolerance
+
+  rb_sb_coef_max_dev:
+    type: num
+    descr: maximum relative deviation between coefficients of rb and sb run
+
+  rb_sb_se_same:
+    type: bool
+    descr: Are the sb and so standard errors the same within 1% tolerance
+
+  rb_sb_se_max_dev:
+    type: num
+    descr: maximum relative deviation between standard errors of rb and sb run
+
+  problem:
+    descr: |
+      A text describing potential problems. If the metaregBase analysis did not run,
+      it contains the error message.
+
+  comment:
+    descr: |
+      Optional additional comment. Will typically be empty.
+      The comment can either provide additional information for
+      a problem that may help debugging or note a point
+      that shall not be considered a problem but
+      may be informative nevertheless.
+      Avoid excessive long comments since regcheck will be
+      typically stored inside the core parcel of
+      metareg studies.
+
+
+So if we have an error say in the R translation of a regression with runid=23. Then the entry for that regression in regcheck shall have reg_ok=FALSE and rb_did_run=FALSE and problem containing a short error message.
+
+- Possibly everything runs through but coefficients differ. Also this shall be proberly stored in the regcheck parcel.
+
+- We may perform "repair runs" of certain runids. E.g. R translation may yield different regression results fail because the translated xi command in R assigs the dummy variables differently than Stata. If a regression translation fails, we may re-run Stata code but generate a file cache directly of the filtered data set used by the regression and then adapt pathes in drf and try the R reproduction again. Since we now have a different data set, a lot of packages might change, i.e. even the regvar, regxvar parcels etc. But only for the subset of regressions, we have changed. I.e. I want to elegantly include functionality to just adapt the parcels that changed when we re-run a subset of runids. Think deeply how to best implement without too much code duplication, following the existing style.
 
 

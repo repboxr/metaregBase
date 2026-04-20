@@ -22,7 +22,6 @@ example = function() {
   mrb = mrb_run_r_base(mrb, just_pid = drf$pid[1])
 }
 
-
 #' Extract Stata metaregBase results and create corresponding metaregBase parcels
 mrb_run_r_base = function(mrb, just_pids=NULL, make_parcels=TRUE) {
   restore.point("mrb_run_r")
@@ -35,9 +34,15 @@ mrb_run_r_base = function(mrb, just_pids=NULL, make_parcels=TRUE) {
     cat("\nNo pids to process.\n")
     return(mrb)
   }
+
   if (!is.null(just_pids)) {
     pids = just_pids
+    mrb$is_partial_run = TRUE
+    mrb$partial_pids = just_pids
+  } else {
+    mrb$is_partial_run = FALSE
   }
+
   mrb = mrb_agg_stata(mrb, skip_if_has = TRUE)
 
   # Load original reproduction results (so variant) directly from DRF
@@ -45,8 +50,6 @@ mrb_run_r_base = function(mrb, just_pids=NULL, make_parcels=TRUE) {
   mrb$regtab_so = tryCatch(readRDS(regtab_file), error = function(e) NULL)
 
   all_step_parcels = list()
-
-
 
   cat("\nmrb_r_base processing runids: ")
   for (pid in pids) {
@@ -58,11 +61,89 @@ mrb_run_r_base = function(mrb, just_pids=NULL, make_parcels=TRUE) {
 
   mrb$all_step_parcels = all_step_parcels
   if (make_parcels) {
-    mrb_make_r_base_parcels(mrb)
+    mrb = mrb_make_r_base_parcels(mrb)
   }
 
   mrb
 }
+
+# The step parcels are generated in mrb_r
+mrb_make_r_base_parcels = function(mrb, save=TRUE) {
+  restore.point("mrb_make_r_base_parcels")
+
+  parcels = list()
+  all_step_parcels = mrb$all_step_parcels
+  if (is.null(all_step_parcels)) {
+    cat("\nmrb_save_step_parcels: mrb$all_step_parcels were not yet generated. Make sure mrb_run_r_base is called beforehand.\n")
+    return(mrb)
+  }
+
+  combine_steps = function(field) {
+    res_list = lapply(all_step_parcels, function(x) x[[field]])
+    res_list = res_list[!sapply(res_list, is.null)]
+    if (length(res_list) == 0) {
+      new_data = tibble()
+    } else {
+      new_data = bind_rows(res_list)
+    }
+
+    if (isTRUE(mrb$is_partial_run) && !is.null(mrb$parcels[[field]])) {
+      old_data = mrb$parcels[[field]]
+      if (NROW(old_data) > 0 && NROW(new_data) > 0) {
+        old_kept = old_data[!old_data$runid %in% mrb$partial_pids, , drop = FALSE]
+        new_data = bind_rows(old_kept, new_data)
+      } else if (NROW(old_data) > 0 && NROW(new_data) == 0) {
+        new_data = old_data
+      }
+    }
+    new_data
+  }
+
+  # reg
+  parcels$reg = combine_steps("reg")
+
+  # Coefs & Variables
+  parcels$regcoef = combine_steps("regcoef")
+  parcels$regcoef_so = combine_steps("regcoef_so")
+  parcels$regvar = combine_steps("regvar")
+  parcels$regxvar = combine_steps("regxvar")
+
+  # Column Stats
+  parcels$colstat_numeric = combine_steps("colstat_numeric")
+  parcels$colstat_dummy = combine_steps("colstat_dummy")
+  parcels$colstat_factor = combine_steps("colstat_factor")
+
+  parcels$colinfo = combine_steps("colinfo")
+
+  # Scalars & Macros
+  parcels$regscalar = combine_steps("regscalar")
+  parcels$regstring = combine_steps("regstring")
+
+  # regsource parcel is just a combination of existing parcels
+  mrb$parcels = repdb_load_parcels(mrb$project_dir, c("stata_file", "stata_cmd"),parcels = mrb$parcels)
+  run_df = mrb$drf$run_df
+
+  regsource = parcels$reg %>%
+    select(runid) %>%
+    left_join(run_df %>% select(runid, file_path, line), by="runid") %>%
+    left_join(mrb$parcels$stata_cmd %>% select(file_path, line, code_line_start=orgline_start, code_line_end = orgline_end), by = c("file_path", "line")) %>%
+    left_join(mrb$parcels$stata_file, by="file_path") %>%
+    rename(script_path = file_path, script_name = file_name,script_type = file_type) %>%
+    mutate(script_file = basename(script_path))
+
+  parcels$regsource = regsource
+
+  # Save everything directly into the repdb directory
+  if (save) {
+    repdb_dir = file.path(mrb$project_dir, "repdb")
+    repboxDB::repdb_save_parcels(parcels, repdb_dir, check = TRUE)
+  }
+
+  mrb$parcels[names(parcels)] = parcels
+  return(mrb)
+}
+
+
 
 
 # ==============================================================================
