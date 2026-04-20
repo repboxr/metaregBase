@@ -302,59 +302,21 @@ mrb_test_generate_flags = function(project_dir, parcels, drf = NULL, opts = mrb_
     cmds[[1]]
   }
 
-  eval_diff_tab = function(diff_tab) {
-    if (is.null(diff_tab) || NROW(diff_tab) == 0) {
-      return(list(
-        all_diff = FALSE,
-        coef_diff = FALSE,
-        se_diff = FALSE,
-        all_max_dev = NA_real_,
-        all_max_rel = NA_real_,
-        coef_max_dev = NA_real_,
-        coef_max_rel = NA_real_,
-        se_max_dev = NA_real_,
-        se_max_rel = NA_real_
-      ))
-    }
-
-    coef_missing_one = xor(is.na(diff_tab$coef_1), is.na(diff_tab$coef_2))
-    se_missing_one = xor(is.na(diff_tab$se_1), is.na(diff_tab$se_2))
-
-    coef_diff_row =
-      coef_missing_one |
-      (!is.na(diff_tab$abs_err_coef) & diff_tab$abs_err_coef > max_deviation_tol) |
-      (!is.na(diff_tab$rel_err_coef) & diff_tab$rel_err_coef > max_rel_diff_tol)
-
-    se_diff_row =
-      se_missing_one |
-      (!is.na(diff_tab$abs_err_se) & diff_tab$abs_err_se > max_deviation_tol) |
-      (!is.na(diff_tab$rel_err_se) & diff_tab$rel_err_se > max_rel_diff_tol)
-
-    coef_dev = pmin(as.numeric(diff_tab$abs_err_coef), as.numeric(diff_tab$rel_err_coef))
-    se_dev = pmin(as.numeric(diff_tab$abs_err_se), as.numeric(diff_tab$rel_err_se))
-
-    list(
-      all_diff = any(coef_diff_row | se_diff_row, na.rm = TRUE),
-      coef_diff = any(coef_diff_row, na.rm = TRUE),
-      se_diff = any(se_diff_row, na.rm = TRUE),
-      all_max_dev = max_empty_na(c(coef_dev, se_dev), na.rm = TRUE),
-      all_max_rel = max_empty_na(c(as.numeric(diff_tab$rel_err_coef), as.numeric(diff_tab$rel_err_se)), na.rm = TRUE),
-      coef_max_dev = max_empty_na(coef_dev, na.rm = TRUE),
-      coef_max_rel = max_empty_na(as.numeric(diff_tab$rel_err_coef), na.rm = TRUE),
-      se_max_dev = max_empty_na(se_dev, na.rm = TRUE),
-      se_max_rel = max_empty_na(as.numeric(diff_tab$rel_err_se), na.rm = TRUE)
-    )
-  }
-
   pair_diff = function(runid, variant1, variant2) {
     pair = mrb_test_get_regcoef_pair(runid = runid, variant1 = variant1, variant2 = variant2, parcels = parcels)
     if (is.null(pair$co1) || is.null(pair$co2) || NROW(pair$co1) == 0 || NROW(pair$co2) == 0) {
-      return(eval_diff_tab(NULL))
+      return(mrb_test_eval_diff_tab(NULL))
     }
 
     diff_tab = coef_diff_table(pair$co1, pair$co2)
-    diff_tab = mrb_test_filter_ignored_intercept_diff(diff_tab, cmd = get_run_cmd(runid), variant2 = variant2)
-    eval_diff_tab(diff_tab)
+
+    mrb_test_eval_diff_tab(
+      diff_tab = diff_tab,
+      cmd = get_run_cmd(runid),
+      variant2 = variant2,
+      max_rel_diff_tol = max_rel_diff_tol,
+      max_deviation_tol = max_deviation_tol
+    )
   }
 
   problem_labels = function(row) {
@@ -511,4 +473,5 @@ mrb_test_generate_flags = function(project_dir, parcels, drf = NULL, opts = mrb_
 
   return(res)
 }
+
 

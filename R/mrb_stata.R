@@ -52,7 +52,13 @@ mrb_full_stata_script = function(mrb, capture=TRUE) {
     dir.create(outdir, recursive = TRUE)
   }
 
-  code_df = repboxDRF::drf_stata_code_df(drf=mrb$drf)
+  # We want to inject caches after some commands that cannot be effectively translated
+  # to R.
+  # Currently that is xi as it is hard to find the same ordering of generated
+  # dummy variables as Stata
+  cache_cmds = "xi"
+
+  code_df = repboxDRF::drf_stata_code_df(drf=mrb$drf,cache_after_cmd = cache_cmds)
   code_df = code_df %>%
     drf_code_adapt(mrb_code_reg_stata, just_path_pos="end", run_df=run_df, outdir=outdir, capture=capture) %>%
     drf_code_stata_path_header()
@@ -65,8 +71,12 @@ mrb_full_stata_script = function(mrb, capture=TRUE) {
 }
 
 drf_code_write = function(code_df, file) {
+  restore.point("drf_code_write")
   dir = dirname(file)
   if (!dir.exists(dir)) dir.create(dir, recursive = TRUE)
+  if (has_col(code_df,"scalar_stata_code")) {
+    code_df$pre = paste0(na.val(code_df$scalar_stata_code,""),code_df$pre)
+  }
   txt = paste0(code_df$pre, code_df$code, code_df$post, collapse="\n")
   write_utf8(txt, file)
   invisible(txt)
@@ -109,14 +119,14 @@ repbox_write_dprobit_coef_se "',outdir, "/dprobit_", runid, ".csv\n")
   }
 
   code = paste0(
-    'capture erase "', outfile, '"\n',
-    'capture erase "', scalar_outfile, '"\n',
-    'capture erase "', macro_outfile, '"\n',
-    'capture erase "', paste0(outdir, "/reg_", runid, "__sb_mem.dta"), '"\n',
-    'capture erase "', paste0(outdir, "/regscalar_", runid, "__sb_mem.txt"), '"\n',
-    'capture erase "', paste0(outdir, "/regmacro_", runid, "__sb_mem.txt"), '"\n',
-    'capture erase "', paste0(outdir, "/dprobit_", runid, ".csv"), '"\n',
-    'capture erase "', paste0(outdir, "/reg_", runid, "__sb_exp.tsv"), '"\n',
+    # 'capture erase "', outfile, '"\n',
+    # 'capture erase "', scalar_outfile, '"\n',
+    # 'capture erase "', macro_outfile, '"\n',
+    # 'capture erase "', paste0(outdir, "/reg_", runid, "__sb_mem.dta"), '"\n',
+    # 'capture erase "', paste0(outdir, "/regscalar_", runid, "__sb_mem.txt"), '"\n',
+    # 'capture erase "', paste0(outdir, "/regmacro_", runid, "__sb_mem.txt"), '"\n',
+    # 'capture erase "', paste0(outdir, "/dprobit_", runid, ".csv"), '"\n',
+    # 'capture erase "', paste0(outdir, "/reg_", runid, "__sb_exp.tsv"), '"\n',
     cap_str, 'ereturn clear\n',
     cap_str, stata_code,
     '\n
@@ -127,3 +137,17 @@ repbox_write_dprobit_coef_se "',outdir, "/dprobit_", runid, ".csv\n")
   )
   code
 }
+
+
+mrb_clear_stata_reg_out = function(project_dir, runids=NULL) {
+  reg_out_dir = file.path(project_dir, "metareg/base/stata_reg_out")
+  del_files = list.files(reg_out_dir, "^.*\\.(dta|txt|csv|tsv)$",full.names = TRUE)
+  if (!is.null(runids)) {
+    pattern = paste0("(",paste0("_", runids, "_", collapse="|"),")")
+    use = stri_detect_regex(del_files, pattern)
+    del_files = del_files[use]
+  }
+  file.remove(del_files)
+
+}
+
