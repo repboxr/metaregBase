@@ -4,16 +4,10 @@
 #'
 #' Evaluates the success of regression outputs and maps any mismatches
 #' to a standardized `regcheck` parcel.
-mrb_make_regcheck_parcel = function(mrb, save = TRUE) {
+mrb_make_regcheck_parcel = function(mrb, save = TRUE, just_pids=NULL, repair_code="") {
   restore.point("mrb_make_regcheck_parcel")
 
-  parcels = mrb$parcels
-  need = c("reg", "reg_rb", "regcoef", "regcoef_so", "regcoef_rb")
-  missing = setdiff(need, names(parcels))
-  if (length(missing) > 0) {
-    parcels = repboxDB::repdb_load_parcels(mrb$project_dir, missing, parcels = parcels)
-    mrb$parcels = parcels
-  }
+  mrb$parcels = parcels = repboxDB::repdb_load_parcels(mrb$project_dir, c("reg", "reg_rb", "regcoef", "regcoef_so", "regcoef_rb"), mrb$parcels)
 
   pids = unique(c(
     if (!is.null(parcels$reg)) parcels$reg$runid else integer(),
@@ -23,6 +17,10 @@ mrb_make_regcheck_parcel = function(mrb, save = TRUE) {
   ))
 
   if (length(pids) == 0) return(mrb)
+
+  if (!is.null(just_pids)) {
+    pids = intersect(pids, just_pids)
+  }
 
   res_li = lapply(pids, function(pid) {
     # Boolean checks of run existence
@@ -100,12 +98,20 @@ mrb_make_regcheck_parcel = function(mrb, save = TRUE) {
       rb_sb_coef_max_dev = rb_sb_coef_max_dev,
       rb_sb_se_same = rb_sb_se_same,
       rb_sb_se_max_dev = rb_sb_se_max_dev,
+      repair_code = repair_code,
       problem = problem,
       comment = comment
     )
   })
 
   regcheck = dplyr::bind_rows(res_li)
+
+
+  if (!is.null(just_pids)) {
+    parcels = repboxDB::repdb_load_parcels(mrb$project_dir, "regcheck", parcels)
+    old_regcheck = parcels$regcheck %>% anti_join(regcheck, by="runid")
+    regcheck = bind_rows(regcheck, old_regcheck) %>% arrange(runid)
+  }
 
   if (save) {
     repboxDB::repdb_save_parcels(list(regcheck = regcheck), file.path(mrb$project_dir, "repdb"), check = FALSE)
