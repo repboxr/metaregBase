@@ -7,9 +7,11 @@ R/mrb_col_info.R
 R/mrb_cterms.R
 R/mrb.R
 R/mrb_r_base.R
+R/mrb_regcheck.R
 R/mrb_regcoef.R
 R/mrb_reg_tools.R
 R/mrb_regxvar.R
+R/mrb_repair.R
 R/mrb_r_reg.R
 R/mrb_se.R
 R/mrb_stata.R

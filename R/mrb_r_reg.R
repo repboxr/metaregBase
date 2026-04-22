@@ -39,6 +39,7 @@ mrb_run_r_reg = function(mrb, just_pids=NULL) {
     return(mrb)
   }
 
+  all_pids = pids
   if (!is.null(just_pids)) {
     pids = just_pids
     mrb$is_partial_run = TRUE
@@ -231,8 +232,13 @@ mrb_get_regression_data = function(runid, drf, reg=NULL, regvar, regxvar = NULL)
 }
 
 # The step parcels are generated in mrb_r
-mrb_make_r_reg_parcels = function(mrb, save=TRUE) {
+mrb_make_r_reg_parcels = function(mrb, save=TRUE,is_partial_run=mrb$is_partial_run) {
   restore.point("mrb_make_r_reg_parcels")
+
+  if (is_partial_run) {
+    mrb$parcels = repdb_load_parcels(mrb$project_dir, c("reg_rb","regcoef_rb","regcoef_diff","regscalar_rb","regstring_rb"))
+  }
+
 
   parcels = list()
   all_step_parcels = mrb$all_step_parcels
@@ -250,7 +256,7 @@ mrb_make_r_reg_parcels = function(mrb, save=TRUE) {
       new_data = bind_rows(res_list)
     }
 
-    if (isTRUE(mrb$is_partial_run) && !is.null(mrb$parcels[[field]])) {
+    if (isTRUE(is_partial_run) && !is.null(mrb$parcels[[field]])) {
       old_data = mrb$parcels[[field]]
       if (NROW(old_data) > 0 && NROW(new_data) > 0) {
         old_kept = old_data[!old_data$runid %in% mrb$partial_pids, , drop = FALSE]

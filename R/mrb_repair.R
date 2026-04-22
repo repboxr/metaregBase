@@ -30,7 +30,7 @@ mrb_repair_failed_runs = function(project_dir = mrb$project_dir, mrb=NULL) {
   }
 
   cat("\nRepair attempt by caching regression data for runids: ", paste(failed_pids, collapse=", "), "\n")
-  mrb_cache_reg_data(mrb,pids=failed_pids)
+  res = mrb_cache_reg_data(mrb,pids=failed_pids)
 
   mrb$drf = drf_apply_caches(mrb$drf, just_pids=failed_pids)
 

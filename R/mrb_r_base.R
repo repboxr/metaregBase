@@ -35,6 +35,7 @@ mrb_run_r_base = function(mrb, just_pids=NULL, make_parcels=TRUE) {
     return(mrb)
   }
 
+  all_pids = pids
   if (!is.null(just_pids)) {
     pids = just_pids
     mrb$is_partial_run = TRUE
@@ -68,8 +69,13 @@ mrb_run_r_base = function(mrb, just_pids=NULL, make_parcels=TRUE) {
 }
 
 # The step parcels are generated in mrb_r
-mrb_make_r_base_parcels = function(mrb, save=TRUE) {
+mrb_make_r_base_parcels = function(mrb, save=TRUE, is_partial_run = isTRUE(mrb$is_partial_run)) {
   restore.point("mrb_make_r_base_parcels")
+
+  if (is_partial_run) {
+    mrb$parcels = repdb_load_parcels(mrb$project_dir, c("reg","regcoef","regcoef_so","regvar","regxvar","colstat_numeric","colstat_dummy","colstat_factor", "colinfo","regscalar","regstring"))
+  }
+
 
   parcels = list()
   all_step_parcels = mrb$all_step_parcels
@@ -87,7 +93,7 @@ mrb_make_r_base_parcels = function(mrb, save=TRUE) {
       new_data = bind_rows(res_list)
     }
 
-    if (isTRUE(mrb$is_partial_run) && !is.null(mrb$parcels[[field]])) {
+    if (isTRUE(is_partial_run) && !is.null(mrb$parcels[[field]])) {
       old_data = mrb$parcels[[field]]
       if (NROW(old_data) > 0 && NROW(new_data) > 0) {
         old_kept = old_data[!old_data$runid %in% mrb$partial_pids, , drop = FALSE]
@@ -321,70 +327,3 @@ mrb_run_r_base_step = function(mrb, pid) {
 }
 
 
-# The step parcels are generated in mrb_r
-mrb_make_r_base_parcels = function(mrb, save=TRUE) {
-  restore.point("mrb_make_r_base_parcels")
-
-  parcels = list()
-  all_step_parcels = mrb$all_step_parcels
-  if (is.null(all_step_parcels)) {
-    cat("\nmrb_save_step_parcels: mrb$all_step_parcels were not yet generated. Make sure mrb_run_r_base is called beforehand.\n")
-    return(mrb)
-  }
-
-  combine_steps = function(field) {
-    bind_rows(lapply(all_step_parcels, function(x) x[[field]]))
-  }
-
-
-  # reg
-  parcels$reg = combine_steps("reg")
-
-  # Coefs & Variables
-  parcels$regcoef = combine_steps("regcoef")
-  parcels$regcoef_so = combine_steps("regcoef_so")
-  parcels$regvar = combine_steps("regvar")
-  parcels$regxvar = combine_steps("regxvar")
-
-  # Column Stats
-  parcels$colstat_numeric = combine_steps("colstat_numeric")
-  parcels$colstat_dummy = combine_steps("colstat_dummy")
-  parcels$colstat_factor = combine_steps("colstat_factor")
-
-  parcels$colinfo = combine_steps("colinfo")
-
-
-  # Scalars & Macros
-  parcels$regscalar = combine_steps("regscalar")
-  parcels$regstring = combine_steps("regstring")
-
-  # regsource parcel is just a combination of existing parcels
-  mrb$parcels = repdb_load_parcels(mrb$project_dir, c("stata_file", "stata_cmd"),parcels = mrb$parcels)
-  run_df = mrb$drf$run_df
-
-  regsource = parcels$reg %>%
-    select(runid) %>%
-    left_join(run_df %>% select(runid, file_path, line), by="runid") %>%
-    left_join(mrb$parcels$stata_cmd %>% select(file_path, line, code_line_start=orgline_start, code_line_end = orgline_end), by = c("file_path", "line")) %>%
-    left_join(mrb$parcels$stata_file, by="file_path") %>%
-    rename(script_path = file_path, script_name = file_name,script_type = file_type) %>%
-    mutate(script_file = basename(script_path))
-
-  parcels$regsource = regsource
-
-
-  # TO DO:
-  # regcoef_diff
-  # regcoef_so
-  # regcoef_rb
-  # regcheck
-
-  # Save everything directly into the repdb directory
-  if (save) {
-    repdb_dir = file.path(mrb$project_dir, "repdb")
-    repboxDB::repdb_save_parcels(parcels, repdb_dir, check = TRUE)
-  }
-
-  mrb$parcels[names(parcels)] = parcels
-  return(mrb)
-}
