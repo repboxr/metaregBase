@@ -34,8 +34,6 @@ mrb_repair_failed_runs = function(project_dir = mrb$project_dir, mrb=NULL) {
 
   mrb$drf = drf_apply_caches(mrb$drf, just_pids=failed_pids)
 
-  stop()
-
   # Rerun base to reconstruct regvar (in case xi variables were dumped into cache)
   mrb = mrb_run_r_base(mrb, just_pids = failed_pids)
 
