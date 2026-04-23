@@ -1,3 +1,27 @@
+example = function() {
+  mrb_print_parcels(project_dir, runid=7)
+}
+
+mrb_print_parcels = function(project_dir=mrb$project_dir,parcel_names = c("regcoef","regcoef_so","regcoef_rb","regvar","regxvar"),  runid=NULL, mrb=NULL, parcels=mrb$parcels, outfile = file.path(project_dir, "run/parcel_out.txt")) {
+  restore.point("mrb_print_parcels")
+  parcels = repdb_load_parcels(project_dir, parcel_names, parcels)
+
+  str = ""
+  if (!is.null(runid)) {
+    str = paste0(str,"All parcel contents for runid=",paste0(runid, collapse=", "))
+  }
+  for (p in parcel_names) {
+    str = paste0(str,"\n\nParcel ", p,":\n\n")
+    parcel = parcels[[p]]
+    if (!is.null(runid)) parcel = parcel[parcel$runid==runid,]
+    str = paste0(str, paste0(capture.output(print(parcel, width=1000)), collapse="\n"))
+
+  }
+  writeLines(str, outfile)
+  cat(str)
+  invisible()
+}
+
 
 mrb_test_data_preview_text = function(runid, drf, parcels, n = 5, opts=mrb_test_opts()) {
   restore.point("mrb_test_data_preview_text")

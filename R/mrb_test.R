@@ -15,7 +15,7 @@ example = function() {
   rstudioapi::navigateToFile(outfile, line=10000)
 }
 
-mrb_test_opts = function(show_org_data=TRUE, show_reg_data=TRUE, show_pre_reg_data=TRUE, data_head_rows=10, data_tail_rows=0,data_width=1000, max_cases=Inf, just_runid=NULL, ignore_flags=NULL, data_add_org_row=FALSE,  max_rel_diff_tol = 0.01,
+mrb_test_opts = function(show_do_files = FALSE, show_test_script=FALSE, show_test_script_log = FALSE, show_org_data=TRUE, show_reg_data=FALSE, show_pre_reg_data=FALSE, data_head_rows=10, data_tail_rows=0,data_width=1000, max_cases=Inf, just_runid=NULL, ignore_flags=NULL, data_add_org_row=FALSE,  max_rel_diff_tol = 0.01,
   max_deviation_tol = 1e-6) {
   as.list(environment())
 }
@@ -50,17 +50,23 @@ mrb_run_as_test = function(project_dir, run_script, navigate=TRUE, opts=mrb_test
   add("\n```{r setup, include=FALSE}
 knitr::opts_chunk$set(eval = FALSE)\n```")
 
-  add("# do files in the project")
-  do_files = list.files(file.path(project_dir,"org"), glob2rx("*.do"), recursive = TRUE, full.names = TRUE)
-  do_files = do_files[!startsWith(basename(do_files), "repbox_")]
-  add(files_to_md_fences(do_files))
+  if (isTRUE(opts$show_do_files)) {
+    add("# do files in the project")
+    do_files = list.files(file.path(project_dir,"org"), glob2rx("*.do"), recursive = TRUE, full.names = TRUE)
+    do_files = do_files[!startsWith(basename(do_files), "repbox_")]
+    add(files_to_md_fences(do_files))
+  }
 
-  add("# The R test script that is run")
-  add(files_to_md_fences(run_script))
+  if (opts$show_test_script) {
+    add("# The R test script that is run")
+    add(files_to_md_fences(run_script))
+  }
 
-  add("# Run log of the script")
+
+  #if (opts$show_test_script_log) {
+  add("# Run log of the test script")
   source_with_log(run_script, log_con=con)
-
+  #}
   parcels = list()
   parcels = repboxDB::repdb_load_parcels(
     project_dir,

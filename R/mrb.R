@@ -11,7 +11,7 @@ example = function() {
   drf = drf_load(project_dir)
 }
 
-mrb_run_all = function(project_dir, drf=repboxDRF::drf_load(project_dir)) {
+mrb_run_all = function(project_dir, drf=repboxDRF::drf_load(project_dir), repair_failed=TRUE) {
   restore.point("mrb_run_all")
   mrb = mrb_init(project_dir, drf=drf)
   mrb = mrb_full_stata_script(mrb)
@@ -22,6 +22,8 @@ mrb_run_all = function(project_dir, drf=repboxDRF::drf_load(project_dir)) {
   mrb = mrb_run_r_base(mrb)
   mrb = mrb_run_r_reg(mrb)
   mrb = mrb_make_regcheck_parcel(mrb)
+  if (repair_failed)
+    mrb = mrb_repair_failed_runs(mrb)
   mrb
 }
 

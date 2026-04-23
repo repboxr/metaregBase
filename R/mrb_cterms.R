@@ -6,7 +6,6 @@
 # a=5:L2@b (the cterm assuming that a and c are factors)
 #
 
-
 # Take an expr from a Stata regression command and convert it to
 # cterm representation
 
@@ -20,41 +19,39 @@
 #
 # cterm will not contain info on whether the variable is used
 # as factor or not.
-# FILE: mrb_cterms.R
 stata_expr_to_cterm = function(stata_expr) {
   restore.point("stata_expr_to_cterm")
 
-  cterm = stringi::stri_replace_all_regex(stata_expr,"(#+)|(\\|)|(\\*)","#")
-  cterm = gsub(" ","", cterm)
+  cterm = stringi::stri_replace_all_regex(stata_expr, "(#+)|(\\|)|(\\*)", "#")
+  cterm = gsub(" ", "", cterm)
 
   if (any(has.substr(cterm, "."))) {
     restore.point("cterm_ts_op")
   }
 
-  cterm = stringi::stri_replace_all_regex(cterm, "(#|^)[iI]([0-9]+)\\.([a-zA-Z_0-9]+)","$1$3=$2" )
-  cterm = gsub("#[ic]\\.","#", cterm, ignore.case=TRUE)
-  cterm = gsub("^[ic]\\.","", cterm, ignore.case=TRUE)
-  cterm = gsub("#[ic]([LlFfDdSsOo][0-9]*\\.)","#\\1", cterm, ignore.case=TRUE)
-  cterm = gsub("^[ic]([LlFfDdSsOo][0-9]*\\.)","\\1", cterm, ignore.case=TRUE)
-  cterm = stringi::stri_replace_all_regex(cterm, "#[iI]?[bB]([0-9]+)\\.","#" )
-  cterm = stringi::stri_replace_all_regex(cterm, "^[iI]?[bB]([0-9]+)\\.","" )
+  cterm = stringi::stri_replace_all_regex(
+    cterm,
+    "(#|^)[iI]([0-9]+)\\.([a-zA-Z_0-9]+)",
+    "$1$3=$2"
+  )
+  cterm = gsub("#[ic]\\.", "#", cterm, ignore.case = TRUE)
+  cterm = gsub("^[ic]\\.", "", cterm, ignore.case = TRUE)
+  cterm = gsub("#[ic]([LlFfDdSsOo][0-9]*\\.)", "#\\1", cterm, ignore.case = TRUE)
+  cterm = gsub("^[ic]([LlFfDdSsOo][0-9]*\\.)", "\\1", cterm, ignore.case = TRUE)
+  cterm = stringi::stri_replace_all_regex(cterm, "#[iI]?[bB]([0-9]+)\\.", "#")
+  cterm = stringi::stri_replace_all_regex(cterm, "^[iI]?[bB]([0-9]+)\\.", "")
 
-  # Expand missing dots between TS operators (e.g. L1D1. -> L1.D1., LD. -> L.D.)
-  old_cterm = ""
-  while (any(old_cterm != cterm)) {
-    old_cterm = cterm
-    cterm = gsub("(?<=^|#|\\.)([LlFfDdSsOo][0-9]*)([LlFfDdSsOo][0-9]*\\.)", "\\1.\\2", cterm, perl=TRUE)
-  }
+  # Convert plain factor notation before TS-prefix normalization:
+  # 2.x1 -> x1=2
+  cterm = stringi::stri_replace_all_regex(
+    cterm,
+    "(^|#)([0-9]+)\\.([a-zA-Z_][a-zA-Z_0-9]*)",
+    "$1$3=$2"
+  )
 
-  old_cterm = ""
-  while (any(old_cterm != cterm)) {
-    old_cterm = cterm
-    cterm = gsub("(?<=^|#|\\.)([LlFfDdSsOo])1?\\.", "\\U\\1\\E.", cterm, perl=TRUE)
-    cterm = gsub("(?<=^|#|\\.)([LlFfDdSsOo])([2-9]|[1-9][0-9]+)\\.", "\\U\\1\\E\\2.", cterm, perl=TRUE)
-  }
-
-  cterm = gsub(".","@", cterm, fixed=TRUE)
-  cterm = stringi::stri_replace_all_regex(cterm, "(^|#)([0-9]+)@([a-zA-Z_][a-zA-Z_0-9]*)", "$1$3=$2")
+  # Use the shared TS-prefix normalizer so syntax-derived cterms match
+  # output-derived cterms.
+  cterm = regtranslate:::replace_cterms_dot(cterm)
   cterm = sort_interaction_terms(cterm)
 
   cterm
@@ -71,11 +68,10 @@ canonical.stata.output.terms = function(terms,labels, cmd=NULL) {
   return(terms)
 }
 
-
 adapt.stata.prefix.notation = function(cterm) {
-  cterm = gsub(".","@", cterm,fixed = TRUE)
-  cterm
+  regtranslate:::replace_cterms_dot(cterm)
 }
+
 
 canonical.output.terms.stata.default = function(terms, ...) {
   restore.point("canonical.output.stata.default")
@@ -211,15 +207,14 @@ canonical.output.terms.r.default = function(terms, from.stata=TRUE) {
 
   # factor in form
   # factor(i1)4:factor(d1)1
-  # to i4=4°°d1=1
+  # to i4=4 degree degree d1=1
   factor.rx = "factor\\(([a-zA-Z0-9_.]*)\\)"
   terms = gsub(factor.rx,"\\1=",terms,fixed=FALSE)
 
-  # Replace . by @ if . was a Stata prefix
+  # Replace . by @ only if . was a Stata prefix separator
   if (from.stata) {
-    terms = gsub(".","@", terms, fixed=TRUE)
+    terms = regtranslate:::replace_cterms_dot(terms)
   }
-
 
   terms
 }
@@ -233,7 +228,6 @@ canonical.output.terms.fixest = function(terms, vi, from.stata=TRUE) {
   # to farmass_q=2
   terms = gsub("`","", terms, fixed=TRUE)
   terms = gsub("::","=", terms, fixed=TRUE)
-  #terms = gsub(" ","", terms, fixed=TRUE)
 
   # factor in form
   # factor(i1)4:factor(d1)1
@@ -241,12 +235,10 @@ canonical.output.terms.fixest = function(terms, vi, from.stata=TRUE) {
   factor.rx = "factor\\(([a-zA-Z0-9_.]*)\\)"
   terms = gsub(factor.rx,"\\1=",terms,fixed=FALSE)
 
-  # Replace . by @ if . was a Stata prefix
+  # Replace . by @ only if . was a Stata prefix separator
   if (from.stata) {
-    terms = gsub(".","@", terms, fixed=TRUE)
+    terms = regtranslate:::replace_cterms_dot(terms)
   }
-
-
 
   # In an IV regression feols adds "fit_" to the result
   # variable. We want to remove that
@@ -256,7 +248,6 @@ canonical.output.terms.fixest = function(terms, vi, from.stata=TRUE) {
     change = (!terms[rows] %in% vi$ia_cterm) & (terms.no.fit %in% vi$ia_cterm)
     terms[rows[change]] = terms.no.fit[change]
   }
-
 
   # We currently specify the fixest representation
   # as the canonical representation. So we can directly
@@ -277,6 +268,185 @@ create_cterm_cols = function(dat, cterms, timevar=NA, panelvar=NA, tdelta=NA) {
 }
 
 create_cterm_col = function(dat, cterm, timevar=NA, panelvar=NA, tdelta=NA, check.abbreviation=TRUE) {
+  restore.point("create_cterm_col")
+  is_ia = cterm_is_ia(cterm)
+  has_level = cterm_has_level(cterm)
+  has_prefix = cterm_has_prefix(cterm)
+
+  if (cterm %in% colnames(dat)) return(dat)
+
+  if (!is_ia && !has_level && !has_prefix) {
+    # Unfortunately Stata also allows variable name abbreviations in formulas
+    # E.g. regress gdp_ger infl_germany
+    # would work if there is a column gdp_germany which will be used for gdp_ger
+    if (check.abbreviation) {
+      abbr.ind = which(startsWith(colnames(dat), cterm))
+      if (length(abbr.ind) > 0) {
+        col = colnames(dat)[abbr.ind[1]]
+        dat[[cterm]] = dat[[col]]
+        return(dat)
+      }
+    }
+
+    dat[[cterm]] = NA
+    # lnalpha is just shown in nbreg output but not a variable in the data set
+    if (!isTRUE(cterm == "lnalpha")) {
+      msg = paste0("Column ", cterm, " does not exist in data set and thus I cannot generate the cterm ", cterm)
+      repbox_problem(type = "regvar_no_match", msg = msg, fail_action = "error")
+    }
+    return(dat)
+
+  } else if (!is_ia && has_level && !has_prefix) {
+    # First preference: if the cached data still contains the original xi-generated
+    # column (e.g. _Ix1_2), use its Stata label to map it back to the canonical cterm
+    # and copy the exact values. This is more reliable than reconstructing from the
+    # base variable, and it still works if the base variable was dropped.
+    xi_cols = colnames(dat)[startsWith(colnames(dat), "_I")]
+
+    if (length(xi_cols) > 0) {
+      xi_labels = vapply(dat[xi_cols], function(v) {
+        lab = attr(v, "label")
+        if (is.null(lab) || length(lab) == 0 || is.na(lab[[1]])) {
+          return("")
+        }
+        as.character(lab[[1]])
+      }, character(1))
+
+      xi_use = xi_labels != "" & stringi::stri_detect_fixed(xi_labels, "==")
+
+      if (any(xi_use)) {
+        xi_cterms = canonical.output.terms.stata.xi(
+          terms = xi_cols[xi_use],
+          labels = xi_labels[xi_use]
+        )
+
+        xi_match = which(xi_cterms == cterm)
+
+        if (length(xi_match) == 1) {
+          dat[[cterm]] = dat[[xi_cols[xi_use][xi_match]]]
+          return(dat)
+        }
+      }
+    }
+
+    # Fallback: rebuild from the base variable
+    var = str.left.of(cterm, "=")
+    val = str.right.of(cterm, "=")
+
+    if (!var %in% colnames(dat)) {
+      msg = paste0(
+        "Base variable ", var,
+        " does not exist in data set and no xi-generated source column could be found for cterm ",
+        cterm
+      )
+      repbox_problem(type = "regvar_no_match", msg = msg, fail_action = "error")
+    }
+
+    base_val = dat[[var]]
+
+    if (is.numeric(base_val)) {
+      num_val = suppressWarnings(as.numeric(val))
+      if (is.na(num_val)) {
+        msg = paste0("Cannot parse numeric factor level ", val, " for cterm ", cterm)
+        repbox_problem(type = "parse_reg_formula", msg = msg)
+      }
+
+      matches = rep(NA, length(base_val))
+      nonmiss = !is.na(base_val)
+      matches[nonmiss] = base_val[nonmiss] == num_val
+
+      # If the level string was rounded in the label, try a rounded match.
+      # Only accept it if it identifies a unique underlying numeric value.
+      if (!any(matches, na.rm = TRUE)) {
+        dec_match = stringi::stri_match_first_regex(as.character(val), "\\.([0-9]+)")
+        ndec = ifelse(is.na(dec_match[1, 2]), 0L, nchar(dec_match[1, 2]))
+
+        if (ndec > 1) {
+          rounded_base = round(base_val[nonmiss], digits = ndec)
+          rounded_val = round(num_val, digits = ndec)
+          cand = rounded_base == rounded_val
+
+          if (any(cand)) {
+            uniq_cand = unique(base_val[nonmiss][cand])
+
+            if (length(uniq_cand) == 1) {
+              matches[nonmiss] = base_val[nonmiss] == uniq_cand[[1]]
+            } else {
+              msg = paste0(
+                "Cannot uniquely reconstruct numeric factor level for cterm ", cterm,
+                " from base variable ", var,
+                ". The printed level ", val,
+                " matches multiple values after rounding. Use the xi-generated source column."
+              )
+              repbox_problem(type = "parse_reg_formula", msg = msg)
+            }
+          }
+        }
+      }
+
+      dat[[cterm]] = 1L * matches
+      return(dat)
+    }
+
+    if (inherits(base_val, "Date")) {
+      cval = as.Date(val)
+      dat[[cterm]] = 1L * (base_val == cval)
+      return(dat)
+    }
+
+    if (inherits(base_val, "POSIXct")) {
+      tz = attr(base_val, "tzone")
+      tz = if (is.null(tz) || length(tz) == 0 || is.na(tz[[1]])) "" else tz[[1]]
+      cval = as.POSIXct(val, tz = tz)
+      dat[[cterm]] = 1L * (base_val == cval)
+      return(dat)
+    }
+
+    if (is.factor(base_val)) {
+      dat[[cterm]] = 1L * (as.character(base_val) == val)
+      return(dat)
+    }
+
+    dat[[cterm]] = 1L * (as.character(base_val) == as.character(val))
+    return(dat)
+
+  } else if (!is_ia && !has_level && has_prefix) {
+    dat = create_prefix_nolevel_cterm_col(dat, cterm, panelvar = panelvar, timevar = timevar, tdelta = tdelta)
+    return(dat)
+  } else if (!is_ia && has_level && has_prefix) {
+    repbox_problem(type = "parse_reg_formula", msg = paste0("Cannot yet generate columns for cterm ", cterm, " that contains a prefix and a factor level."), fail_action = "error")
+    dat[[cterm]] = NA
+    return(dat)
+  }
+
+  # Interaction effects
+  cterms = cterm_split_ia(cterm)[[1]]
+
+  # Create all main effects
+  for (cte in cterms) {
+    dat = create_cterm_col(dat, cte, timevar = timevar, panelvar = panelvar, tdelta = tdelta)
+  }
+
+  # If any of the cterms is a factor just paste them
+  if (any(sapply(dat[cterms], is.character))) {
+    dat[[cterm]] = as.character(dat[[cterms[[1]]]])
+    for (i in 2:length(cterms)) {
+      dat[[cterm]] = paste0(dat[[cterm]], "#", dat[[cterms[i]]])
+    }
+    return(dat)
+  }
+
+  # Multiply the main effects
+  dat[[cterm]] = dat[[cterms[1]]]
+  for (i in 2:length(cterms)) {
+    dat[[cterm]] = dat[[cterm]] * dat[[cterms[i]]]
+  }
+  dat
+}
+
+
+
+create_cterm_col_old = function(dat, cterm, timevar=NA, panelvar=NA, tdelta=NA, check.abbreviation=TRUE) {
   restore.point("create_cterm_col")
   is_ia = cterm_is_ia(cterm)
   has_level = cterm_has_level(cterm)

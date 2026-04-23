@@ -1,10 +1,10 @@
 
-Below is code from selected R projects from my repbox / metareg toolbox.
+I am currently debugging my repbox framework
 
-# Package metaregBase
+# package metaregBase
 
 
-# FILE: /home/rstudio/repbox/metaregBase/DESCRIPTION
+# FILE: DESCRIPTION
 ```
 Package: metaregBase
 Type: Package
@@ -24,12 +24,12 @@ Encoding: UTF-8
 LazyData: true
 Depends: repboxDB, repboxUtils, repboxDRF, repboxStataReg, regtranslate
 ```
-# END OF FILE: /home/rstudio/repbox/metaregBase/DESCRIPTION
+# END OF FILE: DESCRIPTION
 
 -----------------------------------------------------------
 
 
-# FILE: /home/rstudio/repbox/metaregBase/R/colstat.R
+# FILE: colstat.R
 ```
 make_cols_small_info = function(df, cols = colnames(df)) {
   restore.point("make_cols_small_info")
@@ -244,12 +244,12 @@ colstat_dummy = function(col,df, reg_df=df, val = as_integer(df[[col]]), reg_val
   )
 }
 ```
-# END OF FILE: /home/rstudio/repbox/metaregBase/R/colstat.R
+# END OF FILE: colstat.R
 
 -----------------------------------------------------------
 
 
-# FILE: /home/rstudio/repbox/metaregBase/R/debug_tools.R
+# FILE: debug_tools.R
 ```
 set_debug_mode = function(debug_mode=TRUE) {
   options(repbox.debug_mode = debug_mode)
@@ -362,12 +362,12 @@ mrb_test_traceback = function() {
   #print(str)
 }
 ```
-# END OF FILE: /home/rstudio/repbox/metaregBase/R/debug_tools.R
+# END OF FILE: debug_tools.R
 
 -----------------------------------------------------------
 
 
-# FILE: /home/rstudio/repbox/metaregBase/R/mrb_agg_stata.R
+# FILE: mrb_agg_stata.R
 ```
 # TO DO: Transform to parcels
 mrb_agg_stata = function(mrb, skip_if_has = TRUE) {
@@ -704,12 +704,12 @@ mrb_agg_stata_regcoef = function(mrb, file_prefix="reg_", dir = file.path(mrb$mr
 
 
 ```
-# END OF FILE: /home/rstudio/repbox/metaregBase/R/mrb_agg_stata.R
+# END OF FILE: mrb_agg_stata.R
 
 -----------------------------------------------------------
 
 
-# FILE: /home/rstudio/repbox/metaregBase/R/mrb_cmd_types.R
+# FILE: mrb_cmd_types.R
 ```
 stata_cmds_with_margin = function() {
   #cmds = readLines("~/repbox/repboxReg/inst/misc/reg_margin_cmds.txt")
@@ -729,12 +729,12 @@ mrb_cmds_ignore_intercept_in_r = function() {
   c("areg", "xtreg", "reghdfe", "ivreghdfe", "xtlogit", "xtprobit", "xtpoisson", "clogit")
 }
 ```
-# END OF FILE: /home/rstudio/repbox/metaregBase/R/mrb_cmd_types.R
+# END OF FILE: mrb_cmd_types.R
 
 -----------------------------------------------------------
 
 
-# FILE: /home/rstudio/repbox/metaregBase/R/mrb_col_info.R
+# FILE: mrb_col_info.R
 ```
 # Store information about all columns in data set
 # (not only those used in the regression)
@@ -876,12 +876,12 @@ recompute_colinfo_groups = function(colinfo) {
   df
 }
 ```
-# END OF FILE: /home/rstudio/repbox/metaregBase/R/mrb_col_info.R
+# END OF FILE: mrb_col_info.R
 
 -----------------------------------------------------------
 
 
-# FILE: /home/rstudio/repbox/metaregBase/R/mrb_cterms.R
+# FILE: mrb_cterms.R
 ```
 # Parse and map the shown coefficient names (terms) in regression
 # ouputs of different stata and r functions.
@@ -956,11 +956,10 @@ canonical.stata.output.terms = function(terms,labels, cmd=NULL) {
   return(terms)
 }
 
-
 adapt.stata.prefix.notation = function(cterm) {
-  cterm = gsub(".","@", cterm,fixed = TRUE)
-  cterm
+  regtranslate:::replace_cterms_dot(cterm)
 }
+
 
 canonical.output.terms.stata.default = function(terms, ...) {
   restore.point("canonical.output.stata.default")
@@ -1096,15 +1095,14 @@ canonical.output.terms.r.default = function(terms, from.stata=TRUE) {
 
   # factor in form
   # factor(i1)4:factor(d1)1
-  # to i4=4°°d1=1
+  # to i4=4 degree degree d1=1
   factor.rx = "factor\\(([a-zA-Z0-9_.]*)\\)"
   terms = gsub(factor.rx,"\\1=",terms,fixed=FALSE)
 
-  # Replace . by @ if . was a Stata prefix
+  # Replace . by @ only if . was a Stata prefix separator
   if (from.stata) {
-    terms = gsub(".","@", terms, fixed=TRUE)
+    terms = regtranslate:::replace_cterms_dot(terms)
   }
-
 
   terms
 }
@@ -1118,7 +1116,6 @@ canonical.output.terms.fixest = function(terms, vi, from.stata=TRUE) {
   # to farmass_q=2
   terms = gsub("`","", terms, fixed=TRUE)
   terms = gsub("::","=", terms, fixed=TRUE)
-  #terms = gsub(" ","", terms, fixed=TRUE)
 
   # factor in form
   # factor(i1)4:factor(d1)1
@@ -1126,12 +1123,10 @@ canonical.output.terms.fixest = function(terms, vi, from.stata=TRUE) {
   factor.rx = "factor\\(([a-zA-Z0-9_.]*)\\)"
   terms = gsub(factor.rx,"\\1=",terms,fixed=FALSE)
 
-  # Replace . by @ if . was a Stata prefix
+  # Replace . by @ only if . was a Stata prefix separator
   if (from.stata) {
-    terms = gsub(".","@", terms, fixed=TRUE)
+    terms = regtranslate:::replace_cterms_dot(terms)
   }
-
-
 
   # In an IV regression feols adds "fit_" to the result
   # variable. We want to remove that
@@ -1141,7 +1136,6 @@ canonical.output.terms.fixest = function(terms, vi, from.stata=TRUE) {
     change = (!terms[rows] %in% vi$ia_cterm) & (terms.no.fit %in% vi$ia_cterm)
     terms[rows[change]] = terms.no.fit[change]
   }
-
 
   # We currently specify the fixest representation
   # as the canonical representation. So we can directly
@@ -1162,6 +1156,185 @@ create_cterm_cols = function(dat, cterms, timevar=NA, panelvar=NA, tdelta=NA) {
 }
 
 create_cterm_col = function(dat, cterm, timevar=NA, panelvar=NA, tdelta=NA, check.abbreviation=TRUE) {
+  restore.point("create_cterm_col")
+  is_ia = cterm_is_ia(cterm)
+  has_level = cterm_has_level(cterm)
+  has_prefix = cterm_has_prefix(cterm)
+
+  if (cterm %in% colnames(dat)) return(dat)
+
+  if (!is_ia && !has_level && !has_prefix) {
+    # Unfortunately Stata also allows variable name abbreviations in formulas
+    # E.g. regress gdp_ger infl_germany
+    # would work if there is a column gdp_germany which will be used for gdp_ger
+    if (check.abbreviation) {
+      abbr.ind = which(startsWith(colnames(dat), cterm))
+      if (length(abbr.ind) > 0) {
+        col = colnames(dat)[abbr.ind[1]]
+        dat[[cterm]] = dat[[col]]
+        return(dat)
+      }
+    }
+
+    dat[[cterm]] = NA
+    # lnalpha is just shown in nbreg output but not a variable in the data set
+    if (!isTRUE(cterm == "lnalpha")) {
+      msg = paste0("Column ", cterm, " does not exist in data set and thus I cannot generate the cterm ", cterm)
+      repbox_problem(type = "regvar_no_match", msg = msg, fail_action = "error")
+    }
+    return(dat)
+
+  } else if (!is_ia && has_level && !has_prefix) {
+    # First preference: if the cached data still contains the original xi-generated
+    # column (e.g. _Ix1_2), use its Stata label to map it back to the canonical cterm
+    # and copy the exact values. This is more reliable than reconstructing from the
+    # base variable, and it still works if the base variable was dropped.
+    xi_cols = colnames(dat)[startsWith(colnames(dat), "_I")]
+
+    if (length(xi_cols) > 0) {
+      xi_labels = vapply(dat[xi_cols], function(v) {
+        lab = attr(v, "label")
+        if (is.null(lab) || length(lab) == 0 || is.na(lab[[1]])) {
+          return("")
+        }
+        as.character(lab[[1]])
+      }, character(1))
+
+      xi_use = xi_labels != "" & stringi::stri_detect_fixed(xi_labels, "==")
+
+      if (any(xi_use)) {
+        xi_cterms = canonical.output.terms.stata.xi(
+          terms = xi_cols[xi_use],
+          labels = xi_labels[xi_use]
+        )
+
+        xi_match = which(xi_cterms == cterm)
+
+        if (length(xi_match) == 1) {
+          dat[[cterm]] = dat[[xi_cols[xi_use][xi_match]]]
+          return(dat)
+        }
+      }
+    }
+
+    # Fallback: rebuild from the base variable
+    var = str.left.of(cterm, "=")
+    val = str.right.of(cterm, "=")
+
+    if (!var %in% colnames(dat)) {
+      msg = paste0(
+        "Base variable ", var,
+        " does not exist in data set and no xi-generated source column could be found for cterm ",
+        cterm
+      )
+      repbox_problem(type = "regvar_no_match", msg = msg, fail_action = "error")
+    }
+
+    base_val = dat[[var]]
+
+    if (is.numeric(base_val)) {
+      num_val = suppressWarnings(as.numeric(val))
+      if (is.na(num_val)) {
+        msg = paste0("Cannot parse numeric factor level ", val, " for cterm ", cterm)
+        repbox_problem(type = "parse_reg_formula", msg = msg)
+      }
+
+      matches = rep(NA, length(base_val))
+      nonmiss = !is.na(base_val)
+      matches[nonmiss] = base_val[nonmiss] == num_val
+
+      # If the level string was rounded in the label, try a rounded match.
+      # Only accept it if it identifies a unique underlying numeric value.
+      if (!any(matches, na.rm = TRUE)) {
+        dec_match = stringi::stri_match_first_regex(as.character(val), "\\.([0-9]+)")
+        ndec = ifelse(is.na(dec_match[1, 2]), 0L, nchar(dec_match[1, 2]))
+
+        if (ndec > 1) {
+          rounded_base = round(base_val[nonmiss], digits = ndec)
+          rounded_val = round(num_val, digits = ndec)
+          cand = rounded_base == rounded_val
+
+          if (any(cand)) {
+            uniq_cand = unique(base_val[nonmiss][cand])
+
+            if (length(uniq_cand) == 1) {
+              matches[nonmiss] = base_val[nonmiss] == uniq_cand[[1]]
+            } else {
+              msg = paste0(
+                "Cannot uniquely reconstruct numeric factor level for cterm ", cterm,
+                " from base variable ", var,
+                ". The printed level ", val,
+                " matches multiple values after rounding. Use the xi-generated source column."
+              )
+              repbox_problem(type = "parse_reg_formula", msg = msg)
+            }
+          }
+        }
+      }
+
+      dat[[cterm]] = 1L * matches
+      return(dat)
+    }
+
+    if (inherits(base_val, "Date")) {
+      cval = as.Date(val)
+      dat[[cterm]] = 1L * (base_val == cval)
+      return(dat)
+    }
+
+    if (inherits(base_val, "POSIXct")) {
+      tz = attr(base_val, "tzone")
+      tz = if (is.null(tz) || length(tz) == 0 || is.na(tz[[1]])) "" else tz[[1]]
+      cval = as.POSIXct(val, tz = tz)
+      dat[[cterm]] = 1L * (base_val == cval)
+      return(dat)
+    }
+
+    if (is.factor(base_val)) {
+      dat[[cterm]] = 1L * (as.character(base_val) == val)
+      return(dat)
+    }
+
+    dat[[cterm]] = 1L * (as.character(base_val) == as.character(val))
+    return(dat)
+
+  } else if (!is_ia && !has_level && has_prefix) {
+    dat = create_prefix_nolevel_cterm_col(dat, cterm, panelvar = panelvar, timevar = timevar, tdelta = tdelta)
+    return(dat)
+  } else if (!is_ia && has_level && has_prefix) {
+    repbox_problem(type = "parse_reg_formula", msg = paste0("Cannot yet generate columns for cterm ", cterm, " that contains a prefix and a factor level."), fail_action = "error")
+    dat[[cterm]] = NA
+    return(dat)
+  }
+
+  # Interaction effects
+  cterms = cterm_split_ia(cterm)[[1]]
+
+  # Create all main effects
+  for (cte in cterms) {
+    dat = create_cterm_col(dat, cte, timevar = timevar, panelvar = panelvar, tdelta = tdelta)
+  }
+
+  # If any of the cterms is a factor just paste them
+  if (any(sapply(dat[cterms], is.character))) {
+    dat[[cterm]] = as.character(dat[[cterms[[1]]]])
+    for (i in 2:length(cterms)) {
+      dat[[cterm]] = paste0(dat[[cterm]], "#", dat[[cterms[i]]])
+    }
+    return(dat)
+  }
+
+  # Multiply the main effects
+  dat[[cterm]] = dat[[cterms[1]]]
+  for (i in 2:length(cterms)) {
+    dat[[cterm]] = dat[[cterm]] * dat[[cterms[i]]]
+  }
+  dat
+}
+
+
+
+create_cterm_col_old = function(dat, cterm, timevar=NA, panelvar=NA, tdelta=NA, check.abbreviation=TRUE) {
   restore.point("create_cterm_col")
   is_ia = cterm_is_ia(cterm)
   has_level = cterm_has_level(cterm)
@@ -1388,12 +1561,12 @@ sort_interaction_terms = function(terms) {
 }
 
 ```
-# END OF FILE: /home/rstudio/repbox/metaregBase/R/mrb_cterms.R
+# END OF FILE: mrb_cterms.R
 
 -----------------------------------------------------------
 
 
-# FILE: /home/rstudio/repbox/metaregBase/R/mrb.R
+# FILE: mrb.R
 ```
 # runs a complete metaregBase analysis
 
@@ -1408,7 +1581,7 @@ example = function() {
   drf = drf_load(project_dir)
 }
 
-mrb_run_all = function(project_dir, drf=repboxDRF::drf_load(project_dir)) {
+mrb_run_all = function(project_dir, drf=repboxDRF::drf_load(project_dir), repair_failed=TRUE) {
   restore.point("mrb_run_all")
   mrb = mrb_init(project_dir, drf=drf)
   mrb = mrb_full_stata_script(mrb)
@@ -1419,6 +1592,8 @@ mrb_run_all = function(project_dir, drf=repboxDRF::drf_load(project_dir)) {
   mrb = mrb_run_r_base(mrb)
   mrb = mrb_run_r_reg(mrb)
   mrb = mrb_make_regcheck_parcel(mrb)
+  if (repair_failed)
+    mrb = mrb_repair_failed_runs(mrb)
   mrb
 }
 
@@ -1443,12 +1618,12 @@ mrb_init = function(project_dir=drf$project_dir, drf=NULL,use_mcache=TRUE, mcach
   mrb
 }
 ```
-# END OF FILE: /home/rstudio/repbox/metaregBase/R/mrb.R
+# END OF FILE: mrb.R
 
 -----------------------------------------------------------
 
 
-# FILE: /home/rstudio/repbox/metaregBase/R/mrb_r_base.R
+# FILE: mrb_r_base.R
 ```
 # metaregBase R run that
 # aggregates all information from Stata base run
@@ -1780,12 +1955,12 @@ mrb_run_r_base_step = function(mrb, pid) {
 
 
 ```
-# END OF FILE: /home/rstudio/repbox/metaregBase/R/mrb_r_base.R
+# END OF FILE: mrb_r_base.R
 
 -----------------------------------------------------------
 
 
-# FILE: /home/rstudio/repbox/metaregBase/R/mrb_regcheck.R
+# FILE: mrb_regcheck.R
 ```
 # FILE: /home/rstudio/repbox/metaregBase/R/mrb_regcheck.R
 
@@ -1910,12 +2085,12 @@ mrb_make_regcheck_parcel = function(mrb, save = TRUE, just_pids=NULL, repair_cod
   return(mrb)
 }
 ```
-# END OF FILE: /home/rstudio/repbox/metaregBase/R/mrb_regcheck.R
+# END OF FILE: mrb_regcheck.R
 
 -----------------------------------------------------------
 
 
-# FILE: /home/rstudio/repbox/metaregBase/R/mrb_regcoef.R
+# FILE: mrb_regcoef.R
 ```
 # Helper function for regcoef (repdb table)
 
@@ -2276,12 +2451,12 @@ max_empty_na = function(x, na.rm=TRUE) {
   max(x)
 }
 ```
-# END OF FILE: /home/rstudio/repbox/metaregBase/R/mrb_regcoef.R
+# END OF FILE: mrb_regcoef.R
 
 -----------------------------------------------------------
 
 
-# FILE: /home/rstudio/repbox/metaregBase/R/mrb_reg_tools.R
+# FILE: mrb_reg_tools.R
 ```
 # ==============================================================================
 # PART 1: Rescued & Adapted Variable Expansion (Globbing, Ranges, Abbreviations)
@@ -2575,7 +2750,7 @@ cmdpart_to_regvar = function(cmdpart, dat, opts_df, se_info) {
 
   # Cluster / SE
   if (!is.null(se_info$se_args) && se_info$se_args != "") {
-    se_args_parsed = repdb_parse_se_args(se_info$se_args, as_df=TRUE)
+    se_args_parsed = repdb_parse_se_args(se_info$se_args, as_df = TRUE)
     cluster_vars = se_args_parsed$arg_val[startsWith(se_args_parsed$arg_name, "cluster")]
     if (length(cluster_vars) > 0) {
       term_list[[4]] = tibble(ia_expr = cluster_vars, role = "cluster", option = "se")
@@ -2600,7 +2775,11 @@ cmdpart_to_regvar = function(cmdpart, dat, opts_df, se_info) {
 
   # Extract Prefix (L1., F., i., c., etc.) - split at LAST dot
   prefix_start = stringi::stri_locate_last_fixed(vi$var_expr, ".")[, 1]
-  vi$prefix = ifelse(is.na(prefix_start), "", stringi::stri_sub(vi$var_expr, 1, prefix_start - 1) %>% stringi::stri_replace_all_fixed(".", ""))
+  vi$prefix = ifelse(
+    is.na(prefix_start),
+    "",
+    stringi::stri_sub(vi$var_expr, 1, prefix_start - 1) %>% stringi::stri_replace_all_fixed(".", "")
+  )
   vi$var = ifelse(is.na(prefix_start), vi$var_expr, stringi::stri_sub(vi$var_expr, prefix_start + 1))
 
   # Normalize specific prefixes
@@ -2639,6 +2818,56 @@ cmdpart_to_regvar = function(cmdpart, dat, opts_df, se_info) {
   vi$cterm = stata_expr_to_cterm(vi$var_expr)
   vi$basevar = stata_expr_to_cterm(vi$var)
 
+  # If a variable is xi-generated (_I...) and the cached data still carries the
+  # original Stata variable label, use that label to canonicalize the term.
+  # This keeps regvar/regxvar/R output aligned with Stata regcoef parcels.
+  var_labels = vapply(dat, function(v) {
+    lab = attr(v, "label")
+    if (is.null(lab) || length(lab) == 0 || is.na(lab[[1]])) {
+      return("")
+    }
+    as.character(lab[[1]])
+  }, character(1))
+
+  xi_rows = startsWith(vi$var, "_I")
+  if (any(xi_rows)) {
+    xi_labels = unname(var_labels[vi$var])
+    xi_has_label = xi_rows & !is.na(xi_labels) & stringi::stri_detect_fixed(xi_labels, "==")
+
+    if (any(xi_has_label)) {
+      vi$cterm[xi_has_label] = canonical.output.terms.stata.xi(
+        terms = vi$var[xi_has_label],
+        labels = xi_labels[xi_has_label]
+      )
+    }
+  }
+
+  # Rebuild ia_cterm from the updated component cterms so interactions with xi
+  # variables also become canonical.
+  vi = vi %>%
+    group_by(main_pos) %>%
+    mutate(
+      ia_cterm = {
+        if (dplyr::n() == 1) {
+          cterm
+        } else {
+          rep(
+            split_and_sort(
+              paste0(cterm, collapse = "#"),
+              split = "#",
+              k = dplyr::n()
+            )[[1]],
+            dplyr::n()
+          )
+        }
+      }
+    ) %>%
+    ungroup()
+
+  # basevar should refer to the underlying source variable, not the raw _I name
+  vi$basevar = stringi::stri_replace_first_regex(vi$cterm, "^.*@", "")
+  vi$basevar = stringi::stri_replace_first_regex(vi$basevar, "=.*$", "")
+
   vi$class = ifelse(has.substr(vi$cterm, "="), "dummy", vi$class)
 
   # 6. Apply interaction types & Reg Types
@@ -2657,10 +2886,14 @@ cmdpart_to_regvar = function(cmdpart, dat, opts_df, se_info) {
   )
 
   # Ensure column order is clean
-  vi = vi %>% select(ia_expr, var_expr, var, role, prefix, option, class, fe_type, is_fe, distinct_num, ia_num, ia_pos, main_pos, ia_cterm, cterm, basevar, everything())
+  vi = vi %>% select(
+    ia_expr, var_expr, var, role, prefix, option, class, fe_type, is_fe,
+    distinct_num, ia_num, ia_pos, main_pos, ia_cterm, cterm, basevar, everything()
+  )
 
   return(vi)
 }
+
 
 
 vi_add_ia_type = function(vi) {
@@ -2682,12 +2915,12 @@ vi_add_ia_type = function(vi) {
 }
 
 ```
-# END OF FILE: /home/rstudio/repbox/metaregBase/R/mrb_reg_tools.R
+# END OF FILE: mrb_reg_tools.R
 
 -----------------------------------------------------------
 
 
-# FILE: /home/rstudio/repbox/metaregBase/R/mrb_regxvar.R
+# FILE: mrb_regxvar.R
 ```
 # Store information about expanded interaction terms and factors
 # This will allow to rebuild regressions in a way that drops exactly
@@ -2859,12 +3092,12 @@ make_regxvar_cols = function(dat, regxvar) {
 }
 
 ```
-# END OF FILE: /home/rstudio/repbox/metaregBase/R/mrb_regxvar.R
+# END OF FILE: mrb_regxvar.R
 
 -----------------------------------------------------------
 
 
-# FILE: /home/rstudio/repbox/metaregBase/R/mrb_repair.R
+# FILE: mrb_repair.R
 ```
 # FILE: /home/rstudio/repbox/metaregBase/R/mrb_repair.R
 
@@ -2973,12 +3206,12 @@ mrb_cache_reg_data = function(mrb, pids, overwrite=FALSE) {
 
 }
 ```
-# END OF FILE: /home/rstudio/repbox/metaregBase/R/mrb_repair.R
+# END OF FILE: mrb_repair.R
 
 -----------------------------------------------------------
 
 
-# FILE: /home/rstudio/repbox/metaregBase/R/mrb_r_reg.R
+# FILE: mrb_r_reg.R
 ```
 # metaregBase R run that
 # runs regressions in R
@@ -3342,12 +3575,12 @@ extract_reg_stats_from_regscalar = function(regscalar) {
 
 
 ```
-# END OF FILE: /home/rstudio/repbox/metaregBase/R/mrb_r_reg.R
+# END OF FILE: mrb_r_reg.R
 
 -----------------------------------------------------------
 
 
-# FILE: /home/rstudio/repbox/metaregBase/R/mrb_se.R
+# FILE: mrb_se.R
 ```
 # Parses SE information from a Stata regression and
 # returns the relevant SE info stored in the repdb reg table
@@ -3500,12 +3733,12 @@ repdb_parse_se_args = function(se_args, as_df=FALSE) {
   tibble(arg_name=var, arg_val=val)
 }
 ```
-# END OF FILE: /home/rstudio/repbox/metaregBase/R/mrb_se.R
+# END OF FILE: mrb_se.R
 
 -----------------------------------------------------------
 
 
-# FILE: /home/rstudio/repbox/metaregBase/R/mrb_stata.R
+# FILE: mrb_stata.R
 ```
 # New attempt metareg base: compute Stata code
 # for repboxDRF generated Stata file
@@ -3661,12 +3894,12 @@ mrb_clear_stata_reg_out = function(project_dir, runids=NULL) {
 }
 
 ```
-# END OF FILE: /home/rstudio/repbox/metaregBase/R/mrb_stata.R
+# END OF FILE: mrb_stata.R
 
 -----------------------------------------------------------
 
 
-# FILE: /home/rstudio/repbox/metaregBase/R/mrb_test_code_path.R
+# FILE: mrb_test_code_path.R
 ```
 # For a given runid=pid
 # create a text that shows the complete path including Stata data modification steps,
@@ -3795,12 +4028,12 @@ mrb_test_code_path = function(project_dir, runid, parcels, drf, opts = mrb_test_
 
 
 ```
-# END OF FILE: /home/rstudio/repbox/metaregBase/R/mrb_test_code_path.R
+# END OF FILE: mrb_test_code_path.R
 
 -----------------------------------------------------------
 
 
-# FILE: /home/rstudio/repbox/metaregBase/R/mrb_test_coef.R
+# FILE: mrb_test_coef.R
 ```
 mrb_test_filter_ignored_intercept_diff = function(diff_tab, cmd = NA_character_, variant2 = "rb", ignore_intercept_cmds = mrb_cmds_ignore_intercept_in_r()) {
   restore.point("mrb_test_filter_ignored_intercept_diff")
@@ -4144,13 +4377,37 @@ mrb_test_fmt_num = function(x, digits = 4) {
 }
 
 ```
-# END OF FILE: /home/rstudio/repbox/metaregBase/R/mrb_test_coef.R
+# END OF FILE: mrb_test_coef.R
 
 -----------------------------------------------------------
 
 
-# FILE: /home/rstudio/repbox/metaregBase/R/mrb_test_data.R
+# FILE: mrb_test_data.R
 ```
+example = function() {
+  mrb_print_parcels(project_dir, runid=7)
+}
+
+mrb_print_parcels = function(project_dir=mrb$project_dir,parcel_names = c("regcoef","regcoef_so","regcoef_rb","regvar","regxvar"),  runid=NULL, mrb=NULL, parcels=mrb$parcels, outfile = file.path(project_dir, "run/parcel_out.txt")) {
+  restore.point("mrb_print_parcels")
+  parcels = repdb_load_parcels(project_dir, parcel_names, parcels)
+
+  str = ""
+  if (!is.null(runid)) {
+    str = paste0(str,"All parcel contents for runid=",paste0(runid, collapse=", "))
+  }
+  for (p in parcel_names) {
+    str = paste0(str,"\n\nParcel ", p,":\n\n")
+    parcel = parcels[[p]]
+    if (!is.null(runid)) parcel = parcel[parcel$runid==runid,]
+    str = paste0(str, paste0(capture.output(print(parcel, width=1000)), collapse="\n"))
+
+  }
+  writeLines(str, outfile)
+  cat(str)
+  invisible()
+}
+
 
 mrb_test_data_preview_text = function(runid, drf, parcels, n = 5, opts=mrb_test_opts()) {
   restore.point("mrb_test_data_preview_text")
@@ -4251,12 +4508,12 @@ mrb_test_data_preview_text = function(runid, drf, parcels, n = 5, opts=mrb_test_
 
 
 ```
-# END OF FILE: /home/rstudio/repbox/metaregBase/R/mrb_test_data.R
+# END OF FILE: mrb_test_data.R
 
 -----------------------------------------------------------
 
 
-# FILE: /home/rstudio/repbox/metaregBase/R/mrb_test.R
+# FILE: mrb_test.R
 ```
 # Tools for systematic testing the metaregBase pipeline
 # Will be used for specific test projects
@@ -4736,12 +4993,12 @@ mrb_test_generate_flags = function(project_dir, parcels, drf = NULL, opts = mrb_
 
 
 ```
-# END OF FILE: /home/rstudio/repbox/metaregBase/R/mrb_test.R
+# END OF FILE: mrb_test.R
 
 -----------------------------------------------------------
 
 
-# FILE: /home/rstudio/repbox/metaregBase/R/mrb_test_source.R
+# FILE: mrb_test_source.R
 ```
 mrb_test_first_non_missing_value = function(df, cols, default = NA) {
   restore.point("mrb_test_first_non_missing_value")
@@ -4948,12 +5205,12 @@ mrb_test_source_text = function(runid, parcels = list(), drf = NULL) {
   paste0(out, collapse = "\n")
 }
 ```
-# END OF FILE: /home/rstudio/repbox/metaregBase/R/mrb_test_source.R
+# END OF FILE: mrb_test_source.R
 
 -----------------------------------------------------------
 
 
-# FILE: /home/rstudio/repbox/metaregBase/R/stata_util.R
+# FILE: stata_util.R
 ```
 expand_stata_abbr_one_val = function(val, abbr.li) {
   for (i in seq_along(abbr.li)) {
@@ -4967,12 +5224,12 @@ in_stata_abbr = function(val, abbr.li) {
   val %in% all.abbr
 }
 ```
-# END OF FILE: /home/rstudio/repbox/metaregBase/R/stata_util.R
+# END OF FILE: stata_util.R
 
 -----------------------------------------------------------
 
 
-# FILE: /home/rstudio/repbox/metaregBase/R/static_reg.R
+# FILE: static_reg.R
 ```
 # Static code analysis of regression commands
 # Note that the static code can still contain Stata macros
@@ -5039,12 +5296,12 @@ static_reg_cmd_to_reg_df = function(reg_cmd) {
 
 }
 ```
-# END OF FILE: /home/rstudio/repbox/metaregBase/R/static_reg.R
+# END OF FILE: static_reg.R
 
 -----------------------------------------------------------
 
 
-# FILE: /home/rstudio/repbox/metaregBase/R/utils.R
+# FILE: utils.R
 ```
 parcel_for_runid = function(parcel, runid) {
   parcel[parcel$runid==runid, ]
@@ -5140,16 +5397,15 @@ files_to_md_fences = function(files, path=NULL) {
 }
 
 ```
-# END OF FILE: /home/rstudio/repbox/metaregBase/R/utils.R
+# END OF FILE: utils.R
 
 -----------------------------------------------------------
 
 
+# package regtranslate
 
-# Package regtranslate
 
-
-# FILE: /home/rstudio/repbox/regtranslate/DESCRIPTION
+# FILE: DESCRIPTION
 ```
 Package: regtranslate
 Type: Package
@@ -5163,12 +5419,12 @@ Depends: dplyr, restorepoint, stringtools, fixest, broom, stringi
 Encoding: UTF-8
 LazyData: true
 ```
-# END OF FILE: /home/rstudio/repbox/regtranslate/DESCRIPTION
+# END OF FILE: DESCRIPTION
 
 -----------------------------------------------------------
 
 
-# FILE: /home/rstudio/repbox/regtranslate/R/cterms_r.R
+# FILE: cterms_r.R
 ```
 replace_cterm_special_symbols = function(cterms) {
   cterms = gsub("@",".__.", cterms, fixed=TRUE)
@@ -5183,6 +5439,27 @@ unreplace_cterm_special_symbols = function(cterms) {
   cterms = gsub(".._.","=", cterms, fixed=TRUE)
   cterms
 }
+replace_cterms_dot = function(cterms) {
+  cterms = as.character(cterms)
+
+  old_cterms = rep(NA_character_, length(cterms))
+  while (isTRUE(any(old_cterms != cterms, na.rm=TRUE))) {
+    old_cterms = cterms
+
+    # Only convert dots that separate actual Stata prefixes from the next token,
+    # e.g. L2.x -> L2@x, L.D.x -> L@D@x.
+    # Do not touch decimal points in factor levels such as x1=-1.874.
+    cterms = gsub(
+      "(^|#|@)([LlFfDdSsOo][0-9]*)\\.",
+      "\\1\\2@",
+      cterms,
+      perl=TRUE
+    )
+  }
+
+  cterms
+}
+
 
 
 # We might put these functions back to repboxReg
@@ -5210,7 +5487,7 @@ cterm_of_r_coefs_fixest = function(terms, regvar, dot_to_at=FALSE) {
   terms = gsub(factor.rx,"\\1=",terms,fixed=FALSE)
 
   if (dot_to_at) {
-    terms = gsub(".","@", terms, fixed=TRUE)
+    terms = replace_cterms_dot(terms)
   }
 
   rows = which(startsWith(terms,"fit_"))
@@ -5260,12 +5537,12 @@ cterm_of_r_coefs_fixest = function(terms, regvar, dot_to_at=FALSE) {
 #   terms
 # }
 ```
-# END OF FILE: /home/rstudio/repbox/regtranslate/R/cterms_r.R
+# END OF FILE: cterms_r.R
 
 -----------------------------------------------------------
 
 
-# FILE: /home/rstudio/repbox/regtranslate/R/investigate.R
+# FILE: investigate.R
 ```
 # Helper functions for investigation
 
@@ -5359,12 +5636,12 @@ load_parcel = function(project.dir, metaid, parcel) {
   readRDS(parcel.file)
 }
 ```
-# END OF FILE: /home/rstudio/repbox/regtranslate/R/investigate.R
+# END OF FILE: investigate.R
 
 -----------------------------------------------------------
 
 
-# FILE: /home/rstudio/repbox/regtranslate/R/mr_s2r.R
+# FILE: mr_s2r.R
 ```
 s2r_example = function() {
   library(regtranslate)
@@ -5540,12 +5817,12 @@ s2r_study_agg_fun = function(mr, ...) {
   mr
 }
 ```
-# END OF FILE: /home/rstudio/repbox/regtranslate/R/mr_s2r.R
+# END OF FILE: mr_s2r.R
 
 -----------------------------------------------------------
 
 
-# FILE: /home/rstudio/repbox/regtranslate/R/reg2r.R
+# FILE: reg2r.R
 ```
 # Convert to calls from lm and iv and general helper function
 # to create R regression commands and execute them
@@ -5790,12 +6067,12 @@ make_mfx_call = function(reg,...) {
 
 
 ```
-# END OF FILE: /home/rstudio/repbox/regtranslate/R/reg2r.R
+# END OF FILE: reg2r.R
 
 -----------------------------------------------------------
 
 
-# FILE: /home/rstudio/repbox/regtranslate/R/regvar_expand.R
+# FILE: regvar_expand.R
 ```
 example = function() {
   library(repboxReg)
@@ -5983,12 +6260,12 @@ make_factor_level_vars = function(var,dat, levels = level_li[[var]],level_li) {
   #list(info=tibble(cterm=cterm), dat=vals)
 }
 ```
-# END OF FILE: /home/rstudio/repbox/regtranslate/R/regvar_expand.R
+# END OF FILE: regvar_expand.R
 
 -----------------------------------------------------------
 
 
-# FILE: /home/rstudio/repbox/regtranslate/R/repbox.R
+# FILE: repbox.R
 ```
 # These functions provide more direct interfaces usable in connection with
 # repbox projects
@@ -6037,12 +6314,12 @@ repbox_reg_stata_to_r_code = function(project_dir, steps=NULL, parcels, prefer="
 
 
 ```
-# END OF FILE: /home/rstudio/repbox/regtranslate/R/repbox.R
+# END OF FILE: repbox.R
 
 -----------------------------------------------------------
 
 
-# FILE: /home/rstudio/repbox/regtranslate/R/s2r_repex.R
+# FILE: s2r_repex.R
 ```
 # Helper functions for investigation
 
@@ -6148,12 +6425,12 @@ navigate_to_repex("',project.dir,'")
 }
 
 ```
-# END OF FILE: /home/rstudio/repbox/regtranslate/R/s2r_repex.R
+# END OF FILE: s2r_repex.R
 
 -----------------------------------------------------------
 
 
-# FILE: /home/rstudio/repbox/regtranslate/R/se.R
+# FILE: se.R
 ```
 
 # Old code: possible can be replaced sometime using
@@ -6176,12 +6453,12 @@ regdb_parse_se_args = function(se_args, as_df=FALSE) {
   tibble(arg_name=var, arg_val=val)
 }
 ```
-# END OF FILE: /home/rstudio/repbox/regtranslate/R/se.R
+# END OF FILE: se.R
 
 -----------------------------------------------------------
 
 
-# FILE: /home/rstudio/repbox/regtranslate/R/split_n_sort.R
+# FILE: split_n_sort.R
 ```
 sort2_chr = function(a, b, ..., sep=NULL) {
   swap = stringi::stri_cmp_gt(a, b, ...)
@@ -6246,12 +6523,12 @@ split_and_sort = function(terms, split = "#", ..., k = NULL) {
   )
 }
 ```
-# END OF FILE: /home/rstudio/repbox/regtranslate/R/split_n_sort.R
+# END OF FILE: split_n_sort.R
 
 -----------------------------------------------------------
 
 
-# FILE: /home/rstudio/repbox/regtranslate/R/to_r_fixest.R
+# FILE: to_r_fixest.R
 ```
 
 # Replace stata_to_r_code_fixest and fixest_vcov_code_from_regdb
@@ -6610,12 +6887,12 @@ stata_to_r_code_fixest_fit.old = function(reg, regvar, regxvar, cmdpart, opts=co
 }
 
 ```
-# END OF FILE: /home/rstudio/repbox/regtranslate/R/to_r_fixest.R
+# END OF FILE: to_r_fixest.R
 
 -----------------------------------------------------------
 
 
-# FILE: /home/rstudio/repbox/regtranslate/R/to_r_lm.R
+# FILE: to_r_lm.R
 ```
 # TO DO: VCOV
 stata_to_r_code_lm = function(reg, regvar, regxvar, cmdpart, opts=code_options(), parts = list()) {
@@ -6685,12 +6962,12 @@ regvar_to_formula_lm = function(regvar, regxvar, cmdpart) {
   regvar_to_formula_fixest(regvar, regxvar, cmdpart)
 }
 ```
-# END OF FILE: /home/rstudio/repbox/regtranslate/R/to_r_lm.R
+# END OF FILE: to_r_lm.R
 
 -----------------------------------------------------------
 
 
-# FILE: /home/rstudio/repbox/regtranslate/R/to_r_mfx.R
+# FILE: to_r_mfx.R
 ```
 example = function() {
 
@@ -6761,12 +7038,12 @@ library(mfx)
   code_df
 }
 ```
-# END OF FILE: /home/rstudio/repbox/regtranslate/R/to_r_mfx.R
+# END OF FILE: to_r_mfx.R
 
 -----------------------------------------------------------
 
 
-# FILE: /home/rstudio/repbox/regtranslate/R/to_r_quantreg.R
+# FILE: to_r_quantreg.R
 ```
 
 stata_to_r_code_quantreg = function(reg, regvar,regxvar, cmdpart, opts=code_options(), parts = list()) {
@@ -6835,12 +7112,12 @@ tidy.tobit <- function(x, ...) {
   tidy(x, ...)
 }
 ```
-# END OF FILE: /home/rstudio/repbox/regtranslate/R/to_r_quantreg.R
+# END OF FILE: to_r_quantreg.R
 
 -----------------------------------------------------------
 
 
-# FILE: /home/rstudio/repbox/regtranslate/R/to_r.R
+# FILE: to_r.R
 ```
 # Translate to R code
 example = function() {
@@ -7004,12 +7281,12 @@ extract_clustervar_from_se_args = function(se_args) {
   clustervar
 }
 ```
-# END OF FILE: /home/rstudio/repbox/regtranslate/R/to_r.R
+# END OF FILE: to_r.R
 
 -----------------------------------------------------------
 
 
-# FILE: /home/rstudio/repbox/regtranslate/R/to_r_tobit.R
+# FILE: to_r_tobit.R
 ```
 
 stata_to_r_code_tobit = function(reg, regvar, regxvar, cmdpart, opts=code_options(), parts = list()) {
@@ -7072,14 +7349,814 @@ tidy.tobit <- function(x, ...) {
   tidy(x, ...)
 }
 ```
-# END OF FILE: /home/rstudio/repbox/regtranslate/R/to_r_tobit.R
+# END OF FILE: to_r_tobit.R
 
 -----------------------------------------------------------
 
 
 
+# here are my test scripts
 
-## Format of proposed changes to code or text files
+
+# FILE: reghdfe.do
+```
+use ../data/data.dta, clear
+tsset i year
+
+* 1. reghdfe with multi-way clustering
+reghdfe y x1 d1, absorb(i1 i2) vce(cluster i year)
+
+* 2. reghdfe with factor interactions inside the absorb() option
+* Tests if the formula generator can parse absorb(i1#year)
+reghdfe y x1, absorb(i1 i2#year) vce(robust)
+
+* 3. Extracting estimation results from reghdfe
+gen nobs_reg = e(N)
+gen r2_reg = e(r2)
+
+* 4. reghdfe with time-series operators
+* Tests whether d.y and L.d.x1 translate correctly into the fixest formula
+reghdfe d.y d.x1 L.d.x1 if nobs_reg > 2, absorb(i) vce(cluster i)
+```
+# END OF FILE: reghdfe.do
+
+-----------------------------------------------------------
+
+
+# here is the log file from the run repbox_ variation of the do file
+
+
+# FILE: repbox_reghdfe.log
+```
+
+  ___  ____  ____  ____  ____ ®
+ /__    /   ____/   /   ____/      17.0
+___/   /   /___/   /   /___/       SE—Standard Edition
+
+ Statistics and Data Science       Copyright 1985-2021 StataCorp LLC
+                                   StataCorp
+                                   4905 Lakeway Drive
+                                   College Station, Texas 77845 USA
+                                   800-STATA-PC        https://www.stata.com
+                                   979-696-4600        stata@stata.com
+
+Stata license: Single-user  perpetual
+Serial number: 401706320773
+  Licensed to: Sebastian Kranz
+               Ulm University
+
+Notes:
+      1. Stata is running in batch mode.
+      2. Unicode is supported; see help unicode_advice.
+      3. Maximum number of variables is set to 5,000; see help set_maxvar.
+
+. do "repbox_reghdfe.do", nostop 
+
+. 
+. file open repbox_timer_file using "~/repbox/projects_test/test/repbox/stata/t
+> imer/start.txt", write append
+(file ~/repbox/projects_test/test/repbox/stata/timer/start.txt not found)
+
+. file write repbox_timer_file "1;`c(current_time)';`c(current_date)'"
+
+. file write repbox_timer_file _n
+
+. file close repbox_timer_file
+
+. 
+. if "$repbox_cmd_count" == "" {
+.   set_defaults _all
+-> set maxvar 5000
+-> set matsize 400
+-> set niceness 5
+-> set min_memory 0
+-> set max_memory .
+-> set segmentsize 32m
+-> set adosize 1000
+-> set more on
+-> set rmsg off
+-> set dp period
+-> (linesize left at current value)
+-> (pagesize left at current value)
+-> set level 95
+-> set clevel 95
+-> set showbaselevels
+-> set showemptycells
+-> set showomitted
+-> set fvlabel on
+-> set fvwrap 1
+-> set fvwrapon word
+-> set lstretch
+-> set cformat
+-> set pformat
+-> set sformat
+-> set coeftabresults on
+-> set logtype smcl
+-> set collect_style default
+-> set collect_label default
+-> set table_style table
+-> set etable_style etable
+-> set collect_warn on
+-> set linegap 1
+-> set scrollbufsize 200000
+-> set reventries 5000
+-> set maxdb 50
+-> set graphics off
+-> set scheme s2color
+-> set printcolor automatic
+-> set copycolor automatic
+-> set checksum off
+-> set timeout1 30
+-> set timeout2 180
+-> set netdebug off
+-> set httpproxy off
+-> set httpproxyhost ""
+-> set httpproxyport 8080
+-> set httpproxyauth off
+-> set httpproxyuser ""
+-> set httpproxypw ""
+-> set trace off
+-> set tracedepth 32000
+-> set traceexpand on
+-> set tracesep on
+-> set traceindent on
+-> set tracenumber off
+-> set tracehilite ""
+-> set matastrict off
+-> set matalnum off
+-> set mataoptimize on
+-> set matafavor space
+-> set matacache 2000
+-> set matalibs ""
+-> set matamofirst off
+-> set locale_ui default
+-> set locale_functions default
+-> set type float
+-> set maxiter default
+-> set searchdefault all
+-> (seed left at current value)
+-> set varabbrev on
+(preferences reset)
+.   set more off
+.   global repbox_cmd_count = 0
+.   global repbox_root_donum = 1
+.   log using "/home/rstudio/repbox/projects_test/test/repbox/stata/logs/log_1.
+> log", replace name(repbox_log_1)
+(file /home/rstudio/repbox/projects_test/test/repbox/stata/logs/log_1.log not
+    found)
+-------------------------------------------------------------------------------
+      name:  repbox_log_1
+       log:  /home/rstudio/repbox/projects_test/test/repbox/stata/logs/log_1.lo
+> g
+  log type:  text
+ opened on:  23 Apr 2026, 05:11:03
+.   adopath + "~/ado/plus"
+  [1]  (BASE)      "/usr/local/stata/ado/base/"
+  [2]  (SITE)      "/usr/local/ado/"
+  [3]              "."
+  [4]  (PERSONAL)  "~/ado/personal/"
+  [5]  (PLUS)      "~/ado/plus/"
+  [6]  (OLDPLACE)  "~/ado/"
+  [7]              "~/ado/plus"
+. }
+
+. else {
+.   log using "/home/rstudio/repbox/projects_test/test/repbox/stata/logs/includ
+> e_1.log", replace name(repbox_log_1)
+. }
+
+. 
+. 
+. * PRECOMAND INJECTION START LINE 1
+. 
+. global repbox_cmd_count = $repbox_cmd_count +1
+
+. local repbox_local_cmd_count = $repbox_cmd_count
+
+. local repbox_cmdline = `"use ../data/data.dta, clear"'
+
+. 
+. 
+. local repbox_source_path = subinstr("../data/data.dta","\","/",.)
+
+. 
+. repbox_correct_path "file_exists" "`repbox_source_path'" "dta" "/home/rstudio
+> /repbox/projects_test/test/mod" "/home/rstudio/repbox/projects_test/test/mod/
+> code"
+  /home/rstudio/repbox/projects_test/test/mod/data/data.dta
+
+. capture noisily local repbox_corrected_path = "`r(repbox_corrected_path)'"
+
+. file open repbox_cmdlines using "~/repbox/projects_test/test//repbox/stata/cm
+> d/precmd_1.csv", write append
+(file ~/repbox/projects_test/test//repbox/stata/cmd/precmd_1.csv not found)
+
+. file write repbox_cmdlines `"1;1;`repbox_local_cmd_count';$repbox_root_donum;
+> $S_TIME;`c(pwd)';`r(repbox_corrected_path)';`repbox_cmdline'"'
+
+. file write repbox_cmdlines _n
+
+. file close repbox_cmdlines
+
+. 
+. * PRECOMMAND INJECTION END
+. display "#~# INJECT RUNCMD 1 1 `repbox_local_cmd_count'
+#~# INJECT RUNCMD 1 1 1
+
+. capture:  noisily: use "`r(repbox_corrected_path)'", clear
+
+. 
+. display "#~# END INJECT RUNCMD 1 1 `repbox_local_cmd_count'
+#~# END INJECT RUNCMD 1 1 1
+
+. 
+. * USE INJECTION START
+. 
+. 
+. qui {
+
+. * INJECTION END
+. 
+. 
+. * PRECOMAND INJECTION START LINE 2
+. 
+. global repbox_cmd_count = $repbox_cmd_count +1
+
+. local repbox_local_cmd_count = $repbox_cmd_count
+
+. local repbox_cmdline = `"tsset i year"'
+
+. 
+. file open repbox_cmdlines using "~/repbox/projects_test/test//repbox/stata/cm
+> d/precmd_1.csv", write append
+
+. file write repbox_cmdlines `"1;2;`repbox_local_cmd_count';$repbox_root_donum;
+> $S_TIME;;;`repbox_cmdline'"'
+
+. file write repbox_cmdlines _n
+
+. file close repbox_cmdlines
+
+. 
+. * PRECOMMAND INJECTION END
+. display "#~# INJECT RUNCMD 1 2 `repbox_local_cmd_count'
+#~# INJECT RUNCMD 1 2 2
+
+. capture:  noisily: tsset i year
+
+Panel variable: i (strongly balanced)
+ Time variable: year, 2001 to 2020
+         Delta: 1 unit
+
+. 
+. display "#~# END INJECT RUNCMD 1 2 `repbox_local_cmd_count'
+#~# END INJECT RUNCMD 1 2 2
+
+. 
+. 
+. 
+. qui {
+
+. 
+. 
+. * PRECOMAND INJECTION START LINE 3
+. 
+. global repbox_cmd_count = $repbox_cmd_count +1
+
+. local repbox_local_cmd_count = $repbox_cmd_count
+
+. local repbox_cmdline = `"reghdfe y x1 d1, absorb(i1 i2) vce(cluster i year)"'
+
+. 
+. file open repbox_cmdlines using "~/repbox/projects_test/test//repbox/stata/cm
+> d/precmd_1.csv", write append
+
+. file write repbox_cmdlines `"1;3;`repbox_local_cmd_count';$repbox_root_donum;
+> $S_TIME;;;`repbox_cmdline'"'
+
+. file write repbox_cmdlines _n
+
+. file close repbox_cmdlines
+
+. 
+. * PRECOMMAND INJECTION END
+. display "#~# INJECT RUNCMD 1 3 `repbox_local_cmd_count'
+#~# INJECT RUNCMD 1 3 3
+
+. capture:  noisily: reghdfe y x1 d1, absorb(i1 i2) vce(cluster i year)
+(MWFE estimator converged in 4 iterations)
+
+HDFE Linear regression                            Number of obs   =        100
+Absorbing 2 HDFE groups                           F(   2,      4) =       0.32
+Statistics robust to heteroskedasticity           Prob > F        =     0.7449
+                                                  R-squared       =     0.0495
+                                                  Adj R-squared   =    -0.0340
+Number of clusters (i)       =          5         Within R-sq.    =     0.0086
+Number of clusters (year)    =         20         Root MSE        =     1.0845
+
+                                 (Std. err. adjusted for 5 clusters in i year)
+------------------------------------------------------------------------------
+             |               Robust
+           y | Coefficient  std. err.      t    P>|t|     [95% conf. interval]
+-------------+----------------------------------------------------------------
+          x1 |  -.0773951   .0974749    -0.79   0.472    -.3480288    .1932385
+          d1 |  -.1154326   .2104512    -0.55   0.613    -.6997388    .4688735
+       _cons |  -.0545702   .1282972    -0.43   0.692    -.4107802    .3016398
+------------------------------------------------------------------------------
+
+Absorbed degrees of freedom:
+-----------------------------------------------------+
+ Absorbed FE | Categories  - Redundant  = Num. Coefs |
+-------------+---------------------------------------|
+          i1 |         4           0           4     |
+          i2 |         4           1           3     |
+-----------------------------------------------------+
+
+. 
+. display "#~# END INJECT RUNCMD 1 3 `repbox_local_cmd_count'
+#~# END INJECT RUNCMD 1 3 3
+
+. 
+. * REGRESSION INJECTION START
+. parmest, label saving("~/repbox/projects_test/test/repbox/stata/tsv/1_3_`repb
+> ox_local_cmd_count'.dta", replace)
+(file /home/rstudio/repbox/projects_test/test/repbox/stata/tsv/1_3_3.dta not
+    found)
+file ~/repbox/projects_test/test/repbox/stata/tsv/1_3_3.dta saved
+
+. 
+. 
+. 
+. qui {
+
+. display "#~# INJECT REG_ERETURN 1 3 `repbox_local_cmd_count'"
+#~# INJECT REG_ERETURN 1 3 3
+
+. ereturn list
+
+scalars:
+                  e(N) =  100
+               e(rank) =  2
+               e(df_r) =  4
+               e(df_m) =  2
+                e(tss) =  112.6143850698258
+         e(tss_within) =  107.9687312755401
+                e(rss) =  107.0380202037157
+                e(mss) =  5.576364866110083
+               e(rmse) =  1.084546900904065
+                  e(F) =  .3172708805378464
+                 e(ll) =  -145.2945490387724
+               e(ll_0) =  -145.7274270199237
+                 e(r2) =  .0495173406368333
+          e(r2_within) =  .0086201908721997
+               e(r2_a) =  -.0340415744720164
+        e(r2_a_within) =  -.0131683763613784
+         e(sumweights) =  100
+                 e(ic) =  4
+          e(converged) =  1
+    e(report_constant) =  1
+             e(N_full) =  100
+     e(num_singletons) =  0
+    e(drop_singletons) =  1
+        e(df_a_nested) =  0
+     e(df_a_redundant) =  1
+       e(df_a_initial) =  8
+               e(df_a) =  7
+    e(N_hdfe_extended) =  2
+             e(N_hdfe) =  2
+           e(N_clust2) =  20
+           e(N_clust1) =  5
+      e(N_clustervars) =  2
+            e(N_clust) =  5
+
+macros:
+   e(extended_absvars) : "i1 i2"
+            e(absvars) : "i1 i2"
+             e(title2) : "Absorbing 2 HDFE groups"
+          e(dofmethod) : "pairwise clusters continuous"
+                e(vce) : "cluster"
+            e(vcetype) : "Robust"
+              e(title) : "HDFE Linear regression"
+          e(indepvars) : "x1 d1 _cons"
+             e(depvar) : "y"
+       e(marginsnotok) : "Residuals SCore"
+           e(footnote) : "reghdfe_footnote"
+          e(estat_cmd) : "reghdfe_estat"
+            e(predict) : "reghdfe_p"
+              e(model) : "ols"
+            e(cmdline) : "reghdfe y x1 d1, absorb(i1 i2) vce(cluster i year)"
+                e(cmd) : "reghdfe"
+           e(clustvar) : "i year"
+             e(title3) : "Statistics robust to heteroskedasticity"
+          e(clustvar2) : "year"
+          e(clustvar1) : "i"
+         e(properties) : "b V"
+
+matrices:
+                  e(b) :  1 x 3
+                  e(V) :  3 x 3
+          e(dof_table) :  2 x 5
+
+functions:
+             e(sample)   
+
+. display "#~# END INJECT REG_ERETURN 1 3 `repbox_local_cmd_count'"
+#~# END INJECT REG_ERETURN 1 3 3
+
+. 
+. * REGRESSION INJECTION END
+. 
+. 
+. * PRECOMAND INJECTION START LINE 4
+. 
+. global repbox_cmd_count = $repbox_cmd_count +1
+
+. local repbox_local_cmd_count = $repbox_cmd_count
+
+. local repbox_cmdline = `"reghdfe y x1, absorb(i1 i2#year) vce(robust)"'
+
+. 
+. file open repbox_cmdlines using "~/repbox/projects_test/test//repbox/stata/cm
+> d/precmd_1.csv", write append
+
+. file write repbox_cmdlines `"1;4;`repbox_local_cmd_count';$repbox_root_donum;
+> $S_TIME;;;`repbox_cmdline'"'
+
+. file write repbox_cmdlines _n
+
+. file close repbox_cmdlines
+
+. 
+. * PRECOMMAND INJECTION END
+. display "#~# INJECT RUNCMD 1 4 `repbox_local_cmd_count'
+#~# INJECT RUNCMD 1 4 4
+
+. capture:  noisily: reghdfe y x1, absorb(i1 i2#year) vce(robust)
+(dropped 31 singleton observations)
+(MWFE estimator converged in 5 iterations)
+
+HDFE Linear regression                            Number of obs   =         69
+Absorbing 2 HDFE groups                           F(   1,     38) =       0.09
+                                                  Prob > F        =     0.7601
+                                                  R-squared       =     0.5192
+                                                  Adj R-squared   =     0.1396
+                                                  Within R-sq.    =     0.0023
+                                                  Root MSE        =     1.0447
+
+------------------------------------------------------------------------------
+             |               Robust
+           y | Coefficient  std. err.      t    P>|t|     [95% conf. interval]
+-------------+----------------------------------------------------------------
+          x1 |   .0527365   .1714377     0.31   0.760    -.2943209     .399794
+       _cons |  -.0469276   .1257741    -0.37   0.711    -.3015439    .2076887
+------------------------------------------------------------------------------
+
+Absorbed degrees of freedom:
+-----------------------------------------------------+
+ Absorbed FE | Categories  - Redundant  = Num. Coefs |
+-------------+---------------------------------------|
+          i1 |         4           0           4     |
+     i2#year |        27           1          26     |
+-----------------------------------------------------+
+
+. 
+. display "#~# END INJECT RUNCMD 1 4 `repbox_local_cmd_count'
+#~# END INJECT RUNCMD 1 4 4
+
+. 
+. * REGRESSION INJECTION START
+. parmest, label saving("~/repbox/projects_test/test/repbox/stata/tsv/1_4_`repb
+> ox_local_cmd_count'.dta", replace)
+(file /home/rstudio/repbox/projects_test/test/repbox/stata/tsv/1_4_4.dta not
+    found)
+file ~/repbox/projects_test/test/repbox/stata/tsv/1_4_4.dta saved
+
+. 
+. 
+. 
+. qui {
+
+. display "#~# INJECT REG_ERETURN 1 4 `repbox_local_cmd_count'"
+#~# INJECT REG_ERETURN 1 4 4
+
+. ereturn list
+
+scalars:
+                  e(N) =  69
+               e(rank) =  1
+               e(df_r) =  38
+               e(df_m) =  1
+                e(tss) =  86.25019892385492
+         e(tss_within) =  41.56644867815705
+                e(rss) =  41.47187916535923
+                e(mss) =  44.77831975849569
+               e(rmse) =  1.044684278236092
+                  e(F) =  .0946260768954675
+                 e(ll) =  -80.34312213683361
+               e(ll_0) =  -80.42170391194456
+                 e(r2) =  .5191677273466668
+          e(r2_within) =  .0022751405473692
+               e(r2_a) =  .1395633015677196
+        e(r2_a_within) =  -.0239807768066476
+         e(sumweights) =  69
+                 e(ic) =  5
+          e(converged) =  1
+    e(report_constant) =  1
+             e(N_full) =  100
+     e(num_singletons) =  31
+    e(drop_singletons) =  1
+        e(df_a_nested) =  0
+     e(df_a_redundant) =  1
+       e(df_a_initial) =  31
+               e(df_a) =  30
+    e(N_hdfe_extended) =  2
+             e(N_hdfe) =  2
+
+macros:
+   e(extended_absvars) : "i1 i2#year"
+            e(absvars) : "i1 i2#year"
+             e(title2) : "Absorbing 2 HDFE groups"
+          e(dofmethod) : "pairwise clusters continuous"
+                e(vce) : "robust"
+            e(vcetype) : "Robust"
+              e(title) : "HDFE Linear regression"
+          e(indepvars) : "x1 _cons"
+             e(depvar) : "y"
+       e(marginsnotok) : "Residuals SCore"
+           e(footnote) : "reghdfe_footnote"
+          e(estat_cmd) : "reghdfe_estat"
+            e(predict) : "reghdfe_p"
+              e(model) : "ols"
+            e(cmdline) : "reghdfe y x1, absorb(i1 i2#year) vce(robust)"
+                e(cmd) : "reghdfe"
+         e(properties) : "b V"
+
+matrices:
+                  e(b) :  1 x 2
+                  e(V) :  2 x 2
+          e(dof_table) :  2 x 5
+
+functions:
+             e(sample)   
+
+. display "#~# END INJECT REG_ERETURN 1 4 `repbox_local_cmd_count'"
+#~# END INJECT REG_ERETURN 1 4 4
+
+. 
+. * REGRESSION INJECTION END
+. 
+. 
+. * PRECOMAND INJECTION START LINE 5
+. 
+. global repbox_cmd_count = $repbox_cmd_count +1
+
+. local repbox_local_cmd_count = $repbox_cmd_count
+
+. local repbox_cmdline = `"gen nobs_reg = e(N)"'
+
+. 
+. file open repbox_cmdlines using "~/repbox/projects_test/test//repbox/stata/cm
+> d/precmd_1.csv", write append
+
+. file write repbox_cmdlines `"1;5;`repbox_local_cmd_count';$repbox_root_donum;
+> $S_TIME;;;`repbox_cmdline'"'
+
+. file write repbox_cmdlines _n
+
+. file close repbox_cmdlines
+
+. 
+. * PRECOMMAND INJECTION END
+. display "#~# INJECT RUNCMD 1 5 `repbox_local_cmd_count'
+#~# INJECT RUNCMD 1 5 5
+
+. capture:  noisily: gen nobs_reg = e(N)
+
+. 
+. display "#~# END INJECT RUNCMD 1 5 `repbox_local_cmd_count'
+#~# END INJECT RUNCMD 1 5 5
+
+. 
+. 
+. 
+. qui {
+
+. 
+. 
+. * PRECOMAND INJECTION START LINE 6
+. 
+. global repbox_cmd_count = $repbox_cmd_count +1
+
+. local repbox_local_cmd_count = $repbox_cmd_count
+
+. local repbox_cmdline = `"gen r2_reg = e(r2)"'
+
+. 
+. file open repbox_cmdlines using "~/repbox/projects_test/test//repbox/stata/cm
+> d/precmd_1.csv", write append
+
+. file write repbox_cmdlines `"1;6;`repbox_local_cmd_count';$repbox_root_donum;
+> $S_TIME;;;`repbox_cmdline'"'
+
+. file write repbox_cmdlines _n
+
+. file close repbox_cmdlines
+
+. 
+. * PRECOMMAND INJECTION END
+. display "#~# INJECT RUNCMD 1 6 `repbox_local_cmd_count'
+#~# INJECT RUNCMD 1 6 6
+
+. capture:  noisily: gen r2_reg = e(r2)
+
+. 
+. display "#~# END INJECT RUNCMD 1 6 `repbox_local_cmd_count'
+#~# END INJECT RUNCMD 1 6 6
+
+. 
+. 
+. 
+. qui {
+
+. 
+. 
+. * PRECOMAND INJECTION START LINE 7
+. 
+. global repbox_cmd_count = $repbox_cmd_count +1
+
+. local repbox_local_cmd_count = $repbox_cmd_count
+
+. local repbox_cmdline = `"reghdfe d.y d.x1 L.d.x1 if nobs_reg > 2, absorb(i) v
+> ce(cluster i)"'
+
+. 
+. file open repbox_cmdlines using "~/repbox/projects_test/test//repbox/stata/cm
+> d/precmd_1.csv", write append
+
+. file write repbox_cmdlines `"1;7;`repbox_local_cmd_count';$repbox_root_donum;
+> $S_TIME;;;`repbox_cmdline'"'
+
+. file write repbox_cmdlines _n
+
+. file close repbox_cmdlines
+
+. 
+. * PRECOMMAND INJECTION END
+. display "#~# INJECT RUNCMD 1 7 `repbox_local_cmd_count'
+#~# INJECT RUNCMD 1 7 7
+
+. capture:  noisily: reghdfe d.y d.x1 L.d.x1 if nobs_reg > 2, absorb(i) vce(clu
+> ster i)
+(MWFE estimator converged in 1 iterations)
+
+HDFE Linear regression                            Number of obs   =         90
+Absorbing 1 HDFE group                            F(   2,      4) =       8.99
+Statistics robust to heteroskedasticity           Prob > F        =     0.0331
+                                                  R-squared       =     0.0780
+                                                  Adj R-squared   =     0.0114
+                                                  Within R-sq.    =     0.0744
+Number of clusters (i)       =          5         Root MSE        =     1.5711
+
+                                      (Std. err. adjusted for 5 clusters in i)
+------------------------------------------------------------------------------
+             |               Robust
+         D.y | Coefficient  std. err.      t    P>|t|     [95% conf. interval]
+-------------+----------------------------------------------------------------
+          x1 |
+         D1. |   -.225644   .1576537    -1.43   0.226    -.6633607    .2120728
+         LD. |   .1647252   .1265319     1.30   0.263    -.1865837    .5160341
+             |
+       _cons |   .0074209   .0040175     1.85   0.138    -.0037334    .0185752
+------------------------------------------------------------------------------
+
+Absorbed degrees of freedom:
+-----------------------------------------------------+
+ Absorbed FE | Categories  - Redundant  = Num. Coefs |
+-------------+---------------------------------------|
+           i |         5           5           0    *|
+-----------------------------------------------------+
+* = FE nested within cluster; treated as redundant for DoF computation
+
+. 
+. display "#~# END INJECT RUNCMD 1 7 `repbox_local_cmd_count'
+#~# END INJECT RUNCMD 1 7 7
+
+. 
+. * REGRESSION INJECTION START
+. parmest, label saving("~/repbox/projects_test/test/repbox/stata/tsv/1_7_`repb
+> ox_local_cmd_count'.dta", replace)
+(file /home/rstudio/repbox/projects_test/test/repbox/stata/tsv/1_7_7.dta not
+    found)
+file ~/repbox/projects_test/test/repbox/stata/tsv/1_7_7.dta saved
+
+. 
+. 
+. 
+. qui {
+
+. display "#~# INJECT REG_ERETURN 1 7 `repbox_local_cmd_count'"
+#~# INJECT REG_ERETURN 1 7 7
+
+. ereturn list
+
+scalars:
+                  e(N) =  90
+               e(rank) =  2
+               e(df_r) =  4
+               e(df_m) =  2
+                e(tss) =  222.2195058833578
+         e(tss_within) =  221.3593353324652
+                e(rss) =  204.8837381092947
+                e(mss) =  17.3357677740631
+               e(rmse) =  1.571139323039539
+                  e(F) =  8.987483067697204
+                 e(ll) =  -164.7229537423621
+               e(ll_0) =  -168.2034628004567
+                 e(r2) =  .0780119085637899
+          e(r2_within) =  .074429195400435
+               e(r2_a) =  .0113621670141845
+        e(r2_a_within) =  .0521262844462286
+         e(sumweights) =  90
+                 e(ic) =  1
+          e(converged) =  1
+    e(report_constant) =  1
+             e(N_full) =  90
+     e(num_singletons) =  0
+    e(drop_singletons) =  1
+        e(df_a_nested) =  5
+     e(df_a_redundant) =  5
+       e(df_a_initial) =  5
+               e(df_a) =  0
+    e(N_hdfe_extended) =  1
+             e(N_hdfe) =  1
+           e(N_clust1) =  5
+      e(N_clustervars) =  1
+            e(N_clust) =  5
+
+macros:
+   e(extended_absvars) : "i"
+            e(absvars) : "i"
+             e(title2) : "Absorbing 1 HDFE group"
+          e(dofmethod) : "pairwise clusters continuous"
+                e(vce) : "cluster"
+            e(vcetype) : "Robust"
+              e(title) : "HDFE Linear regression"
+          e(indepvars) : "D.x1 LD.x1 _cons"
+             e(depvar) : "D.y"
+       e(marginsnotok) : "Residuals SCore"
+           e(footnote) : "reghdfe_footnote"
+          e(estat_cmd) : "reghdfe_estat"
+            e(predict) : "reghdfe_p"
+              e(model) : "ols"
+            e(cmdline) : "reghdfe d.y d.x1 L.d.x1 if nobs_reg > 2, absorb(i.."
+                e(cmd) : "reghdfe"
+           e(clustvar) : "i"
+             e(title3) : "Statistics robust to heteroskedasticity"
+          e(clustvar1) : "i"
+         e(properties) : "b V"
+
+matrices:
+                  e(b) :  1 x 3
+                  e(V) :  3 x 3
+          e(dof_table) :  1 x 5
+
+functions:
+             e(sample)   
+
+. display "#~# END INJECT REG_ERETURN 1 7 `repbox_local_cmd_count'"
+#~# END INJECT REG_ERETURN 1 7 7
+
+. 
+. * REGRESSION INJECTION END
+. 
+. 
+. display "#~# FINISHED DO",
+#~# FINISHED DO 
+
+. capture log close repbox_log_1
+
+. 
+. file open repbox_timer_file using "~/repbox/projects_test/test/repbox/stata/t
+> imer/end.txt", write append
+(file ~/repbox/projects_test/test/repbox/stata/timer/end.txt not found)
+
+. file write repbox_timer_file "1;`c(current_time)';`c(current_date)'"
+
+. file write repbox_timer_file _n
+
+. file close repbox_timer_file
+
+. 
+. 
+end of do-file
+```
+# END OF FILE: repbox_reghdfe.log
+
+-----------------------------------------------------------
+
+
+
+## Format of proposed changes to code  files
 
 When you suggest changes to code or text files or completely new files, you MUST use the following format for each modification. Each change must be enclosed in a `!MODIFICATION` block.
 
@@ -7101,27 +8178,13 @@ Each modification block has three parts:
 !END_MODIFICATION {{what}}
 ```
 
-### Modification Scope
-
-Each modification is of one of the following two scopes:
-
-* `file` (re-)writes a complete file
-
-* `function` (re-)writes a complete function (including comments above).
-
-
-
-If more than two functions or more than two line edits will be performed in the same file, better rewrite the whole file using a `file` scope. For extremely long files also more smaller edits are ok.
-
-Function scope only works for R code files, but in R files it is preferred if one or two functions in a larger file are changed.
-
-The metadata block **MUST** contain a `scope` field, which can be `"file"`, `"function"`, or `"lines"`.
-
----
+We have two possible scopes for modification:
+  - file (replaces complete file) or
+  - function (replaces an R function).
 
 ### **Scope 1: `file`**
 
-Use this to create a new file or to completely rewrite an existing one.
+Use this format to create a new file or to completely rewrite an existing one.
 
 **Required Fields:**
 *   `scope = "file"`
@@ -7145,7 +8208,7 @@ say_hello = function(name) {
 
 ### **Scope 2: `function`**
 
-Use this to replace an existing function or to insert a new function. The new code payload should contain the complete function, including any preceding comments.
+Use this fomrat to replace an existing function or to insert a new function. The new code payload should contain the complete function, including any preceding comments.
 
 #### **Fields for replacing an existing function:**
 *   `scope = "function"`
@@ -7209,91 +8272,71 @@ is_negative = function(n) {
   n < 0
 }
 ```
-!END_MODIFICATION is_negative in R/utils.R
-
-
-# General coding instructions
-
-- For string operations try to use `stringi` functions.
-
-- Try to avoid loops, vectorize if possible.
-
-- Use `=` instead of `<-` as assignment operator.
-
-- Very Important: Do not warp code into `try` statements to generally catch errors.
-  I want that the code fails if there are errors we have not yet understood dealt with.
-  General try catch wrappers will dillude this goal. Existing wrappers are probably
-  ok, but don't add new ones, unless there is really a strong reason to believe that
-  this cleanly solves the underlying problem and does not hide other possible problems.f
-
-
 
 
 ##################################
 # Your Task
 ##################################
+The test fails for runid==7
+
+reghdfe d.y d.x1 L.d.x1 if nobs_reg > 2, absorb(i) vce(cluster i)
+
+R translation of formula is just
+
+formula = `D.__.y` ~ 1 | `i`
+
+We see inconsistent cterm translation across parcels (. vs @):
+
+All parcel contents for runid=7
+
+Parcel regcoef:
+
+# A tibble: 3 × 12
+  runid variant cterm       shown_term label      eq        coef      se     t     p   ci_low  ci_up
+  <int> <chr>   <chr>       <chr>      <chr>      <chr>    <dbl>   <dbl> <dbl> <dbl>    <dbl>  <dbl>
+1     7 sb      D.x1        D.x1       ""         ""    -0.226   0.158   -1.43 0.226 -0.663   0.212 
+2     7 sb      L.D.x1      LD.x1      ""         ""     0.165   0.127    1.30 0.263 -0.187   0.516 
+3     7 sb      (Intercept) _cons      "Constant" ""     0.00742 0.00402  1.85 0.138 -0.00373 0.0186
+
+Parcel regcoef_so:
+
+# A tibble: 3 × 12
+  runid variant cterm       shown_term label      eq        coef      se     t     p   ci_low  ci_up
+  <int> <chr>   <chr>       <chr>      <chr>      <chr>    <dbl>   <dbl> <dbl> <dbl>    <dbl>  <dbl>
+1     7 so      D.x1        D.x1       ""         ""    -0.226   0.158   -1.43 0.226 -0.663   0.212 
+2     7 so      L.D.x1      LD.x1      ""         ""     0.165   0.127    1.30 0.263 -0.187   0.516 
+3     7 so      (Intercept) _cons      "Constant" ""     0.00742 0.00402  1.85 0.138 -0.00373 0.0186
+
+Parcel regcoef_rb:
+
+# A tibble: 0 × 12
+# ℹ 12 variables: runid <int>, variant <chr>, cterm <chr>, shown_term <chr>, label <chr>, eq <chr>, coef <dbl>, se <dbl>, t <dbl>, p <dbl>, ci_low <dbl>, ci_up <dbl>
+
+Parcel regvar:
+
+# A tibble: 5 × 17
+  runid variant cterm  ia_cterm basevar role    var_org_type var_reg_type ia_reg_type absorbed_fe main_pos ia_pos ia_num ia_source_expr
+  <int> <chr>   <chr>  <chr>    <chr>   <chr>   <chr>        <chr>        <chr>       <lgl>          <int>  <int>  <int> <chr>         
+1     7 sb      i      i        i       exo     integer      factor       factor      TRUE               4      1      2 i             
+2     7 sb      D@y    D@y      y       dep     numeric      numeric      numeric     FALSE              1      1      1 d.y           
+3     7 sb      D@x1   D@x1     x1      exo     numeric      numeric      numeric     FALSE              2      1      1 d.x1          
+4     7 sb      L@D@x1 L@D@x1   x1      exo     numeric      numeric      numeric     FALSE              3      1      1 L.d.x1        
+5     7 sb      i      i        i       cluster integer      factor       factor      FALSE              5      2      2 i             
+  var_source_expr transform transform_par
+  <chr>           <chr>     <chr>        
+1 i               ""        ""           
+2 d.y             "d"       "1"          
+3 d.x1            "d"       "1"          
+4 L.d.x1          "l"       <NA>         
+5 i               ""        ""           
+
+Parcel regxvar:
+
+# A tibble: 2 × 6
+  runid ia_cterm cterm  role  in_regcoef org_coef
+  <int> <chr>    <chr>  <chr> <lgl>         <dbl>
+1     7 D@x1     D@x1   exo   FALSE            NA
+2     7 L@D@x1   L@D@x1 exo   FALSE            NA
 
 
-Somehow the the cterm generation for xi generated variables starting with _I is mixed up. I have a test example do file below:
-
-scalar cutoff = 10.5
-
-use ../data/data.dta, clear
-
-xi i.x1
-scalar sc1=100
-
-* 1. Test summarize and extraction of r() macros
-sum x1, detail
-gen byte is_above_median = (x1 > r(p50))
-gen mean_x1 = r(mean)
-
-* 2. Test defining scalars and using them in data modifications
-
-scalar sc1 = 1.1
-gen x1_capped = cond(x1 > cutoff, cutoff, x1)*sc1
-
-reg y x1 _Ix1_2 if year > cutoff+1995
-
-[...later code omitted...]
-
-
-The regcoef_so and regcoef_sb parcel has:
-
-> regcoef_so
-# A tibble: 10 × 12
-   runid variant cterm      shown_term label eq        coef    se       t     p ci_low ci_up
-   <int> <chr>   <chr>      <chr>      <chr> <chr>    <dbl> <dbl>   <dbl> <dbl>  <dbl> <dbl>
- 5    10 so      x1         x1         ""    ""    -0.00338 0.148 -0.0228 0.982 -0.299 0.293
- 6    10 so      x1=-1@874… _Ix1_2     "x1=… ""     1.70    1.16   1.46   0.148 -0.616 4.01 
- 7    10 so      (Intercep… _cons      "Con… ""    -0.126   0.130 -0.965  0.338 -0.385 0.134
-
-
-i.e. we have _Ix1_2 renamed as x1=-1@874…   This corresponds to the label variable that was set in the dta data set once we cached the data file
-
-Yet the regcoef_rb parcel (metaregBase reproduction run) has:
-
-> regcoef_rb
-# A tibble: 9 × 12
-  runid variant cterm       shown_term  label eq        coef    se       t     p ci_low ci_up
-  <int> <chr>   <chr>       <chr>       <chr> <chr>    <dbl> <dbl>   <dbl> <dbl>  <dbl> <dbl>
-4    10 rb      (Intercept) (Intercept) ""    ""    -0.126   0.130 -0.965  0.338 -0.385 0.134
-5    10 rb      _Ix1_2      `_Ix1_2`    ""    ""     1.70    1.16   1.46   0.148 -0.616 4.01 
-6    10 rb      x1          x1          ""    ""    -0.00338 0.148 -0.0228 0.982 -0.299 0.293
-
-So here the cterm for _Ix1_2 is not renamed and the label is "". We use a cache for runid==1 that is loaded in the R reproduction. But the cached dta still has the label for _Ix1_2 (see screenshot).
-
-Finally, after the repair run regvar parcel for runid=10 is:
-
-> regvar
-# A tibble: 12 × 17
-   runid variant cterm  ia_cterm basevar role  var_org_type var_reg_type ia_reg_type absorbed_fe main_pos
-   <int> <chr>   <chr>  <chr>    <chr>   <chr> <chr>        <chr>        <chr>       <lgl>       7    10 sb      _Ix1_2 _Ix1_2   _Ix1_2  exo   dummy        dummy        dummies     FALSE              3
- 8    10 sb      y      y        y       dep   numeric      numeric      numeric     FALSE              1
- 9    10 sb      x1     x1       x1      exo   numeric      numeric      numeric     FALSE              2
-         2
-# ℹ 6 more variables: ia_pos <int>, ia_num <int>, ia_source_expr <chr>, var_source_expr <chr>,
-
-So here also the cterm is just _Ix1_2.
-
-We need consistent naming to later match the coefficients from the different regression modes. Can you detect where, how and why the label got lost in the R reproduction and regvar after repair. How could we fix it?
+Can you find the problem, explain and propose a bugfix?

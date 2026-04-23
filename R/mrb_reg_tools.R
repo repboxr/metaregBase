@@ -290,7 +290,7 @@ cmdpart_to_regvar = function(cmdpart, dat, opts_df, se_info) {
 
   # Cluster / SE
   if (!is.null(se_info$se_args) && se_info$se_args != "") {
-    se_args_parsed = repdb_parse_se_args(se_info$se_args, as_df=TRUE)
+    se_args_parsed = repdb_parse_se_args(se_info$se_args, as_df = TRUE)
     cluster_vars = se_args_parsed$arg_val[startsWith(se_args_parsed$arg_name, "cluster")]
     if (length(cluster_vars) > 0) {
       term_list[[4]] = tibble(ia_expr = cluster_vars, role = "cluster", option = "se")
@@ -315,7 +315,11 @@ cmdpart_to_regvar = function(cmdpart, dat, opts_df, se_info) {
 
   # Extract Prefix (L1., F., i., c., etc.) - split at LAST dot
   prefix_start = stringi::stri_locate_last_fixed(vi$var_expr, ".")[, 1]
-  vi$prefix = ifelse(is.na(prefix_start), "", stringi::stri_sub(vi$var_expr, 1, prefix_start - 1) %>% stringi::stri_replace_all_fixed(".", ""))
+  vi$prefix = ifelse(
+    is.na(prefix_start),
+    "",
+    stringi::stri_sub(vi$var_expr, 1, prefix_start - 1) %>% stringi::stri_replace_all_fixed(".", "")
+  )
   vi$var = ifelse(is.na(prefix_start), vi$var_expr, stringi::stri_sub(vi$var_expr, prefix_start + 1))
 
   # Normalize specific prefixes
@@ -354,6 +358,56 @@ cmdpart_to_regvar = function(cmdpart, dat, opts_df, se_info) {
   vi$cterm = stata_expr_to_cterm(vi$var_expr)
   vi$basevar = stata_expr_to_cterm(vi$var)
 
+  # If a variable is xi-generated (_I...) and the cached data still carries the
+  # original Stata variable label, use that label to canonicalize the term.
+  # This keeps regvar/regxvar/R output aligned with Stata regcoef parcels.
+  var_labels = vapply(dat, function(v) {
+    lab = attr(v, "label")
+    if (is.null(lab) || length(lab) == 0 || is.na(lab[[1]])) {
+      return("")
+    }
+    as.character(lab[[1]])
+  }, character(1))
+
+  xi_rows = startsWith(vi$var, "_I")
+  if (any(xi_rows)) {
+    xi_labels = unname(var_labels[vi$var])
+    xi_has_label = xi_rows & !is.na(xi_labels) & stringi::stri_detect_fixed(xi_labels, "==")
+
+    if (any(xi_has_label)) {
+      vi$cterm[xi_has_label] = canonical.output.terms.stata.xi(
+        terms = vi$var[xi_has_label],
+        labels = xi_labels[xi_has_label]
+      )
+    }
+  }
+
+  # Rebuild ia_cterm from the updated component cterms so interactions with xi
+  # variables also become canonical.
+  vi = vi %>%
+    group_by(main_pos) %>%
+    mutate(
+      ia_cterm = {
+        if (dplyr::n() == 1) {
+          cterm
+        } else {
+          rep(
+            split_and_sort(
+              paste0(cterm, collapse = "#"),
+              split = "#",
+              k = dplyr::n()
+            )[[1]],
+            dplyr::n()
+          )
+        }
+      }
+    ) %>%
+    ungroup()
+
+  # basevar should refer to the underlying source variable, not the raw _I name
+  vi$basevar = stringi::stri_replace_first_regex(vi$cterm, "^.*@", "")
+  vi$basevar = stringi::stri_replace_first_regex(vi$basevar, "=.*$", "")
+
   vi$class = ifelse(has.substr(vi$cterm, "="), "dummy", vi$class)
 
   # 6. Apply interaction types & Reg Types
@@ -372,10 +426,14 @@ cmdpart_to_regvar = function(cmdpart, dat, opts_df, se_info) {
   )
 
   # Ensure column order is clean
-  vi = vi %>% select(ia_expr, var_expr, var, role, prefix, option, class, fe_type, is_fe, distinct_num, ia_num, ia_pos, main_pos, ia_cterm, cterm, basevar, everything())
+  vi = vi %>% select(
+    ia_expr, var_expr, var, role, prefix, option, class, fe_type, is_fe,
+    distinct_num, ia_num, ia_pos, main_pos, ia_cterm, cterm, basevar, everything()
+  )
 
   return(vi)
 }
+
 
 
 vi_add_ia_type = function(vi) {

@@ -45,10 +45,13 @@ make_regxvar = function(regvar, dat,  regcoef=NULL) {
     regcoef = regcoef[!duplicated(regcoef[,c("runid","cterm")]), ]
   }
 
+
   regxvar = tibble(runid=first(regvar$runid), ia_cterm=ia_cterms, cterm = res_li) %>%
     unnest(cterm) %>%
     left_join(regvar %>% select(ia_cterm, role), by="ia_cterm") %>%
     unique()
+
+  names(regxvar)
 
   if (!is.null(regcoef) && nrow(regcoef) > 0) {
     regxvar = regxvar %>%
