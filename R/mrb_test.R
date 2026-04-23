@@ -126,6 +126,7 @@ mrb_test_report = function(project_dir, parcels, drf, opts = mrb_test_opts()) {
 
   num_all_reg = n_distinct(flags$runid)
   num_all_prob = sum(flags$is_problem, na.rm = TRUE)
+  num_all_prob_reg = n_distinct(flags$runid[is.true(flags$is_problem)])
   num_all_note = sum(flags$is_note & !flags$is_problem, na.rm = TRUE)
 
   if (num_all_prob == 0 && num_all_note == 0) {
@@ -139,7 +140,7 @@ mrb_test_report = function(project_dir, parcels, drf, opts = mrb_test_opts()) {
     mutate(problem_combo = ifelse(problem_combo == "", "Unclassified", problem_combo)) %>%
     group_by(problem_combo) %>%
     summarize(
-      runids = paste(sort(runid), collapse = ", "),
+      runids = paste(sort(unique(runid)), collapse = ", "),
       severity = max(severity, na.rm = TRUE),
       .groups = "drop"
     ) %>%
@@ -147,7 +148,7 @@ mrb_test_report = function(project_dir, parcels, drf, opts = mrb_test_opts()) {
 
   overview_text = paste0(
     "Problem types and runids:\n\n",
-    paste0("  - ", overview_df$problem_combo, ": ", overview_df$runids, collapse = "\n")
+    paste0("  - ", overview_df$problem_combo, ": ", unique(overview_df$runids), collapse = "\n")
   )
 
   if (is.finite(max_cases) && NROW(probs) > max_cases) {
@@ -268,7 +269,7 @@ mrb_test_report = function(project_dir, parcels, drf, opts = mrb_test_opts()) {
     paste0(block, collapse = "\n")
   })
 
-  head = paste0("In ", num_all_prob, " of ", num_all_reg, " regressions, problems were detected. ")
+  head = paste0("In ", num_all_prob_reg, " of ", num_all_reg, " regressions, problems were detected. ")
   if (num_all_note > 0) {
     head = paste0(head, "Also ", num_all_note, " notes were generated. ")
   }

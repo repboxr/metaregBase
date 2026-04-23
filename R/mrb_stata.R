@@ -90,7 +90,6 @@ mrb_code_reg_stata = function(code_df, run_df=NULL, outdir=NULL,runid = code_df$
   if (!dir.exists(outdir))
     dir.create(outdir, recursive = TRUE)
 
-  extra_code = ""
   outfile = paste0(outdir, "/reg_", runid, "__sb.dta")
   scalar_outfile = paste0(outdir, "/regscalar_", runid, "__sb.txt")
   macro_outfile = paste0(outdir, "/regmacro_", runid, "__sb.txt")
@@ -101,42 +100,60 @@ mrb_code_reg_stata = function(code_df, run_df=NULL, outdir=NULL,runid = code_df$
     cap_str = ""
   }
 
-
   cmd = code_df$cmd
-  # Command for which marginal effects are stored
-  if (cmd %in% stata_cmds_with_margin()) {
-    extra_code = paste0('
-', cap_str, 'margins, atmeans dydx(*) post
-', cap_str, 'parmest, saving("',outdir, "/reg_", runid, "__sb_mem.dta",'")
-', cap_str, 'repbox_write_reg_scalars "',outdir, "/regscalar_", runid, "__sb_mem.txt",'"
-', cap_str, 'repbox_write_reg_macros "',outdir, "/regmacro_", runid, "__sb_mem.txt",'"
-')
-  } else if (cmd == "dprobit") {
-    extra_code = paste0(cap_str, '
-repbox_write_dprobit_coef_se "',outdir, "/dprobit_", runid, ".csv\n")
+
+  # Canonicalize legacy dprobit to probit for the main coefficient capture.
+  # This keeps sb on the same scale as the R-side probit translation and
+  # avoids the legacy dprobit parser limitation with factor variables.
+  main_stata_code = stata_code
+  if (identical(cmd, "dprobit")) {
+    main_stata_code = sub(
+      "^([[:space:]]*)dprobit\\b",
+      "\\1probit",
+      stata_code,
+      ignore.case = TRUE,
+      perl = TRUE
+    )
+  }
+
+  extra_code = ""
+
+  # Store marginal effects in a separate variant, never in the main sb parcel.
+  if (cmd %in% c(stata_cmds_with_margin(), "dprobit")) {
+    extra_code = paste0(
+'
+  ', cap_str, 'margins, atmeans dydx(*) post
+  ', cap_str, 'parmest, saving("', outdir, '/reg_', runid, '__sb_mfx.dta", replace)
+'
+    )
   } else if (cmd %in% stata_cmds_with_exp_coef()) {
-    extra_code = paste0(cap_str, ' estout . using "', outdir,'/reg_', runid, '__sb_exp.tsv", cells("b se t p ci_l ci_u") replace eform\n')
+    extra_code = paste0(
+'
+  ', cap_str, 'estout . using "', outdir,'/reg_', runid, '__sb_exp.tsv", cells("b se t p ci_l ci_u") replace eform
+'
+    )
   }
 
   code = paste0(
-    # 'capture erase "', outfile, '"\n',
-    # 'capture erase "', scalar_outfile, '"\n',
-    # 'capture erase "', macro_outfile, '"\n',
-    # 'capture erase "', paste0(outdir, "/reg_", runid, "__sb_mem.dta"), '"\n',
-    # 'capture erase "', paste0(outdir, "/regscalar_", runid, "__sb_mem.txt"), '"\n',
-    # 'capture erase "', paste0(outdir, "/regmacro_", runid, "__sb_mem.txt"), '"\n',
-    # 'capture erase "', paste0(outdir, "/dprobit_", runid, ".csv"), '"\n',
-    # 'capture erase "', paste0(outdir, "/reg_", runid, "__sb_exp.tsv"), '"\n',
-    #cap_str, 'ereturn clear\n',
-    cap_str, stata_code,
-    '\n
-', cap_str, 'parmest, label saving("',outfile,'", replace)
-', cap_str, 'repbox_write_reg_scalars "', scalar_outfile,'"
-', cap_str, 'repbox_write_reg_macros "', macro_outfile,'"
-', extra_code
+    'capture ereturn clear
+',
+    cap_str, main_stata_code, '
+local repbox_reg_rc = _rc
+
+if (`repbox_reg_rc\' == 0) {
+  ', cap_str, 'parmest, label saving("',outfile,'", replace)
+  ', cap_str, 'repbox_write_reg_scalars "', scalar_outfile,'"
+  ', cap_str, 'repbox_write_reg_macros "', macro_outfile,'"
+', extra_code, '
+}
+else {
+  display as error "metaregBase: skipping postestimation capture for runid ', runid, ' because rc=`repbox_reg_rc\'"
+}
+'
   )
   code
 }
+
 
 
 mrb_clear_stata_reg_out = function(project_dir, runids=NULL) {
