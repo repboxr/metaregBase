@@ -6023,6 +6023,6 @@ is_negative = function(n) {
 # Your Task
 ##################################
 
-
+I think it is better to store in the regcoef parcel only the coefficients of the state base variant (sb). Currently for probit / logit also sometimes a variant sb_mfx is stored. Can we basically make a separate parcel for each variant, i.e. if there is a variant `sb_mfx` I want to store the coefs in a parcel regcoef_sb_mfx. If there should be a variant `rb_mfx` (I don't it exists) in a parcel `regcoef_rb_mfx`. The only outlier of naming convention is that `sb` variant is stored in `regcoef` instead of `regcoef_sb`. Try to adapt the code that it works even if at some place we generate a new variant. regscalars or regstrings / regmacros do not need to be saved for such additional variants. What is the most elegant (ideally small) code change?
 
 
