@@ -1,10 +1,10 @@
 
-Below is code from selected R projects from my repbox / metareg toolbox.
+I am currently debugging my repbox framework
 
-# Package metaregBase
+# package metaregBase
 
 
-# FILE: /home/rstudio/repbox/metaregBase/DESCRIPTION
+# FILE: DESCRIPTION
 ```
 Package: metaregBase
 Type: Package
@@ -24,12 +24,12 @@ Encoding: UTF-8
 LazyData: true
 Depends: repboxDB, repboxUtils, repboxDRF, repboxStataReg, regtranslate
 ```
-# END OF FILE: /home/rstudio/repbox/metaregBase/DESCRIPTION
+# END OF FILE: DESCRIPTION
 
 -----------------------------------------------------------
 
 
-# FILE: /home/rstudio/repbox/metaregBase/R/colstat.R
+# FILE: colstat.R
 ```
 make_cols_small_info = function(df, cols = colnames(df)) {
   restore.point("make_cols_small_info")
@@ -244,12 +244,12 @@ colstat_dummy = function(col,df, reg_df=df, val = as_integer(df[[col]]), reg_val
   )
 }
 ```
-# END OF FILE: /home/rstudio/repbox/metaregBase/R/colstat.R
+# END OF FILE: colstat.R
 
 -----------------------------------------------------------
 
 
-# FILE: /home/rstudio/repbox/metaregBase/R/debug_tools.R
+# FILE: debug_tools.R
 ```
 set_debug_mode = function(debug_mode=TRUE) {
   options(repbox.debug_mode = debug_mode)
@@ -362,12 +362,12 @@ mrb_test_traceback = function() {
   #print(str)
 }
 ```
-# END OF FILE: /home/rstudio/repbox/metaregBase/R/debug_tools.R
+# END OF FILE: debug_tools.R
 
 -----------------------------------------------------------
 
 
-# FILE: /home/rstudio/repbox/metaregBase/R/mrb_agg_stata.R
+# FILE: mrb_agg_stata.R
 ```
 # TO DO: Transform to parcels
 mrb_agg_stata = function(mrb, skip_if_has = TRUE) {
@@ -532,12 +532,12 @@ mrb_agg_stata_regcoef = function(mrb, file_prefix="reg_", dir = file.path(mrb$mr
 
 
 ```
-# END OF FILE: /home/rstudio/repbox/metaregBase/R/mrb_agg_stata.R
+# END OF FILE: mrb_agg_stata.R
 
 -----------------------------------------------------------
 
 
-# FILE: /home/rstudio/repbox/metaregBase/R/mrb_cmd_types.R
+# FILE: mrb_cmd_types.R
 ```
 stata_cmds_with_margin = function() {
   #cmds = readLines("~/repbox/repboxReg/inst/misc/reg_margin_cmds.txt")
@@ -557,12 +557,12 @@ mrb_cmds_ignore_intercept_in_r = function() {
   c("areg", "xtreg", "reghdfe", "ivreghdfe", "xtlogit", "xtprobit", "xtpoisson", "clogit")
 }
 ```
-# END OF FILE: /home/rstudio/repbox/metaregBase/R/mrb_cmd_types.R
+# END OF FILE: mrb_cmd_types.R
 
 -----------------------------------------------------------
 
 
-# FILE: /home/rstudio/repbox/metaregBase/R/mrb_col_info.R
+# FILE: mrb_col_info.R
 ```
 # Store information about all columns in data set
 # (not only those used in the regression)
@@ -704,12 +704,12 @@ recompute_colinfo_groups = function(colinfo) {
   df
 }
 ```
-# END OF FILE: /home/rstudio/repbox/metaregBase/R/mrb_col_info.R
+# END OF FILE: mrb_col_info.R
 
 -----------------------------------------------------------
 
 
-# FILE: /home/rstudio/repbox/metaregBase/R/mrb_cterms.R
+# FILE: mrb_cterms.R
 ```
 # Parse and map the shown coefficient names (terms) in regression
 # ouputs of different stata and r functions.
@@ -1386,12 +1386,12 @@ sort_interaction_terms = function(terms) {
 }
 
 ```
-# END OF FILE: /home/rstudio/repbox/metaregBase/R/mrb_cterms.R
+# END OF FILE: mrb_cterms.R
 
 -----------------------------------------------------------
 
 
-# FILE: /home/rstudio/repbox/metaregBase/R/mrb.R
+# FILE: mrb.R
 ```
 # runs a complete metaregBase analysis
 
@@ -1444,12 +1444,12 @@ mrb_init = function(project_dir=drf$project_dir, drf=NULL,use_mcache=TRUE, mcach
   mrb
 }
 ```
-# END OF FILE: /home/rstudio/repbox/metaregBase/R/mrb.R
+# END OF FILE: mrb.R
 
 -----------------------------------------------------------
 
 
-# FILE: /home/rstudio/repbox/metaregBase/R/mrb_r_base.R
+# FILE: mrb_r_base.R
 ```
 # metaregBase R run that
 # aggregates all information from Stata base run
@@ -1540,16 +1540,28 @@ mrb_run_r_base_step = function(mrb, pid, with_try = isTRUE(mrb$with_try)) {
 
   step_parcels = list()
 
-  # A. REGCOEF (Parsed Stata Coefficients from metaregBase 'sb' run)
+  # A. REGCOEF (Parsed Stata Coefficients from metaregBase runs)
   if (!is.null(stata_ct) && nrow(stata_ct) > 0) {
-    # Create regcoef containing all variants, but force main to be 'sb'
-    step_parcels$regcoef = ct_to_regcoef(stata_ct, artid = mrb$artid)
-    regcoef_main = step_parcels$regcoef %>% filter(variant == "sb")
-    regcoef_main = regcoef_keep_default_eq(regcoef_main)
+    # Split all coefficient variants into separate parcels.
+    # The only naming outlier is sb, which remains stored in regcoef.
+    co_all = ct_to_regcoef(stata_ct, artid = mrb$artid)
+    co_parcels = regcoef_split_variant_parcels(
+      co_all,
+      base_variant = "sb",
+      base_parcel = "regcoef"
+    )
+    step_parcels[names(co_parcels)] = co_parcels
+
+    regcoef_main = if (!is.null(step_parcels$regcoef)) {
+      regcoef_keep_default_eq(step_parcels$regcoef)
+    } else {
+      tibble()
+    }
   } else {
     step_parcels$regcoef = tibble()
     regcoef_main = tibble()
   }
+
 
   # A2. REGCOEF_SO (Parsed Stata Coefficients from Original DRF run 'so')
   step_parcels$regcoef_so = tibble()
@@ -1706,21 +1718,39 @@ mrb_run_r_base = function(mrb, just_pids=NULL, make_parcels=TRUE) {
 mrb_make_r_base_parcels = function(mrb, save=TRUE, is_partial_run = isTRUE(mrb$is_partial_run)) {
   restore.point("mrb_make_r_base_parcels")
 
-  if (is_partial_run) {
-    mrb$parcels = repdb_load_parcels(mrb$project_dir, c("reg","regcoef","regcoef_so","regvar","regxvar","colstat_numeric","colstat_dummy","colstat_factor", "colinfo","regscalar","regstring"))
-  }
-
-
-  parcels = list()
   all_step_parcels = mrb$all_step_parcels
   if (is.null(all_step_parcels)) {
     cat("\nmrb_save_step_parcels: mrb$all_step_parcels were not yet generated. Make sure mrb_run_r_base is called beforehand.\n")
     return(mrb)
   }
 
+  step_fields = unique(unlist(lapply(all_step_parcels, names), use.names = FALSE))
+  extra_regcoef_fields = grep("^regcoef_", step_fields, value = TRUE)
+  extra_regcoef_fields = setdiff(
+    extra_regcoef_fields,
+    c("regcoef_so", "regcoef_rb", "regcoef_diff")
+  )
+  extra_regcoef_fields = sort(extra_regcoef_fields)
+
+  if (is_partial_run) {
+    mrb$parcels = repdb_load_parcels(
+      mrb$project_dir,
+      c(
+        "reg", "regcoef", "regcoef_so", "regvar", "regxvar",
+        "colstat_numeric", "colstat_dummy", "colstat_factor",
+        "colinfo", "regscalar", "regstring",
+        extra_regcoef_fields
+      ),
+      mrb$parcels
+    )
+  }
+
+  parcels = list()
+
   combine_steps = function(field) {
     res_list = lapply(all_step_parcels, function(x) x[[field]])
     res_list = res_list[!sapply(res_list, is.null)]
+
     if (length(res_list) == 0) {
       new_data = tibble()
     } else {
@@ -1736,6 +1766,7 @@ mrb_make_r_base_parcels = function(mrb, save=TRUE, is_partial_run = isTRUE(mrb$i
         new_data = old_data
       }
     }
+
     new_data
   }
 
@@ -1745,6 +1776,11 @@ mrb_make_r_base_parcels = function(mrb, save=TRUE, is_partial_run = isTRUE(mrb$i
   # Coefs & Variables
   parcels$regcoef = combine_steps("regcoef")
   parcels$regcoef_so = combine_steps("regcoef_so")
+
+  for (field in extra_regcoef_fields) {
+    parcels[[field]] = combine_steps(field)
+  }
+
   parcels$regvar = combine_steps("regvar")
   parcels$regxvar = combine_steps("regxvar")
 
@@ -1760,7 +1796,7 @@ mrb_make_r_base_parcels = function(mrb, save=TRUE, is_partial_run = isTRUE(mrb$i
   parcels$regstring = combine_steps("regstring")
 
   # regsource parcel is just a combination of existing parcels
-  mrb$parcels = repdb_load_parcels(mrb$project_dir, c("stata_file", "stata_cmd"),parcels = mrb$parcels)
+  mrb$parcels = repdb_load_parcels(mrb$project_dir, c("stata_file", "stata_cmd"), parcels = mrb$parcels)
   run_df = mrb$drf$run_df
 
   regsource = parcels$reg %>%
@@ -1773,10 +1809,18 @@ mrb_make_r_base_parcels = function(mrb, save=TRUE, is_partial_run = isTRUE(mrb$i
 
   parcels$regsource = regsource
 
-  # Save everything directly into the repdb directory
   if (save) {
     repdb_dir = file.path(mrb$project_dir, "repdb")
-    repboxDB::repdb_save_parcels(parcels, repdb_dir, check = TRUE)
+
+    static_parcels = parcels[setdiff(names(parcels), extra_regcoef_fields)]
+    repboxDB::repdb_save_parcels(static_parcels, repdb_dir, check = TRUE)
+
+    # Dynamic variant parcels use the regcoef schema but have dynamic names,
+    # so they are saved without table-name based checking.
+    if (length(extra_regcoef_fields) > 0) {
+      extra_parcels = parcels[extra_regcoef_fields]
+      repboxDB::repdb_save_parcels(extra_parcels, repdb_dir, check = FALSE)
+    }
   }
 
   mrb$parcels[names(parcels)] = parcels
@@ -1787,13 +1831,14 @@ mrb_make_r_base_parcels = function(mrb, save=TRUE, is_partial_run = isTRUE(mrb$i
 
 
 
+
 ```
-# END OF FILE: /home/rstudio/repbox/metaregBase/R/mrb_r_base.R
+# END OF FILE: mrb_r_base.R
 
 -----------------------------------------------------------
 
 
-# FILE: /home/rstudio/repbox/metaregBase/R/mrb_regcheck.R
+# FILE: mrb_regcheck.R
 ```
 # FILE: /home/rstudio/repbox/metaregBase/R/mrb_regcheck.R
 
@@ -1926,12 +1971,12 @@ mrb_make_regcheck_parcel = function(mrb, save = TRUE, just_pids=NULL, repair_cod
   return(mrb)
 }
 ```
-# END OF FILE: /home/rstudio/repbox/metaregBase/R/mrb_regcheck.R
+# END OF FILE: mrb_regcheck.R
 
 -----------------------------------------------------------
 
 
-# FILE: /home/rstudio/repbox/metaregBase/R/mrb_regcoef.R
+# FILE: mrb_regcoef.R
 ```
 # Helper function for regcoef (repdb table)
 
@@ -2009,6 +2054,60 @@ ct_to_regcoef = function(ct, lang="stata", variant=NULL, artid=NULL, regvar=NULL
     ct = regcoef_normalize_dropped_coef(ct, lang)
   }
   ct
+}
+
+
+regcoef_variant_parcel_name = function(
+  variant,
+  base_variant = "sb",
+  base_parcel = "regcoef",
+  root_parcel = "regcoef"
+) {
+  variant = as.character(variant)
+  variant[is.na(variant) | variant == ""] = base_variant
+
+  variant = stringi::stri_replace_all_regex(variant, "[^A-Za-z0-9_]+", "_")
+
+  ifelse(
+    variant == base_variant,
+    base_parcel,
+    paste0(root_parcel, "_", variant)
+  )
+}
+
+
+regcoef_split_variant_parcels = function(
+  co,
+  base_variant = "sb",
+  base_parcel = "regcoef",
+  root_parcel = "regcoef"
+) {
+  if (is.null(co) || NROW(co) == 0) {
+    return(list())
+  }
+
+  if (!"variant" %in% names(co)) {
+    co$variant = base_variant
+  }
+
+  co$variant = as.character(co$variant)
+  co$variant[is.na(co$variant) | co$variant == ""] = base_variant
+
+  parcel_name = regcoef_variant_parcel_name(
+    co$variant,
+    base_variant = base_variant,
+    base_parcel = base_parcel,
+    root_parcel = root_parcel
+  )
+
+  row_split = split(seq_len(NROW(co)), parcel_name)
+
+  res = lapply(row_split, function(rows) {
+    co[rows, , drop = FALSE]
+  })
+
+  ord = unique(c(base_parcel, sort(names(res))))
+  res[intersect(ord, names(res))]
 }
 
 
@@ -2292,12 +2391,12 @@ max_empty_na = function(x, na.rm=TRUE) {
   max(x)
 }
 ```
-# END OF FILE: /home/rstudio/repbox/metaregBase/R/mrb_regcoef.R
+# END OF FILE: mrb_regcoef.R
 
 -----------------------------------------------------------
 
 
-# FILE: /home/rstudio/repbox/metaregBase/R/mrb_reg_tools.R
+# FILE: mrb_reg_tools.R
 ```
 # ==============================================================================
 # PART 1: Rescued & Adapted Variable Expansion (Globbing, Ranges, Abbreviations)
@@ -2756,12 +2855,12 @@ vi_add_ia_type = function(vi) {
 }
 
 ```
-# END OF FILE: /home/rstudio/repbox/metaregBase/R/mrb_reg_tools.R
+# END OF FILE: mrb_reg_tools.R
 
 -----------------------------------------------------------
 
 
-# FILE: /home/rstudio/repbox/metaregBase/R/mrb_regxvar.R
+# FILE: mrb_regxvar.R
 ```
 # Store information about expanded interaction terms and factors
 # This will allow to rebuild regressions in a way that drops exactly
@@ -2936,12 +3035,12 @@ make_regxvar_cols = function(dat, regxvar) {
 }
 
 ```
-# END OF FILE: /home/rstudio/repbox/metaregBase/R/mrb_regxvar.R
+# END OF FILE: mrb_regxvar.R
 
 -----------------------------------------------------------
 
 
-# FILE: /home/rstudio/repbox/metaregBase/R/mrb_repair.R
+# FILE: mrb_repair.R
 ```
 # FILE: /home/rstudio/repbox/metaregBase/R/mrb_repair.R
 
@@ -3070,12 +3169,12 @@ stata_reg_cmd_has_r_trans = function(cmd) {
   cmd %in% sr_df$stata_cmd
 }
 ```
-# END OF FILE: /home/rstudio/repbox/metaregBase/R/mrb_repair.R
+# END OF FILE: mrb_repair.R
 
 -----------------------------------------------------------
 
 
-# FILE: /home/rstudio/repbox/metaregBase/R/mrb_r_reg.R
+# FILE: mrb_r_reg.R
 ```
 # metaregBase R run that
 # runs regressions in R
@@ -3234,9 +3333,16 @@ mrb_run_r_reg_step = function(mrb, pid) {
 
   if (!is.null(ct) && nrow(ct) > 0) {
     ct$cterm = cterm_of_r_coefs(ct$term, regvar, dot_to_at = TRUE)
+
     co_df = ct_to_regcoef(ct, lang="r", variant="rb", artid=artid, default_eq=default_eq)
     co_df$runid = runid
-    step_parcels$regcoef_rb = co_df
+
+    co_parcels = regcoef_split_variant_parcels(
+      co_df,
+      base_variant = "rb",
+      base_parcel = "regcoef_rb"
+    )
+    step_parcels[names(co_parcels)] = co_parcels
 
     # Comparison sb vs rb
     if (!is.null(stata_co) && nrow(stata_co) > 0) {
@@ -3315,21 +3421,37 @@ mrb_get_regression_data = function(runid, drf, reg=NULL, regvar, regxvar = NULL)
 mrb_make_r_reg_parcels = function(mrb, save=TRUE,is_partial_run=mrb$is_partial_run) {
   restore.point("mrb_make_r_reg_parcels")
 
-  if (is_partial_run) {
-    mrb$parcels = repdb_load_parcels(mrb$project_dir, c("reg_rb","regcoef_rb","regcoef_diff","regscalar_rb","regstring_rb"))
-  }
-
-
-  parcels = list()
   all_step_parcels = mrb$all_step_parcels
   if (is.null(all_step_parcels)) {
     cat("\nAll step parcels were not generated in mrb.\n")
     return(mrb)
   }
 
-  combine_steps = function(field) {
+  step_fields = unique(unlist(lapply(all_step_parcels, names), use.names = FALSE))
+  extra_regcoef_fields = grep("^regcoef_", step_fields, value = TRUE)
+  extra_regcoef_fields = setdiff(
+    extra_regcoef_fields,
+    c("regcoef_rb", "regcoef_so", "regcoef_diff")
+  )
+  extra_regcoef_fields = sort(extra_regcoef_fields)
+
+  if (is_partial_run) {
+    mrb$parcels = repdb_load_parcels(
+      mrb$project_dir,
+      c(
+        "reg_rb", "regcoef_rb", "regcoef_diff",
+        "regscalar_rb", "regstring_rb",
+        extra_regcoef_fields
+      )
+    )
+  }
+
+  parcels = list()
+
+  combine_steps = function(field, check_table = field) {
     res_list = lapply(all_step_parcels, function(x) x[[field]])
     res_list = res_list[!sapply(res_list, is.null)]
+
     if (length(res_list) == 0) {
       new_data = tibble()
     } else {
@@ -3347,8 +3469,9 @@ mrb_make_r_reg_parcels = function(mrb, save=TRUE,is_partial_run=mrb$is_partial_r
     }
 
     if (NROW(new_data) > 0) {
-      repdb_check_data(new_data, table=field)
+      repdb_check_data(new_data, table=check_table)
     }
+
     new_data
   }
 
@@ -3358,15 +3481,26 @@ mrb_make_r_reg_parcels = function(mrb, save=TRUE,is_partial_run=mrb$is_partial_r
   parcels$regscalar_rb = combine_steps("regscalar_rb")
   parcels$regstring_rb = combine_steps("regstring_rb")
 
-  # Save everything directly into the repdb directory
+  for (field in extra_regcoef_fields) {
+    parcels[[field]] = combine_steps(field, check_table = "regcoef")
+  }
+
   if (save) {
     repdb_dir = file.path(mrb$project_dir, "repdb")
-    repboxDB::repdb_save_parcels(parcels, repdb_dir, check = TRUE)
+
+    static_parcels = parcels[setdiff(names(parcels), extra_regcoef_fields)]
+    repboxDB::repdb_save_parcels(static_parcels, repdb_dir, check = TRUE)
+
+    if (length(extra_regcoef_fields) > 0) {
+      extra_parcels = parcels[extra_regcoef_fields]
+      repboxDB::repdb_save_parcels(extra_parcels, repdb_dir, check = FALSE)
+    }
   }
 
   mrb$parcels[names(parcels)] = parcels
   return(mrb)
 }
+
 
 
 
@@ -3440,12 +3574,12 @@ extract_reg_stats_from_regscalar = function(regscalar) {
 
 
 ```
-# END OF FILE: /home/rstudio/repbox/metaregBase/R/mrb_r_reg.R
+# END OF FILE: mrb_r_reg.R
 
 -----------------------------------------------------------
 
 
-# FILE: /home/rstudio/repbox/metaregBase/R/mrb_se.R
+# FILE: mrb_se.R
 ```
 # Parses SE information from a Stata regression and
 # returns the relevant SE info stored in the repdb reg table
@@ -3598,12 +3732,12 @@ repdb_parse_se_args = function(se_args, as_df=FALSE) {
   tibble(arg_name=var, arg_val=val)
 }
 ```
-# END OF FILE: /home/rstudio/repbox/metaregBase/R/mrb_se.R
+# END OF FILE: mrb_se.R
 
 -----------------------------------------------------------
 
 
-# FILE: /home/rstudio/repbox/metaregBase/R/mrb_stata.R
+# FILE: mrb_stata.R
 ```
 # New attempt metareg base: compute Stata code
 # for repboxDRF generated Stata file
@@ -3778,12 +3912,12 @@ mrb_clear_stata_reg_out = function(project_dir, runids=NULL) {
 }
 
 ```
-# END OF FILE: /home/rstudio/repbox/metaregBase/R/mrb_stata.R
+# END OF FILE: mrb_stata.R
 
 -----------------------------------------------------------
 
 
-# FILE: /home/rstudio/repbox/metaregBase/R/mrb_test_code_path.R
+# FILE: mrb_test_code_path.R
 ```
 # For a given runid=pid
 # create a text that shows the complete path including Stata data modification steps,
@@ -3912,12 +4046,12 @@ mrb_test_code_path = function(project_dir, runid, parcels, drf, opts = mrb_test_
 
 
 ```
-# END OF FILE: /home/rstudio/repbox/metaregBase/R/mrb_test_code_path.R
+# END OF FILE: mrb_test_code_path.R
 
 -----------------------------------------------------------
 
 
-# FILE: /home/rstudio/repbox/metaregBase/R/mrb_test_coef.R
+# FILE: mrb_test_coef.R
 ```
 mrb_test_filter_ignored_intercept_diff = function(diff_tab, cmd = NA_character_, variant2 = "rb", ignore_intercept_cmds = mrb_cmds_ignore_intercept_in_r()) {
   restore.point("mrb_test_filter_ignored_intercept_diff")
@@ -4261,12 +4395,12 @@ mrb_test_fmt_num = function(x, digits = 4) {
 }
 
 ```
-# END OF FILE: /home/rstudio/repbox/metaregBase/R/mrb_test_coef.R
+# END OF FILE: mrb_test_coef.R
 
 -----------------------------------------------------------
 
 
-# FILE: /home/rstudio/repbox/metaregBase/R/mrb_test_data.R
+# FILE: mrb_test_data.R
 ```
 example = function() {
   mrb_print_parcels(project_dir, runid=7)
@@ -4392,12 +4526,12 @@ mrb_test_data_preview_text = function(runid, drf, parcels, n = 5, opts=mrb_test_
 
 
 ```
-# END OF FILE: /home/rstudio/repbox/metaregBase/R/mrb_test_data.R
+# END OF FILE: mrb_test_data.R
 
 -----------------------------------------------------------
 
 
-# FILE: /home/rstudio/repbox/metaregBase/R/mrb_test.R
+# FILE: mrb_test.R
 ```
 # Tools for systematic testing the metaregBase pipeline
 # Will be used for specific test projects
@@ -5459,12 +5593,12 @@ mrb_test_regcheck_is_usable = function(regcheck, pids, just_runid = NULL, projec
   TRUE
 }
 ```
-# END OF FILE: /home/rstudio/repbox/metaregBase/R/mrb_test.R
+# END OF FILE: mrb_test.R
 
 -----------------------------------------------------------
 
 
-# FILE: /home/rstudio/repbox/metaregBase/R/mrb_test_source.R
+# FILE: mrb_test_source.R
 ```
 mrb_test_first_non_missing_value = function(df, cols, default = NA) {
   restore.point("mrb_test_first_non_missing_value")
@@ -5671,12 +5805,12 @@ mrb_test_source_text = function(runid, parcels = list(), drf = NULL) {
   paste0(out, collapse = "\n")
 }
 ```
-# END OF FILE: /home/rstudio/repbox/metaregBase/R/mrb_test_source.R
+# END OF FILE: mrb_test_source.R
 
 -----------------------------------------------------------
 
 
-# FILE: /home/rstudio/repbox/metaregBase/R/stata_util.R
+# FILE: stata_util.R
 ```
 expand_stata_abbr_one_val = function(val, abbr.li) {
   for (i in seq_along(abbr.li)) {
@@ -5690,12 +5824,12 @@ in_stata_abbr = function(val, abbr.li) {
   val %in% all.abbr
 }
 ```
-# END OF FILE: /home/rstudio/repbox/metaregBase/R/stata_util.R
+# END OF FILE: stata_util.R
 
 -----------------------------------------------------------
 
 
-# FILE: /home/rstudio/repbox/metaregBase/R/static_reg.R
+# FILE: static_reg.R
 ```
 # Static code analysis of regression commands
 # Note that the static code can still contain Stata macros
@@ -5762,12 +5896,12 @@ static_reg_cmd_to_reg_df = function(reg_cmd) {
 
 }
 ```
-# END OF FILE: /home/rstudio/repbox/metaregBase/R/static_reg.R
+# END OF FILE: static_reg.R
 
 -----------------------------------------------------------
 
 
-# FILE: /home/rstudio/repbox/metaregBase/R/utils.R
+# FILE: utils.R
 ```
 parcel_for_runid = function(parcel, runid) {
   parcel[parcel$runid==runid, ]
@@ -5863,13 +5997,3346 @@ files_to_md_fences = function(files, path=NULL) {
 }
 
 ```
-# END OF FILE: /home/rstudio/repbox/metaregBase/R/utils.R
+# END OF FILE: utils.R
+
+-----------------------------------------------------------
+
+
+# package regtranslate
+
+
+# FILE: DESCRIPTION
+```
+Package: regtranslate
+Type: Package
+Title: Translate regression commands using information from repdb 
+Version: 0.1
+Author: Sebastian Kranz (Ulm University)
+Maintainer: Sebastian Kranz <sebastian.kranz@uni-ulm.de>
+Description: Currently only contains Stata to R translation
+License: Not yet licensed. Not yet in public domain
+Depends: dplyr, restorepoint, stringtools, fixest, broom, stringi
+Encoding: UTF-8
+LazyData: true
+```
+# END OF FILE: DESCRIPTION
+
+-----------------------------------------------------------
+
+
+# FILE: cterms_r.R
+```
+replace_cterm_special_symbols = function(cterms) {
+  cterms = gsub("@",".__.", cterms, fixed=TRUE)
+  cterms = gsub("#","._..", cterms, fixed=TRUE)
+  cterms = gsub("=",".._.", cterms, fixed=TRUE)
+  cterms
+}
+
+unreplace_cterm_special_symbols = function(cterms) {
+  cterms = gsub(".__.","@", cterms, fixed=TRUE)
+  cterms = gsub("._..","#", cterms, fixed=TRUE)
+  cterms = gsub(".._.","=", cterms, fixed=TRUE)
+  cterms
+}
+
+
+replace_cterms_dot = function(cterms) {
+  cterms = as.character(cterms)
+
+  if (length(cterms)==0) {
+    return(cterms)
+  }
+
+  # 1. Expand compact chained TS prefixes, e.g.
+  # LD.x1 -> L.D.x1
+  # L2D3S4.x1 -> L2.D3.S4.x1
+  repeat {
+    new_cterms = gsub(
+      "(^|#|@|\\.)([LlFfDdSsOo][0-9]*)([LlFfDdSsOo][0-9]*)(?=[@\\.])",
+      "\\1\\2.\\3",
+      cterms,
+      perl = TRUE
+    )
+    if (identical(new_cterms, cterms)) {
+      break
+    }
+    cterms = new_cterms
+  }
+
+  # 2. Canonicalize TS operators to upper case and drop explicit 1
+  # d.  -> D.
+  # d@  -> D@
+  # l1. -> L.
+  # l1@ -> L@
+  ops = c("l", "f", "d", "s", "o")
+  for (op in ops) {
+    OP = toupper(op)
+
+    cterms = gsub(
+      paste0("(^|#|@|\\.)([", op, OP, "])1(?=[@\\.])"),
+      paste0("\\1", OP),
+      cterms,
+      perl = TRUE
+    )
+
+    cterms = gsub(
+      paste0("(^|#|@|\\.)([", op, OP, "])([0-9]+)(?=[@\\.])"),
+      paste0("\\1", OP, "\\3"),
+      cterms,
+      perl = TRUE
+    )
+
+    cterms = gsub(
+      paste0("(^|#|@|\\.)([", op, OP, "])(?=[@\\.])"),
+      paste0("\\1", OP),
+      cterms,
+      perl = TRUE
+    )
+  }
+
+  # 3. Convert only dots that separate actual TS prefixes from the next token.
+  # Do not touch decimal points in factor levels such as x1=-1.874.
+  repeat {
+    new_cterms = gsub(
+      "(^|#|@)([LFDSO][0-9]*)\\.",
+      "\\1\\2@",
+      cterms,
+      perl = TRUE
+    )
+    if (identical(new_cterms, cterms)) {
+      break
+    }
+    cterms = new_cterms
+  }
+
+  cterms
+}
+
+# We might put these functions back to repboxReg
+cterm_of_r_coefs = function(terms, regvar, rcmd=NULL, dot_to_at=from_stata, from_stata=TRUE) {
+  restore.point("cterm_of_r_coefs")
+
+  #rcmd = rep(rcmd, length.out = length(terms))
+
+  #cterms = terms
+
+  # Currently we can use the fixest version for all regressions
+  # but that might change
+  cterms = cterm_of_r_coefs_fixest(terms, regvar, dot_to_at=dot_to_at)
+
+  cterms
+}
+
+cterm_of_r_coefs_fixest = function(terms, regvar, dot_to_at=FALSE) {
+  restore.point("r_coefs_cterm_fixest")
+
+  terms = gsub("`","", terms, fixed=TRUE)
+  terms = gsub("::","=", terms, fixed=TRUE)
+
+  factor.rx = "factor\\(([a-zA-Z0-9_.]*)\\)"
+  terms = gsub(factor.rx,"\\1=",terms,fixed=FALSE)
+
+  if (dot_to_at) {
+    terms = replace_cterms_dot(terms)
+  }
+
+  rows = which(startsWith(terms,"fit_"))
+  if (length(rows)>0) {
+    terms.no.fit = substring(terms[rows], 5)
+    change = (!terms[rows] %in% regvar$ia_cterm) & (terms.no.fit %in% regvar$ia_cterm)
+    terms[rows[change]] = terms.no.fit[change]
+  }
+
+  ia_rows = which(has.substr(terms, "#"))
+  if (length(ia_rows) > 0) {
+    terms[ia_rows] = split_and_sort(terms[ia_rows], split = "#")
+  }
+
+  terms
+}
+
+# cterm_of_r_coefs_fixest = function(terms, regvar, dot_to_at=FALSE) {
+#   restore.point("r_coefs_cterm_fixest")
+#
+#   terms = gsub("`","", terms, fixed=TRUE)
+#   # factor in form: farmass_q::2
+#   # to farmass_q=2
+#   terms = gsub("::","=", terms, fixed=TRUE)
+#   #terms = gsub(" ","", terms, fixed=TRUE)
+#
+#   # factor in form
+#   # factor(i1)4:factor(d1)1
+#   # to i1=4:d1=1
+#   factor.rx = "factor\\(([a-zA-Z0-9_.]*)\\)"
+#   terms = gsub(factor.rx,"\\1=",terms,fixed=FALSE)
+#
+#   # Replace . by @ if . was a Stata prefix
+#   if (dot_to_at) {
+#     terms = gsub(".","@", terms, fixed=TRUE)
+#   }
+#
+#   # In an IV regression feols adds "fit_" to the result
+#   # variable. We want to remove that
+#   rows = which(startsWith(terms,"fit_"))
+#   if (length(rows)>0) {
+#     terms.no.fit = substring(terms[rows], 5)
+#     change = (!terms[rows] %in% regvar$ia_cterm) & (terms.no.fit %in% regvar$ia_cterm)
+#     terms[rows[change]] = terms.no.fit[change]
+#   }
+#
+#   terms
+# }
+```
+# END OF FILE: cterms_r.R
+
+-----------------------------------------------------------
+
+
+# FILE: investigate.R
+```
+# Helper functions for investigation
+
+example = function() {
+  library(repboxReg)
+  project.dir = "~/repbox/projects_reg/aejapp_3_2_2/"
+
+  core = readRDS("~/repbox/projects_reg/aejapp_3_2_2/metareg/s2r/regdb/s2r_core.Rds")
+  details = readRDS("~/repbox/projects_reg/aejapp_3_2_2/metareg/s2r/regdb/s2r_details.Rds")
+
+  s2r_reprex(project.dir, step=52)
+}
+
+#' Generates a folder with a reproducible example that shall help
+#' detect why an R translation yields different results than the Stata version.
+s2r_reprex = function(project.dir, step, out.dir = file.path(project.dir,"metareg","s2r","reprex", step), details = load_parcel(project.dir,"s2r","s2r_details"), dap=get.project.dap(project.dir, make.if.missing=FALSE)) {
+  restore.point("s2r_reprex")
+
+  dat_file = repboxReg::mr_get_cache_file(project.dir, step)
+
+  s2r_regdb_dir = file.path(project.dir,"metareg","s2r","regdb")
+
+  core = readRDS(file.path(s2r_regdb_dir,"s2r_core.Rds"))
+  details = readRDS(file.path(s2r_regdb_dir,"s2r_details.Rds"))
+
+  rreg = details$reg[details$reg$step==step,]
+
+  r_code = rreg$cmdline
+}
+
+
+
+# Put the following functions back to repboxReg
+
+stata_code_reg_data_preparation = function(project.dir, step, dap=get.project.dap(project.dir, make.if.missing=FALSE)) {
+  restore.point("stata_code_step_data_preparation")
+  astep = step
+  txt = "\n\nset more off\n"
+  path = dap$path.df[dap$path.df$astep == astep,]
+  # 1. Get data file
+  step = path$step[1]
+  file = mr_get_cache_file(mr$project.dir, step)
+  txt = paste0(txt,'\nuse "', file,'", clear\n')
+
+  # 2. code for all other stepsdata modification steps
+  steps = path$step[-1]
+  txt = paste0(txt,"\n", paste0(mr$step.df$stata_code[steps], collapse = "\n"))
+
+}
+
+r_code_reg_data_preparation = function(project.dir, step, dap=get.project.dap(project.dir, make.if.missing=FALSE)) {
+  restore.point("stata_code_step_data_preparation")
+  astep = step
+  txt = "\n\nset more off\n"
+  path = dap$path.df[dap$path.df$astep == astep,]
+  # 1. Get data file
+  step = path$step[1]
+  file = mr_get_cache_file(mr$project.dir, step)
+  txt = paste0(txt,'\nuse "', file,'", clear\n')
+
+  # 2. code for all other stepsdata modification steps
+  steps = path$step[-1]
+  txt = paste0(txt,"\n", paste0(mr$step.df$stata_code[steps], collapse = "\n"))
+
+}
+
+
+
+mr_write_path_stata_code = function(mr, astep=first(mr$path.df$astep), code.file=paste0(mr$project.dir,"/metareg/step_",astep,".do"), add.line.info = !is.null(run.df), run.df=mr$run.df,...) {
+  restore.point("mr_write_path_stata_code")
+
+  txt = "\n\nset more off\n"
+  path = dap$path.df[dap$path.df$astep == astep,]
+  # 1. Get data file
+  step = path$step[1]
+  file = mr_get_cache_file(mr$project.dir, step)
+  txt = paste0(txt,'\nuse "', file,'", clear\n')
+
+  # 2. code for all other stepsdata modification steps
+  steps = path$step[-1]
+  txt = paste0(txt,"\n", paste0(mr$step.df$stata_code[steps], collapse = "\n"))
+
+  writeLines(txt, code.file)
+  invisible(txt)
+}
+
+
+load_parcel = function(project.dir, metaid, parcel) {
+  parcel.file=file.path(project.dir,metaid,"regdb", paste0(parcel,".Rds"))
+  if (!file.exists(parcel.file)) return(NULL)
+  readRDS(parcel.file)
+}
+```
+# END OF FILE: investigate.R
+
+-----------------------------------------------------------
+
+
+# FILE: mr_s2r.R
+```
+s2r_example = function() {
+  library(regtranslate)
+  library(repboxReg)
+  #project.dir = file.path("C:/libraries/repbox/projects_reg",project)
+
+  project = "testsupp"
+
+  project.dir = file.path("~/repbox/projects_reg/",project)
+
+  mr = mr_s2r_study(project.dir)
+
+  parcels = mr$saved_parcels
+
+  rstudioapi::filesPaneNavigate(paste0(project.dir))
+
+  dat = readRDS("C:/libraries/repbox/projects_reg/testsupp/metareg/s2r/s2r_agg.Rds")$regcoef
+}
+
+
+mr_s2r_study = function(project.dir, variant = "s2r") {
+  library(repboxReg)
+  restore.point("mr_s2r_study")
+  project = basename(project.dir)
+
+  opts = mr_opts(stop.on.error = TRUE,create.regxvar.cols = TRUE)
+
+  mr = mr_init_study(project.dir,metaid="s2r",step_run_fun = s2r_step_run_fun, study_agg_fun = s2r_study_agg_fun, opts = opts, version = 0)
+  mr$variant = variant
+
+  # If there is no used regression
+  # just save the default stuff for an empty study and return
+  if (mr_uses_no_reg(mr)) {
+    return(mr_finish(mr))
+  }
+
+  # Load tables from regdb beyond "reg" that will be used
+  mr = mr_load_parcels(mr, c("reg_core", "cmdpart","regcoef","regvar","regxvar"))
+
+  # Run the study
+  mr = mr_run(mr)
+
+  mr_finish(mr)
+}
+
+
+# In R we will perform a regression using fixest (lm might take too long)
+s2r_step_run_fun =  function(mr, step, reg, dat, org.dat, infeasible_filter, ...) {
+  restore.point("s2r_step_run_fun")
+
+  regxvar = mr_get_base_table(mr, "regxvar", steps=step)
+  regvar = mr_get_base_table(mr, "regvar", steps=step)
+  cmdpart = mr_get_base_table(mr, "cmdpart", steps=step)
+
+  # All columns relevant for the regression
+  reg$infeasible_filter = infeasible_filter
+
+  #if (step==4) stop()
+  code_df = reg_stata_to_r_code(reg, regvar, regxvar, cmdpart)
+
+  code_df = code_df %>% add_reg_function_code(add_restore_point = TRUE)
+
+  code = paste0(code_df$code, collapse="\n")
+  #cat(code)
+  reg$cmdline = paste0("reg_fun = ", code,"\nresults=reg_fun(dat)")
+  reg_fun = eval(parse(text=code))
+  #debug(reg_fun)
+  #dat = make_regxvar_cols(dat, regxvar)
+  results = reg_fun(dat)
+
+  ct = results$ct
+  ct$cterm = cterm_of_r_coefs(ct$term,regvar, dot_to_at = TRUE)
+  co_df = ct_to_regcoef(ct, lang="r",variant = mr$variant,artid = mr$artid)
+  co_df$step = step
+
+  reg$rcmd = results$rcmd
+  reg$regcoef = list(co_df)
+
+  reg$glance = results["glance"]
+
+  mr = mr_set_step_result(mr, step, reg=reg)
+
+  #ct$msg = msg
+  #outfile = paste0(mr$step.dir, "/rreg_", step, ".Rds")
+  #saveRDS(reg, outfile)
+  mr
+}
+
+
+
+s2r_study_agg_fun = function(mr, ...) {
+  restore.point("s2r_study_agg_fun")
+  project = basename(mr$project.dir)
+
+  # R results from metareg run
+  r_regs = mr_get_steps_result(mr, "reg")
+
+  #r_regs = mr_agg_df_rds(mr, "rreg_*.Rds", file_col="file")
+  #r_regs$step = as.integer(str.between(r_regs$file, "_", "."))
+
+  r_co = bind_rows(r_regs$regcoef)
+
+  stata_co = mr_get_base_table(mr, "regcoef", steps = r_regs$step)
+
+  diff_r_tab = coef_diff_table(r_co,stata_co)
+  diff_r_sum = coef_diff_summary(diff_r_tab, c("all","coef"))
+
+  inf_filter_steps = r_regs$step[r_regs$infeasible_filter]
+  if (length(inf_filter_steps)>0) {
+    diff_r_sum$problem[diff_r_sum$step %in% inf_filter_steps] = "stata_filter_not_translated"
+  }
+
+  glance_df = bind_rows_with_parent_fields(r_regs, "glance",c("step"))
+
+
+
+
+  res = regdb_stats_to_regscalar_regstring(glance_df, variant = mr$variant, artid=mr$artid)
+  regscalar = res$regscalar; regstring = res$regstring
+
+  reg_stats = regdb_glance_to_reg_stats(glance_df)
+  r_regs=left_join_overwrite(r_regs, reg_stats, by="step")
+  r_regs$variant = mr$variant
+  #r_regs$cmdline = ""
+  r_regs$cmd = r_regs$rcmd
+  r_regs$lang = "r"
+
+
+  s_regs = mr_get_base_table(mr, "reg")
+  regcheck = mr_get_regcheck_after_run(mr,tolerable_deviation = 1e-4, variant=mr$variant)
+  regcheck = left_join_overwrite(regcheck, select(s_regs,step, cmd, se_category, se_type), by=c("step"))
+  # For some commands we allow larger tolerabl deviation since
+  # se are not calculated exactly the same way in R and Stata
+
+  #rows = which(regcheck$cmd %in% c("logit","xtlogit","probit","xtprobit","dprobit"))
+
+  #regcheck$tolerable_deviation[rows] = 0.01
+
+
+  diff = diff_r_sum %>% filter(compare_what=="all")
+  regcheck = left_join_overwrite(regcheck, transmute(diff,step=step,
+    # Geometric mean of rel_diff and minimum of rel_diff and abs_diff
+    deviation= exp(0.5+log(max_rel_diff)+0.5*log(max_deviation))),
+    by="step")
+
+  # For probit & co standard errors will not match
+  # we will only use the coefs to compare
+  coef_diff = diff_r_sum %>% filter(compare_what=="coef")
+  regcheck = left_join_overwrite(regcheck,transmute(coef_diff,step=step,
+     coef_deviation= exp(0.5+log(max_rel_diff)+0.5*log(max_deviation))), by="step")
+
+  rows = rows = which(regcheck$cmd %in% c("logit","xtlogit","probit","xtprobit","dprobit") & regcheck$se_category == "iid")
+  regcheck$deviation[rows] = regcheck$coef_deviation[rows]
+  regcheck$comment[rows] = "deviation ignores se"
+
+  mr = mr_set_header(mr, regcheck)
+
+  s2r_details = list(
+    reg = r_regs,
+    regscalar = regscalar,
+    regstring = regstring,
+    regcoef = r_co,
+    coeff_diff = diff_r_sum
+  )
+
+  s2r_core = list(
+    header = mr_get_header(mr),
+    regcheck = regcheck
+  )
+
+  mr = mr_save_parcels(mr, parcels = list(s2r_core = s2r_core, s2r_details=s2r_details))
+
+  mr
+}
+```
+# END OF FILE: mr_s2r.R
+
+-----------------------------------------------------------
+
+
+# FILE: reg2r.R
+```
+# Convert to calls from lm and iv and general helper function
+# to create R regression commands and execute them
+
+reg.cmds.without.r.translation = function() {
+  c("dprobit","tobit")
+}
+
+make_reg_call = function(reg,...) {
+  if (reg$cmd %in% reg.cmds.without.r.translation()) {
+    return(list(
+      dont_run = TRUE,
+      ti = reg_translation_info(s_cmd=reg$cmd, feasible=FALSE, problem="not_implemented")
+    ))
+  }
+
+  if (reg$cmd == "qreg") {
+    reg_call = make_quantreg_call(reg, ...)
+  } else if (reg$cmd %in% c("dprobit")) {
+    reg_call = make_mfx_call(reg,...)
+  } else if (reg$cmd %in% "tobit") {
+    reg_call = make_tobit_call(reg,...)
+  } else {
+    # As default use fixest
+    reg_call = make_fixest_call(reg,...)
+  }
+  restore.point("stata.to.r.reg.call")
+  reg_call
+}
+
+get.reg.opt = function(reg, opt) {
+  row = which(reg$opts.df[[1]]$opt == opt)
+  if (length(row)==0) return(NULL)
+  reg$opts.df[[1]][row,]
+}
+
+eval_reg = function(call.li, ..., envir=parent.frame()) {
+  restore.point("eval_reg_call")
+  extra.args = list(...)
+  args = call.li$args
+  args[names(extra.args)] = extra.args
+  do.call(call.li$command, args, envir = envir)
+}
+
+
+
+
+
+make_default_reg_call = function(reg,command, allow.robust=TRUE, max.cluster=0, allow.weights=TRUE, robust.arg = "robust", cluster.arg = "cluster", ...) {
+  restore.point("make_default_reg_call")
+
+  ti = reg_translation_info(reg$cmd, command)
+  vi = reg$vi[[1]]
+  formula = vi_to_lm_iv_formula(vi)
+  args = list(formula = formula)
+  if (!is.empty(reg$weights_var)) {
+    if (!allow.weights) {
+      ti$weights_ok = FALSE
+    } else {
+      args$weights = as.formula(paste0("~", reg$weights_var))
+    }
+  }
+
+  se.info = reg$se.info[[1]]
+  if (se.info$stata_se=="robust") {
+    if (!allow.robust) {
+      ti$se_ok=FALSE
+      ti$se_type="robust"
+    } else if (!is.null(robust.arg)) {
+      args$robust = TRUE
+    }
+  } else if (se.info$stata_se=="cluster") {
+    cluster = se.info$clustervar[[1]]
+    if (length(cluster) > max.cluster) {
+      ti$se_ok=FALSE
+      ti$se_type = "cluster"
+    } else if (!is.null(cluster.arg)) {
+      args[[cluster.arg]] = cluster
+    }
+  }
+  list(
+    dont_run = isTRUE(!ti$feasible),
+    command = command,
+    args=args,
+    ti = ti
+  )
+}
+
+reg_translation_info = function(s_cmd, r_cmd="",feasible = TRUE, problem="", problem_descr="", se_ok=TRUE, se_type="", se_descr="", weights_ok=TRUE) {
+  tibble(s_cmd, r_cmd, feasible, problem, problem_descr, se_ok, se_type, se_descr, weights_ok)
+}
+
+
+
+
+make_lm_call = function(reg, command="lm") {
+  restore.point("make_lm_call")
+  vi = reg$vi[[1]]
+  reg_call = make_default_reg_call(reg, command)
+  reg_call
+}
+
+make_lm_iv_call = function(reg) {
+  restore.point("make_lm_iv_call")
+  vi = reg$vi[[1]]
+  is_iv = any(vi$role == "instr")
+  command = if(is_iv) "ivreg" else "lm"
+  reg_call = make_default_reg_call(reg, command)
+  reg_call
+}
+
+vi_to_lm_iv_formula = function(vi, min_fe_level = Inf, as.character = FALSE) {
+  restore.point("vi_to_lm_iv_formula")
+
+  # Add time series prefixes like L2. or d. to variable name
+  # those variables were manually added
+  rows = which(toupper(substring(vi$prefix,1,1)) %in% c("D","L","F","S"))
+  vi$var[rows] = paste0(vi$prefix[rows],vi$var[rows])
+
+  depvars = vi$var[vi$role=="dep"]
+  form = paste0(paste0(depvars, collapse=" + "), " ~ ")
+
+  terms = vi_to_lm_felm_terms(vi, min_fe_level = min_fe_level)
+
+  # Exogeneous x that are no FE
+  exo.rows = which(terms$role == "exo" & terms$as_fe == FALSE)
+  if (sum(exo.rows)>0) {
+    form = paste0(form, paste0(terms$x_expr[exo.rows], collapse= " + "))
+  } else {
+    form = "0"
+  }
+
+  # instruments
+  rows = which(terms$role == "instr")
+  if (sum(rows)>0) {
+    form = paste0(form, " | ",paste0(terms$x_expr[c(rows, exo.rows)], collapse= " + "))
+  }
+
+
+  if (as.character) return(form)
+  as.formula(form)
+
+}
+
+
+# Deal with factor variables and interaction effects
+# in default manner
+vi_to_lm_felm_terms = function(vi, min_fe_level = Inf) {
+  restore.point("vi_to_lm_iv_terms")
+
+  # In stata x variables starting with o. like o.var will be omitted
+  vi = vi %>%
+    filter(!is.true(prefix=="o"))
+
+
+  ia = vi %>%
+    filter(is_ia) %>%
+    vi.add.ia.type() %>%
+    group_by(is_ia, ia_cterm, role, ia_num, main_pos) %>%
+    summarize(
+      ia_type = first(ia_type),
+      fe_expr = case_when(
+        ia_type %in% c("dummies","numeric") ~ NA_character_,
+        ia_type == "fe" ~ paste0(var, collapse="#"),
+        ia_type == "fe_numeric" ~ paste0(var[1],"#",var[2]),
+        ia_type == "unknown" ~ NA_character_,
+        TRUE ~ NA_character_
+      )[1],
+      x_expr = paste0(ifelse(!is_fe, var, paste0("factor(",var,")")), collapse= if (isTRUE(first(add_main_effects))) "*" else ":"),
+      # x_expr = case_when(
+      #   ia_type %in% c("dummies","numeric") ~ paste0("I(", paste0(var, collapse="*"),")"),
+      #   ia_type == "fe" ~ paste0(ifelse(is_factor, var, paste0("fe(",var,")")), collapse="*"),
+      #   ia_type == "fe_numeric" ~ paste0(ifelse(is_factor[1], var[1], paste0("fe(",var[1],")")),":",var[2]),
+      #   ia_type == "unknown" ~ NA_character_
+      # )[1],
+      as_fe = case_when(
+        role != "exo" ~ FALSE,
+        is.na(fe_expr) ~ FALSE,
+        ia_type=="fe_numeric" & distinct_num[1] < min_fe_level ~ FALSE,
+        ia_distinct_num < min_fe_level ~ FALSE,
+        TRUE ~ TRUE
+      )[1]
+    ) %>%
+    ungroup()
+
+  no_ia = vi %>%
+    filter(!is_ia) %>%
+    mutate(
+      fe_expr = var,
+      x_expr = case_when(
+        is_fe & !is_factor ~ paste0("fe(", var,")"),
+        TRUE ~ var
+      ),
+      as_fe = case_when(
+        !is_fe ~ FALSE,
+        role != "exo" ~ FALSE,
+        distinct_num < min_fe_level ~ FALSE,
+        TRUE ~ TRUE
+      )
+    )
+
+  cols = c("role", "is_ia", "main_pos", "as_fe","x_expr","fe_expr")
+  terms = bind_rows(ia[,cols], no_ia[cols]) %>%
+    arrange(main_pos)
+}
+
+
+# Does not yet work nicely
+make_tobit_call = function(reg, ...) {
+  restore.point("make_tobit_call")
+  library(AER)
+  reg_call = make_default_reg_call(reg,"tobit", max.cluster=1)
+  reg_call
+}
+
+tidy.tobit = function(tobit, ...) {
+  mat = coeftest(tobit)
+  tibble(term = rownames(mat), estimate=mat[,1], std.error = mat[,2], statistic=mat[,3], p.value = mat[,4])
+}
+
+
+# Does not yet work nicely
+make_mfx_call = function(reg,...) {
+  restore.point("make_mfx_call")
+
+  if (reg$cmd=="dprobit") {
+    command = "probitmfx"
+  }
+  reg_call = make_default_reg_call(reg, command, max.cluster = 2, cluster.arg = NULL)
+  cluster = reg$se.info$clustervar[[1]]
+  if (length(cluster)>=1) {
+    reg_call$args$clustervar1 = cluster[1]
+  }
+  if (length(cluster)>=2) {
+    reg_call$args$clustervar2 = cluster[2]
+  }
+
+  reg_call$args$atmean = TRUE
+  reg_call
+}
+
+
+
+```
+# END OF FILE: reg2r.R
+
+-----------------------------------------------------------
+
+
+# FILE: regvar_expand.R
+```
+example = function() {
+  library(repboxReg)
+  project.dir = "/home/rstudio/repbox/projects_reg/aer_105_5_55"
+  step = 5
+
+  dat=haven::read_dta("/home/rstudio/repbox/projects_reg/aer_105_5_55/metareg/dap/stata/cache/step_1.dta")
+
+  dap = get.project.dap(project.dir)
+  mr = dap
+  internal_reg = mr_get_reg_info(mr, step,dat)
+  org_dat = dat
+  dat = mr_adapt_data_for_reg(project.dir, step, internal_reg, dat)
+
+  regvar = load_parcel(project.dir, "base","regvar")$regvar %>% filter(step==5)
+  regcoef = load_parcel(project.dir, "base","regcoef")$regcoef %>% filter(step==5)
+
+  res = expand_reg_dat_cols(regvar, dat)
+  erv = specify_used_reg_vars(res$eregvar, regcoef)
+}
+
+specify_used_reg_vars = function(eregvar, regcoef) {
+  restore.point("specify_used_reg_vars")
+  eregvar$has_coef = eregvar$cterm %in% regcoef$cterm
+
+  if (any(!regcoef$cterm %in% c("(Intercept)",eregvar$cterm))) {
+    restore.point("not all regcoef cterm")
+    extra = setdiff(regcoef$cterm, c("(Intercept)",eregvar$cterm))
+    stop("There are regcof cterm that are not part of the expanded regvars. Maybe the order of interaction terms differs. Please check and correct the code.")
+  }
+  eregvar
+}
+
+
+
+
+# Expands interaction effects and factors. Similar to model matrix but uses regvar information
+expand_reg_dat_cols = function(regvar, dat) {
+  restore.point("expand_reg_dat_cols")
+  regvar = regvar[regvar$role %in% c("exo","endo","instr"),]
+
+  rows = regvar$var_reg_type == "factor"
+  factor_vars = unique(regvar$cterm[rows])
+
+  factor_levels = lapply(factor_vars, function(var) {
+    unique(dat[[var]]) %>% as.character()
+  })
+  names(factor_levels) = factor_vars
+
+  ia_cterms = unique(regvar$ia_cterm)
+
+
+  res_li = lapply(ia_cterms, function(ia_term) {
+    rows = which(regvar$ia_cterm == ia_term)
+    if (length(rows)==1) {
+      if (!regvar$var_reg_type[[rows]]=="factor") return(NULL)
+      cterm = regvar$cterm[rows]
+      res = make_factor_level_vars(cterm,dat, level_li = factor_levels)
+    } else if (length(rows)==2) {
+      res = make_ia2_vars(regvar[rows,], dat,  level_li = factor_levels)
+    } else if (length(rows)==3) {
+      res = make_ia3_vars(regvar[rows,], dat,  level_li = factor_levels)
+    } else {
+      stop("Cannot yet deal with tripple interactions or more.")
+    }
+    res
+  })
+
+  ia_subterms = lapply(seq_along(ia_cterms), function(i) {
+    ia_cterm = ia_cterms[i]
+    union(regvar$cterm[regvar$ia_cterm==ia_cterm & regvar$var_reg_type!="factor"], names(res_li[[i]]))
+  })
+  eregvar = tibble(ia_cterm=ia_cterms, cterm = ia_subterms) %>%
+    unnest(cterm) %>%
+    left_join(regvar %>% select(ia_cterm, role), by="ia_cterm") %>%
+    unique()
+
+  new_dat = bind_cols(dat, bind_cols(res_li))
+  dupl = duplicated(colnames(new_dat))
+  new_dat = new_dat[,!dupl]
+  new_dat
+
+  list(eregvar=eregvar, dat=new_dat)
+}
+
+make_ia2_vars = function(rv, dat, level_li) {
+  restore.point("make_ia2_vars")
+
+  factor_rows = which(rv$var_reg_type == "factor")
+  if (length(factor_rows)>0) {
+    fdat = lapply(rv$cterm[factor_rows],make_factor_level_vars, dat=dat, level_li=level_li) %>%
+      bind_cols()
+  } else {
+    fdat = NULL
+  }
+
+  cterm1 = rv$cterm[1]
+  cterm2 = rv$cterm[2]
+
+  is_factor1 = rv$var_reg_type[1]=="factor"
+  is_factor2 = rv$var_reg_type[2]=="factor"
+
+  if (is_factor1) {
+    vars1 = paste0(cterm1,"=", level_li[[cterm1]])
+  } else {
+    vars1 = cterm1
+  }
+
+  if (is_factor2) {
+    vars2 = paste0(cterm2,"=", level_li[[cterm2]])
+  } else {
+    vars2 = cterm2
+  }
+
+  grid = expand.grid(var1=vars1, var2=vars2,stringsAsFactors = FALSE) %>%
+    mutate(var12 = sort2_chr(var1, var2, "#"))
+
+  dat12_li = lapply(seq_rows(grid), function(i) {
+    if (is_factor1) {
+      val1 = fdat[[grid$var1[i]]]
+    } else {
+      val1 = dat[[grid$var1[i]]]
+    }
+    if (is_factor2) {
+      val2 = fdat[[grid$var2[i]]]
+    } else {
+      val2 = dat[[grid$var2[i]]]
+    }
+    val1*val2
+  })
+  names(dat12_li) = grid$var12
+  dat12 = as_tibble(dat12_li)
+
+  bind_cols(fdat, dat12)
+}
+
+# FILE: regtranslate/regvar_expand.R
+make_ia3_vars = function(rv, dat, level_li) {
+  restore.point("make_ia3_vars")
+
+  factor_rows = which(rv$var_reg_type == "factor")
+  if (length(factor_rows)>0) {
+    fdat = lapply(rv$cterm[factor_rows], make_factor_level_vars, dat=dat, level_li=level_li) %>%
+      bind_cols()
+  } else {
+    fdat = NULL
+  }
+
+  is_f1 = rv$var_reg_type[1]=="factor"
+  is_f2 = rv$var_reg_type[2]=="factor"
+  is_f3 = rv$var_reg_type[3]=="factor"
+
+  vars1 = if (is_f1) paste0(rv$cterm[1],"=", level_li[[rv$cterm[1]]]) else rv$cterm[1]
+  vars2 = if (is_f2) paste0(rv$cterm[2],"=", level_li[[rv$cterm[2]]]) else rv$cterm[2]
+  vars3 = if (is_f3) paste0(rv$cterm[3],"=", level_li[[rv$cterm[3]]]) else rv$cterm[3]
+
+  # 2-way grids
+  g12 = expand.grid(v1=vars1, v2=vars2, stringsAsFactors=FALSE) %>% mutate(var = sort2_chr(v1, v2, sep="#"))
+  g13 = expand.grid(v1=vars1, v2=vars3, stringsAsFactors=FALSE) %>% mutate(var = sort2_chr(v1, v2, sep="#"))
+  g23 = expand.grid(v1=vars2, v2=vars3, stringsAsFactors=FALSE) %>% mutate(var = sort2_chr(v1, v2, sep="#"))
+
+  # 3-way grid
+  g123 = expand.grid(v1=vars1, v2=vars2, v3=vars3, stringsAsFactors=FALSE) %>%
+    mutate(var = split_and_sort(paste0(v1, "#", v2, "#", v3), split="#", k=3L))
+
+  # Compute values
+  get_val = function(is_f, grid_col, i) if (is_f) fdat[[grid_col[i]]] else dat[[grid_col[i]]]
+
+  dat12 = as_tibble(setNames(lapply(seq_rows(g12), function(i) get_val(is_f1, g12$v1, i) * get_val(is_f2, g12$v2, i)), g12$var))
+  dat13 = as_tibble(setNames(lapply(seq_rows(g13), function(i) get_val(is_f1, g13$v1, i) * get_val(is_f3, g13$v2, i)), g13$var))
+  dat23 = as_tibble(setNames(lapply(seq_rows(g23), function(i) get_val(is_f2, g23$v1, i) * get_val(is_f3, g23$v2, i)), g23$var))
+  dat123 = as_tibble(setNames(lapply(seq_rows(g123), function(i) get_val(is_f1, g123$v1, i) * get_val(is_f2, g123$v2, i) * get_val(is_f3, g123$v3, i)), g123$var))
+
+  bind_cols(fdat, dat12, dat13, dat23, dat123)
+}
+
+make_factor_level_vars = function(var,dat, levels = level_li[[var]],level_li) {
+  restore.point("make_factor_level_vars")
+  cterms = paste0(var, "=", levels)
+  vals = lapply(seq_along(levels), function(i) {
+    1L*(dat[[var ]]==levels[i])
+  })
+  names(vals) = cterms
+  as_tibble(vals)
+  #list(info=tibble(cterm=cterm), dat=vals)
+}
+```
+# END OF FILE: regvar_expand.R
+
+-----------------------------------------------------------
+
+
+# FILE: repbox.R
+```
+# These functions provide more direct interfaces usable in connection with
+# repbox projects
+
+repbox_load_regtranslate_parcels = function(project_dir, parcels = list()) {
+  library(repboxDB)
+  parcels = repdb_load_parcels(project_dir,c("reg_core","regvar","regxvar","cmdpart"), parcels=parcels)
+
+}
+
+mr_load_regtranslate_parcels = function(mr) {
+  mr$parcels = repbox_load_regtranslate_parcels(mr$project_dir, mr$parcels)
+  mr
+}
+
+mr_reg_stata_to_r_formula = function(mr, step, prefer="fixest", opts=code_options()) {
+
+  repbox_reg_stata_to_r_code(mr$project_dir, step, mr$parcels, prefer=prefer, opts=opts, just_formula = TRUE)
+}
+
+mr_reg_stata_to_r_code = function(mr, step, prefer="fixest", opts=code_options()) {
+  repbox_reg_stata_to_r_code(mr$project_dir, step, mr$parcels, prefer=prefer, opts=opts)
+}
+
+repbox_reg_stata_to_r_code = function(project_dir, steps=NULL, parcels, prefer="fixest", opts=code_options(), just_formula=FALSE) {
+  restore.point("repbox_reg_stata_to_r_code")
+  reg = parcels$reg_core$reg
+  regvar = parcels$regvar$regvar
+  regxvar = parcels$regxvar$regxvar
+  cmdpart = parcels$cmdpart$cmdpart
+
+  if (is.null(steps)) steps = reg$step
+
+
+  reg = reg %>% filter(step %in% steps)
+  regvar = regvar %>% filter(step %in% steps)
+  regxvar = regxvar %>% filter(step %in% steps)
+  cmdpart = cmdpart %>% filter(step %in% steps)
+
+  if (just_formula) {
+    return(reg_stata_to_r_formula(reg, regvar, regxvar, cmdpart, prefer=prefer, opts=opts))
+  }
+  reg_stata_to_r_code(reg, regvar, regxvar, cmdpart, prefer=prefer, opts=opts)
+
+}
+
+
+```
+# END OF FILE: repbox.R
+
+-----------------------------------------------------------
+
+
+# FILE: s2r_repex.R
+```
+# Helper functions for investigation
+
+example = function() {
+  library(repboxReg)
+  library(regtranslate)
+  project.dir = "~/repbox/projects_reg/testsupp"
+  project.dir = "/home/rstudio/repbox/projects_reg/jpe_125_1_9"
+
+  reg_core = load_parcel(project.dir,"base","reg_core")
+
+  core = load_parcel(project.dir,"s2r","s2r_core")
+
+  regcheck = core$regcheck %>% left_join(reg_core$reg %>% select(cmd,step),by="step") %>% arrange(desc(deviation))
+  head(regcheck)
+  s2r_repex(project.dir, step=10)
+  navigate_to_repex(project.dir)
+}
+
+#' Generates a folder with a reproducible example that shall help
+#' detect why an R translation yields different results than the Stata version.
+s2r_repex = function(project.dir, step,
+                     repex.dir = file.path(project.dir,"metareg","s2r","repex", step),
+                     parcels=load_parcels(project.dir, c("base","s2r"),just_glob = c("detail","core","regcoef", "source","regvar","regxvar"), ignore_glob = "org_"),
+                     dap=get.project.dap(project.dir, make.if.missing=FALSE)
+) {
+  restore.point("s2r_reprex")
+
+  if (!dir.exists(repex.dir)) dir.create(repex.dir,recursive = TRUE)
+
+  sparcels = filter_parcels_by_step(parcels, step)
+
+  scode = stata_code_reg_data_preparation(project.dir,step, dap,add_reg_code = TRUE)
+
+
+  rcode_prep = r_code_reg_data_preparation(project.dir,step, dap)
+  reg_df = parcels$s2r_details$reg
+  rreg = reg_df[reg_df$step==step,]
+  rcode_reg = rreg$cmdline
+
+  # Remove function stuff
+  rcode_reg = sep.lines(rcode_reg)
+  rcode_reg = rcode_reg[-c(1:2, length(rcode_reg)-(0:3))]
+  rcode_reg = merge.lines(rcode_reg)
+  #cat(rcode_reg)
+
+
+  rcode = paste0(
+    "# R code to replicate analysis in step ", step,"\n",
+    'setwd("',repex.dir,'")',
+    rcode_prep,
+    '
+sp = readRDS("step_parcels.Rds")
+regxvar = sp$regxvar$regxvar
+regvar = sp$regvar$regvar
+
+dat = create_cterm_cols(dat, unique(regvar$cterm))
+dat = make_regxvar_cols(dat, regxvar)
+\n',
+    rcode_reg,
+    "\n\nct")
+
+  # Add further R analysis code
+
+  saveRDS(sparcels,file.path(repex.dir,"step_parcels.Rds"))
+
+  rcode = paste0(rcode, '
+regvar = sp$regvar$regvar
+co = ct_to_regcoef(ct, "r", regvar=regvar)
+
+r_co = sp$s2r_details$regcoef
+s_co = sp$regcoef$regcoef
+
+coef_diff = nice_coef_diff(r_co, s_co, labs=c("r","s")) %>%
+  left_join(select(co, coef, cterm), by="cterm")
+coef_diff
+co
+
+navigate_to_repex("',project.dir,'")
+')
+  si = sparcels$regsource$regsource
+  source.file = file.path(project.dir,"mod",si$script_path)
+  source_code = paste0('
+# Source: Line ', si$code_line_start, ' in ', source.file,'
+# rstudioapi::navigateToFile("', source.file,'")
+')
+  rcode = paste0(rcode, source_code)
+
+  # Write files
+  if (!dir.exists(repex.dir)) dir.create(repex.dir, recursive = TRUE)
+
+  writeLines(rcode, file.path(repex.dir,paste0("rcode.R")))
+  writeLines(scode, file.path(repex.dir,"stata_code.do"))
+
+
+  rp_code = make_repex_project_code(project.dir, repex.dir)
+  rp_code = paste0(rp_code, "\n  mr = mr_s2r_study(project.dir)")
+  writeLines(rp_code, file.path(repex.dir,"repex_project.R"))
+
+
+  cat("\nReproducible example written to ",repex.dir,"\n")
+  invisible()
+}
+
+```
+# END OF FILE: s2r_repex.R
+
+-----------------------------------------------------------
+
+
+# FILE: se.R
+```
+
+# Old code: possible can be replaced sometime using
+# cmdpart. But not yet done.
+regdb_parse_se_args = function(se_args, as_df=FALSE) {
+  restore.point("regdb_parse_se_args")
+  #se_args = c("cluster1=i1;cluster2=i2","cluster2=i2")[1]
+  if (length(se_args)>1) {
+    stop("regdb_se_args_to_list is not yet vectorized.")
+  }
+
+  str = strsplit(se_args,";", fixed=TRUE)[[1]]
+  eq_pos = stri_locate_first_fixed(str,"=")[,1]
+  var = substring(str,1,eq_pos-1)
+  val = substring(str,eq_pos+1)
+  if (!as_df) {
+    names(val) = var
+    return(val)
+  }
+  tibble(arg_name=var, arg_val=val)
+}
+```
+# END OF FILE: se.R
+
+-----------------------------------------------------------
+
+
+# FILE: split_n_sort.R
+```
+sort2_chr = function(a, b, ..., sep=NULL) {
+  swap = stringi::stri_cmp_gt(a, b, ...)
+  lo = ifelse(swap, b, a)
+  hi = ifelse(swap, a, b)
+  if (!is.null(sep)) return(paste0(a,sep,b))
+  list(lo = lo, hi = hi)
+}
+
+sort3_chr = function(a, b, c, ..., sep=NULL) {
+  s = sort2_chr(a, b, ...)
+  a = s$lo
+  b = s$hi
+
+  s = sort2_chr(b, c, ...)
+  b = s$lo
+  c = s$hi
+
+  s = sort2_chr(a, b, ...)
+  a = s$lo
+  b = s$hi
+
+  if (!is.null(sep)) return(paste0(a,sep,b,sep,c))
+
+  list(a = a, b = b, c = c)
+}
+
+split_and_sort = function(terms, split = "#", ..., k = NULL) {
+  if (!length(terms)) {
+    return(character())
+  }
+
+  if (is.null(k)) {
+    n_tok = stringi::stri_count_fixed(terms, split) + 1L
+    same_k = length(unique(n_tok)) == 1L
+    if (same_k) {
+      k = n_tok[1]
+    } else {
+      k = NA_integer_
+    }
+  }
+
+  if (identical(k, 2L)) {
+    m = stringi::stri_split_fixed(terms, split, simplify = TRUE)
+    s = sort2_chr(m[, 1], m[, 2], ..., sep=split)
+    return(s)
+    #return(stringi::stri_join(s$lo, s$hi, sep = split))
+  }
+
+  if (identical(k, 3L)) {
+    m = stringi::stri_split_fixed(terms, split, simplify = TRUE)
+    s = sort3_chr(m[, 1], m[, 2], m[, 3], ..., sep=split)
+    return(s)
+    return(stringi::stri_join(s$a, s$b, s$c, sep = split))
+  }
+
+  x = stringi::stri_split_fixed(terms, split, simplify = FALSE)
+  vapply(
+    x,
+    function(tok) stringi::stri_flatten(stringi::stri_sort(tok, ...), collapse = split),
+    character(1)
+  )
+}
+```
+# END OF FILE: split_n_sort.R
+
+-----------------------------------------------------------
+
+
+# FILE: to_r_fixest.R
+```
+
+# Replace stata_to_r_code_fixest and fixest_vcov_code_from_regdb
+# Replace stata_to_r_code_fixest and fixest_vcov_code_from_regdb
+stata_to_r_code_fixest = function(reg, regvar, regxvar, cmdpart, opts=code_options(), parts = list()) {
+  restore.point("stata_to_r_code_fixest")
+
+  org_depvars = regvar$cterm[regvar$role=="dep"]
+  mod_depvars = replace_cterm_special_symbols(org_depvars)
+
+  formula = regvar_to_formula_fixest(regvar, regxvar, cmdpart)
+
+  vcov_type = fixest_vcov_type_from_regdb(reg$se_type, reg$se_args)
+  ssc_expr = fixest_ssc_code_from_reg(reg, vcov_type = vcov_type)
+  use_ssc = !is.null(ssc_expr)
+
+  use_sandwich = (vcov_type == "sandwich") | opts$prefer_sandwich
+  use_summary = use_sandwich | opts$prefer_summary
+
+  if (use_sandwich) {
+    reg_vcov = "iid"
+    vcov = regdb_se_to_sandwich(reg$se_category, reg$se_type, reg$se_args)
+  } else {
+    reg_vcov = fixest_vcov_code_from_regdb(reg$se_type, reg$se_args, vcov_type, quote=FALSE)
+    if (use_summary) {
+      vcov = reg_vcov
+    }
+  }
+
+  command = "feols"
+  arg_str = NULL
+  if (reg$cmd == "ppmlhdfe") {
+    command = "fepos"
+  } else if (reg$cmd %in% c("logit","xtlogit")) {
+    command = "feglm"
+    arg_str = "family=binomial()"
+  } else if (reg$cmd %in% c("probit","xtprobit","dprobit")) {
+    command = "feglm"
+    arg_str = 'family=binomial(link = "probit")'
+  }
+
+  arg_str = c(
+    paste0("fml = formula"),
+    paste0("data = dat"),
+    paste0("vcov = reg_vcov"),
+    arg_str
+  )
+
+  # Pass ssc to fixest natively when relevant.
+  if (use_ssc) {
+    arg_str = c(arg_str, "ssc = ssc")
+  }
+
+  weight_var = regvar$cterm[regvar$role == "weight"]
+  if (length(weight_var)>0) {
+    arg_str = c(arg_str, paste0("weights = ~", paste0(weight_var, collapse="+")))
+  }
+
+  library_code = "library(fixest)"
+  rcmd_code = paste0('rcmd = "',command,'"')
+  if (all(org_depvars==mod_depvars)) {
+    data_code = ""
+  } else {
+    data_code = paste0(
+      'dat[["', mod_depvars,'"]] = dat[["', org_depvars,'"]]',
+      collapse="\n"
+    )
+  }
+  ssc_code = if (use_ssc) paste0("ssc = ", ssc_expr) else NULL
+  formula_code = paste0("formula = ", formula)
+  reg_vcov_code = paste0("reg_vcov = ", quote_arg(reg_vcov))
+  reg_code = paste0("reg = ", command, "(", paste0(arg_str, collapse=","), ")")
+
+  code_df = tibble(
+    part = c("library", "rcmd", "data", "formula", if (use_ssc) "ssc", "reg_vcov", "reg"),
+    code = c(library_code, rcmd_code, data_code, formula_code, if (use_ssc) ssc_code, reg_vcov_code, reg_code)
+  )
+
+  if (use_summary) {
+    sum_vcov_code = paste0("sum_vcov = ", quote_arg(vcov))
+    sum_code = "sum = summary(reg, vcov = sum_vcov)"
+    code_df = bind_rows(
+      code_df,
+      tibble(part = c("sum_vcov","sum"), code = c(sum_vcov_code, sum_code))
+    )
+  }
+  if (opts$add_broom) {
+    code_df = add_reg_broom_code(code_df, use_summary=use_summary, use_conf_int=TRUE)
+  }
+  if (opts$add_function) {
+    code_df = add_reg_function_code(code_df)
+  }
+  code_df
+}
+
+
+
+fixest_vcov_code_from_regdb = function(se_type, se_args, vcov_type=fixest_vcov_type_from_regdb(se_type,se_args), quote=TRUE) {
+  restore.point("fixest_vcov_code_from_regdb")
+
+  if (vcov_type %in% c("cluster","twoway")) {
+    clustervar = extract_clustervar_from_se_args(se_args)
+    # Return as a formula (~ var1 + var2) natively supported by fixest
+    code = paste0("~ ", paste0("`", clustervar, "`", collapse = " + "))
+    return(code)
+  }
+  if (vcov_type %in% c("DK","NW")) {
+    stop("fixest_vcov_code_from_regdb not yet implemented for ", vcov_type)
+  }
+  if (quote) return(paste0('"',vcov_type,'"'))
+  return(vcov_type)
+}
+
+
+
+
+fixest_vcov_type_from_regdb = function(se_type, se_args) {
+  restore.point("se_type_to_fixest_vcov")
+  if (se_type == "hc1") return("hetero")
+  if (se_type %in%  c("cluster")) return(se_type)
+  if (se_type %in%  c("iid","cluster","twoway", "conley")) return(se_type)
+  if (se_type %in% c("nw", "dk")) return(toupper(se_type))
+  return("sandwich")
+}
+
+# Choose default fixest::ssc() settings for translated Stata commands.
+# This centralizes command-specific small sample correction choices.
+# Choose default fixest::ssc() settings for translated Stata commands.
+# This centralizes command-specific small sample correction choices.
+fixest_ssc_code_from_reg = function(reg, vcov_type = fixest_vcov_type_from_regdb(reg$se_type, reg$se_args)) {
+  restore.point("fixest_ssc_code_from_reg")
+
+  is_ml = reg$cmd %in% c("logit", "xtlogit", "probit", "xtprobit", "dprobit", "poisson", "xtpoisson", "nbreg", "gnbreg", "clogit")
+
+  if (vcov_type %in% c("cluster", "twoway", "DK", "NW")) {
+    if (reg$cmd == "areg") {
+      return('fixest::ssc(K.adj = TRUE, K.fixef = "full", G.adj = TRUE)')
+    }
+    if (is_ml) {
+      return("fixest::ssc(K.adj = TRUE, G.adj = TRUE)")
+      #return('fixest::ssc(adj = FALSE, cluster.adj = TRUE)')
+    }
+    return('fixest::ssc()')
+  }
+
+  if (is_ml) {
+    return('fixest::ssc(K.adj = TRUE, G.adj = TRUE)')
+  }
+
+  return('fixest::ssc()')
+}
+
+
+
+# Ideally this is independent of the original language from
+# which regvar was generated. E.g. it would be create
+# if we could translate both a stata command and an R command to
+# fixest
+# Ideally this is independent of the original language from
+# which regvar was generated. E.g. it would be create
+# if we could translate both a stata command and an R command to
+# fixest
+regvar_to_formula_fixest = function(regvar, regxvar, cmdpart) {
+  restore.point("regvar_to_formula_fixest")
+
+  add_main_effects = TRUE
+
+  rv = regvar %>% filter(role == "dep" | absorbed_fe)
+  # Update: for variables starting with _I (typically generated by xi)
+  # in_regcoef does not always work proper.
+  # Example:   artid = "aejmac_3_3_5"; steps = 3
+  # So we assume they are part of the formula
+  # possibly a problem arises if they are dropped...
+  # at some point I need to think on more robust handling
+  rxv = regxvar %>% filter(role !="exo" | in_regcoef | startsWith(cterm,"_I"))
+
+  rv = rv %>% mutate(
+    prefix = str.left.of(cterm,"@", not.found=rep("", length(cterm))) %>% tolower()
+  )
+
+  rxv = rxv %>% mutate(
+    prefix = str.left.of(cterm,"@", not.found=rep("", length(cterm))) %>% tolower()
+  )
+
+  depvars = rv$cterm[rv$role=="dep"]
+  depvars = replace_cterm_special_symbols(depvars)
+  form = paste0(paste0("`",depvars,"`", collapse=" + "), " ~ ")
+
+
+
+  omit_constant = any(cmdpart$part=="opt" & cmdpart$content=="nocons")
+  if (omit_constant) {
+    form = paste0(form, "0 + ")
+  }
+
+  # Create xvariables from regxvars this
+  # means we have manually expanded factors and interaction terms
+
+  # Exogeneous x that are no FE
+  rows = which(rxv$role == "exo")
+  if (sum(rows)>0) {
+    form = paste0(form, paste0("`",rxv$cterm[rows],"`", collapse= " + "))
+  } else {
+    # add explicit constant if no x variables
+    form = paste0(form, "1")
+  }
+
+  # Exogeneous x as FE
+  rows = which(rv$role == "exo" & rv$absorbed_fe)
+  if (sum(rows)>0) {
+    fe_terms = rv[rows, ] %>%
+      group_by(ia_cterm) %>%
+      arrange(ia_pos) %>%
+      summarize(
+        fe_expr = {
+          if (first(ia_reg_type) == "factor_numeric" && n() == 2) {
+            f_idx = which(var_reg_type %in% c("factor", "fe"))[1]
+            n_idx = which(!var_reg_type %in% c("factor", "fe"))[1]
+            if (is.na(f_idx)) f_idx = 1
+            if (is.na(n_idx)) n_idx = 2
+            paste0("`", cterm[f_idx], "`[`", cterm[n_idx], "`]")
+          } else {
+            paste0("`", cterm, "`", collapse = "^")
+          }
+        }
+      ) %>%
+      pull(fe_expr)
+    form = paste0(form, " | ", paste0(fe_terms, collapse = " + "))
+  }
+
+  # Endogeneous x and instruments (never FE)
+  rows = which(rxv$role == "endo")
+  if (sum(rows)>0) {
+    form = paste0(form, " | ",paste0("`",rxv$cterm[rows],"`", collapse= " + "))
+  }
+  rows = which(rxv$role == "instr")
+  if (sum(rows)>0) {
+    form = paste0(form, " ~ ",paste0("`",rxv$cterm[rows],"`", collapse= " + "))
+  }
+  form
+}
+
+
+
+# Ideally this is independent of the original language from
+# which regvar was generated. E.g. it would be create
+# if we could translate both a stata command and an R command to
+# fixest
+regvar_to_formula_fixest_noregxvar = function(regvar, regxvar, cmdpart) {
+  restore.point("regvar_to_formula_fixest")
+
+  add_main_effects = TRUE
+
+  rv = regvar
+  rv = rv %>% mutate(
+    prefix = str.left.of(cterm,"@", not.found=rep("", length(cterm))) %>% tolower(),
+    is_ia = ia_num > 1
+  )
+
+  # We replace prefix @ with .
+  #rv = replace_regvar_prefix_sep(rv, "@",".")
+
+
+  depvars = rv$cterm[rv$role=="dep"]
+  form = paste0(paste0(depvars, collapse=" + "), " ~ ")
+
+
+  omit_constant = any(cmdpart$part=="opt" & cmdpart$content=="nocons")
+  if (omit_constant) {
+    form = paste0(form, "0 + ")
+  }
+
+
+  # In stata x variables starting with o. like o.var will be omitted
+  rv = rv %>% filter(prefix!="o")
+
+
+  # TO DO: Specify whether in interaction A*B also A and B
+  #        should be included or not.
+  if (sum(rv$is_ia) >0 ) {
+    ia = rv %>%
+      filter(is_ia) %>%
+      group_by(is_ia, ia_cterm, role, ia_num, main_pos) %>%
+      arrange(desc(var_reg_type=="factor"), desc(var_reg_type=="dummy"), ia_pos) %>%
+      summarize(
+        absorbed_fe = first(absorbed_fe),
+        ia_type = case_when(
+          all(var_reg_type=="dummy") ~ "dummies",
+          all(var_reg_type=="numeric") ~ "numeric",
+          all(var_reg_type %in% c("dummy","factor")) ~ "factor",
+          ia_num == 2 & var_reg_type[1] == "dummy" & (var_reg_type[2]=="numeric") ~ "dummy_numeric",
+          ia_num == 2 & var_reg_type[1] %in% c("factor", "fe") & var_reg_type[2] == "numeric" ~ "factor_numeric",
+          TRUE ~ "unknown"
+        )[1],
+        fe_expr = case_when(
+          ia_type == "factor_numeric" ~ {
+            f_idx = which(var_reg_type %in% c("factor", "fe"))[1]
+            n_idx = which(!var_reg_type %in% c("factor", "fe"))[1]
+            if (is.na(f_idx)) f_idx = 1
+            if (is.na(n_idx)) n_idx = 2
+            paste0("`", cterm[f_idx], "`[`", cterm[n_idx], "`]")
+          },
+          TRUE ~ paste0("`", cterm, "`", collapse="^")
+        )[1],
+        x_expr = paste0(
+          ifelse(!var_reg_type %in% c("factor", "fe"), paste0("`", cterm, "`"), paste0("factor(`",cterm,"`)")),
+          collapse= if (isTRUE(first(add_main_effects))) "*" else ":"
+        )[1]
+      ) %>%
+      ungroup()
+  } else {
+    ia = NULL
+  }
+
+
+  no_ia = rv %>%
+    filter(!is_ia) %>%
+    mutate(
+      fe_expr = paste0("`", cterm, "`"),
+      x_expr = case_when(
+        var_reg_type %in% c("factor", "fe") ~ paste0("factor(`", cterm,"`)"),
+        TRUE ~ paste0("`", cterm, "`")
+      )
+    )
+
+  terms = bind_rows(ia, no_ia) %>%
+    arrange(main_pos)
+
+  # Exogeneous x that are no FE
+  rows = which(terms$role == "exo" & !terms$absorbed_fe)
+  if (sum(rows)>0) {
+    form = paste0(form, paste0(terms$x_expr[rows], collapse= " + "))
+  }
+
+  # Exogeneous x as FE
+  rows = which(terms$role == "exo" & terms$absorbed_fe)
+  if (sum(rows)>0) {
+    form = paste0(form, " | ",paste0(terms$fe_expr[rows], collapse= " + "))
+  }
+
+  # Endogeneous x and instruments (never FE)
+  rows = which(terms$role == "endo")
+  if (sum(rows)>0) {
+    form = paste0(form, " | ",paste0(terms$x_expr[rows], collapse= " + "))
+  }
+  rows = which(terms$role == "instr")
+  if (sum(rows)>0) {
+    form = paste0(form, " ~ ",paste0(terms$x_expr[rows], collapse= " + "))
+  }
+  form
+}
+
+stata_to_r_code_fixest_fit.old = function(reg, regvar, regxvar, cmdpart, opts=code_options(), parts = list()) {
+  restore.point("stata_to_r_code_fixest_fit")
+
+  depvars = regvar$cterm[regvar$role=="dep"]
+  if (length(depvars)==1) {
+    ycode = paste0('y=dat["', depvars,'"]')
+  } else {
+    ycode = paste0('y=cbind(', paste0('dat["', depvars,'"]', collapse=","),')')
+  }
+
+}
+
+```
+# END OF FILE: to_r_fixest.R
+
+-----------------------------------------------------------
+
+
+# FILE: to_r_lm.R
+```
+# TO DO: VCOV
+stata_to_r_code_lm = function(reg, regvar, regxvar, cmdpart, opts=code_options(), parts = list()) {
+  restore.point("stata_to_r_code_lm")
+
+  org_depvars = regvar$cterm[regvar$role=="dep"]
+  mod_depvars = replace_cterm_special_symbols(org_depvars)
+
+  formula = regvar_to_formula_fixest(regvar, regxvar, cmdpart)
+
+  command = "lm"
+  arg_str = c(
+    paste0("formula = formula"),
+    paste0('data = dat')
+  )
+
+  weight_var = regvar$cterm[regvar$role == "weight"]
+  if (length(weight_var)>0) {
+    arg_str = c(arg_str, paste0("weights = dat$", paste0(weight_var, collapse="+")))
+  }
+
+  rcmd_code = paste0('rcmd = "',command,'"')
+  # We use the default ssc arguments since they are closest to the
+  # Stata defaults
+  if (all(org_depvars==mod_depvars)) {
+    data_code = ""
+  } else {
+    data_code = paste0(
+      'dat[["', mod_depvars,'"]] = dat[["', org_depvars,'"]]',
+      collapse="\n"
+    )
+  }
+  formula_code = paste0('formula = ', formula)
+  reg_code = paste0('reg = ', command, "(", paste0(arg_str, collapse=","),")")
+
+  code_df = tibble(part = c("rcmd","data","formula", "reg"), code = c(rcmd_code,data_code, formula_code, reg_code))
+
+
+  # vcov_type = fixest_vcov_type_from_regdb(reg$se_type, reg$se_args)
+  # use_sandwich = TRUE
+  # use_summary = use_sandwich | opts$prefer_summary
+  #
+  # if (use_sandwich) {
+  #   reg_vcov = "iid"
+  #   vcov = regdb_se_to_sandwich(reg$se_category, reg$se_type, reg$se_args)
+  # }
+  #
+  #
+  # if (use_summary) {
+  #   sum_vcov_code = paste0('sum_vcov = ', quote_arg(vcov))
+  #   sum_code = 'sum = summary(reg, vcov = sum_vcov)'
+  #   code_df = bind_rows(code_df,
+  #     tibble(part = c("sum_vcov","sum"), code = c(sum_vcov_code, sum_code))
+  #   )
+  # }
+  use_summary=FALSE
+  if (opts$add_broom) {
+    code_df = add_reg_broom_code(code_df, use_summary=use_summary, use_conf_int=TRUE)
+  }
+  if (opts$add_function) {
+    code_df = add_reg_function_code(code_df)
+  }
+  code_df
+}
+
+regvar_to_formula_lm = function(regvar, regxvar, cmdpart) {
+  regvar_to_formula_fixest(regvar, regxvar, cmdpart)
+}
+```
+# END OF FILE: to_r_lm.R
+
+-----------------------------------------------------------
+
+
+# FILE: to_r_mfx.R
+```
+example = function() {
+
+  dat = tibble(y=sample(0:1, size=100, replace=TRUE), x1 = rnorm(100), x2 = rnorm(100))
+  reg = glm(y~x1+x2,family = binomial(link = "probit"), data=dat)
+
+  library(mfx)
+  mfx=probitmfx(y~x1+x2, data=dat)
+  coeftest(mfx,vcov. = sandwich::vcovHAC(mfx))
+
+  broom::tidy(mfx)
+
+}
+
+
+stata_to_r_code_mfx = function(reg, regvar, regxvar, cmdpart, opts=code_options(), parts = list()) {
+  restore.point("stata_to_r_code_mfx")
+
+  # Ignore dropped regvars (if they are nor part of an interaction)
+  #regvar = filter(regvar, !is_dropped | ia_cterm != cterm)
+
+  # Currently we just use the fixest formula
+  formula = regvar_to_formula_fixest(regvar,regxvar, cmdpart)
+
+  cmd = reg$cmd
+  if (cmd=="dprobit") {
+    rcmd = "probitmfx"
+  } else {
+    stop("Cannot yet translate Stata command ", cmd)
+  }
+
+  # The exclude='select' arguments avoids overwriting
+  # of dplyr's select function
+  library_code = "library(MASS, exclude='select')
+library(mfx)
+  "
+  rcmd_code = paste0('rcmd = "',rcmd,'"')
+  # We use the default ssc arguments since they are closest to the
+  # Stata defaults
+  formula_code = paste0('formula = ', formula)
+
+  # mfx
+  arg_str = NULL
+  if (reg$se_category == "robust") {
+    arg_str = "robust = true"
+  } else if (reg$se_category == "cluster") {
+    clustervar = extract_clustervar_from_se_args(reg$se_args)
+    arg_str = paste0('clustervar1 = "', clustervar[1],'"')
+    if (reg$se_type == "twoway") {
+      arg_str = c(arg_str, paste0('clustervar2 = "', clustervar[2],'"'))
+    }
+  }
+  arg_str = c(
+    paste0("formula = formula"),
+    paste0('data = dat'),
+    arg_str
+  )
+
+  reg_code = paste0('reg = ', rcmd,'(', paste0(arg_str, collapse=","),")")
+  code_df = tibble(part = c("library", "rcmd","formula","reg"), code = c(library_code, rcmd_code,formula_code,reg_code))
+
+  if (opts$add_broom) {
+    code_df = add_reg_broom_code(code_df, use_summary=FALSE, use_conf_int=TRUE)
+  }
+  if (opts$add_function) {
+    code_df = add_reg_function_code(code_df)
+  }
+  code_df
+}
+```
+# END OF FILE: to_r_mfx.R
+
+-----------------------------------------------------------
+
+
+# FILE: to_r_quantreg.R
+```
+
+stata_to_r_code_quantreg = function(reg, regvar,regxvar, cmdpart, opts=code_options(), parts = list()) {
+  restore.point("stata_to_r_code_quantreg")
+
+  # Ignore dropped regvars (if they are nor part of an interaction)
+  #regvar = filter(regvar, !is_dropped | ia_cterm != cterm)
+
+
+  # Currently we just use the fixest formula
+  formula = regvar_to_formula_fixest(regvar, regxvar, cmdpart)
+
+  rcmd = "rq"
+
+  library_code = paste0("library(quantreg)")
+  rcmd_code = paste0('rcmd = "',rcmd,'"')
+  # We use the default ssc arguments since they are closest to the
+  # Stata defaults
+  formula_code = paste0('formula = ', formula)
+
+  arg_str = NULL
+  if (reg$se_category != "iid") {
+    stop("Currently stata_to_r_code_quantreg is only implemented for iid standard errors. ")
+  }
+  arg_str = c(
+    paste0("formula = formula"),
+    paste0('data = dat'),
+    arg_str
+  )
+
+  weight_var = regvar$cterm[regvar$role == "weight"]
+  if (length(weight_var)==1) {
+    arg_str = c(arg_str, paste0('weights = dat[["',weight_var,'"]]'))
+  } else if (length(weight_var)>1) {
+    stop("Cannot deal with multiple weight variables.")
+  }
+
+  opts_df = cmdpart_to_opts_df(cmdpart)
+  opt_row = which(opts_df$opt=="quantile")
+  if (length(opt_row)>0) {
+    arg_str = c(arg_str, paste0("tau = ", opts_df$opt_arg[opt_row]))
+  }
+
+
+  reg_code = paste0('reg = suppressWarnings(', rcmd,'(', paste0(arg_str, collapse=","),"))")
+
+  code_df = tibble(part = c("library", "rcmd","formula","reg"), code = c(library_code, rcmd_code,formula_code,reg_code))
+
+  if (opts$add_broom) {
+    code_df = add_reg_broom_code(code_df, use_summary=FALSE, use_conf_int=TRUE)
+    code_df = bind_rows(code_df, tibble(part="ct_mod",code='
+ct = mutate(ct, std.error=NA_real_, statistic= NA_real_,  p.value = NA_real_)
+if ("logLik" %in% names(glance)) {
+  glance$logLik = as.numeric(glance$logLik)
+}
+'))
+  }
+  if (opts$add_function) {
+    code_df = add_reg_function_code(code_df)
+  }
+  code_df
+}
+
+tidy.tobit <- function(x, ...) {
+  class(x) <- "survreg"
+  tidy(x, ...)
+}
+```
+# END OF FILE: to_r_quantreg.R
+
+-----------------------------------------------------------
+
+
+# FILE: to_r.R
+```
+# Translate to R code
+example = function() {
+  project.dir = "C:/libraries/repbox/projects_reg/testsupp"
+
+  core = readRDS(file.path(project.dir, "regdb","reg_core.Rds"))
+  regs = core$reg
+  varinfo = readRDS(file.path(project.dir, "regdb","base_varinfo.Rds"))
+  regvars =  varinfo$regvar
+
+  step = 3
+  reg = regs[regs$step==step,]
+  regvar = regvars[regvars$step==step,]
+
+  code_df = reg_stata_to_r_code(reg, regvar, opts = code_options(add_function=TRUE, add_restorepoint = TRUE))
+}
+
+
+code_options = function(prefer_sandwich=FALSE, prefer_summary=FALSE, add_broom=TRUE, add_function=FALSE, add_restorepoint=FALSE) {
+  list(prefer_sandwich=prefer_sandwich, prefer_summary=prefer_summary, add_broom=add_broom, add_function=add_function, add_restorepoint=add_restorepoint)
+}
+
+reg_stata_to_r_code = function(reg, regvar, regxvar, cmdpart, prefer="fixest", opts=code_options()) {
+  restore.point("reg_stata_to_r_code")
+
+  r_cmd = get_stata_to_r_cmd(reg$cmd, prefer)
+  if (isTRUE(r_cmd == "no_trans") | is.na(r_cmd)) {
+    cat(paste0("The Stata command ", reg$cmd, " is not yet implemented for translation in regtranslate."))
+    return(NULL)
+  }
+
+  args = list(reg=reg, regvar=regvar,regxvar, cmdpart=cmdpart, opts=opts)
+  fun = paste0("stata_to_r_code_",r_cmd)
+  res = do.call(fun, args)
+  res
+}
+
+reg_stata_to_r_formula = function(reg, regvar, regxvar, cmdpart, prefer="fixest", opts=code_options()) {
+  restore.point("reg_stata_to_r_formula")
+
+  r_cmd = get_stata_to_r_cmd(reg$cmd, prefer)
+  if (isTRUE(r_cmd == "no_trans")) {
+    return(NULL)
+  } else if (is.na(r_cmd)) {
+    stop(paste0("The Stata command ", reg$cmd, " is neither implemented for translation nor specified in stata_cmds_without_r_translation()"))
+  }
+
+  args = list(regvar=regvar,regxvar, cmdpart=cmdpart)
+  fun = paste0("regvar_to_formula_",r_cmd)
+  res = do.call(fun, args)
+  as.formula(res)
+}
+
+get_stata_to_r_cmd = function(cmd, prefer = NULL) {
+  restore.point("get_stata_to_r_cmd")
+  df = stata_to_r_cmds_df()
+  rows = df$stata_cmd == cmd
+  if (length(rows)==0) return(NA)
+  r_cmds = df$r_cmd[rows]
+  if (length(rows)==1 | length(prefer)==0) return(r_cmds[1])
+  ma = match(r_cmds, prefer)
+  best = which.min(ma)
+  if (length(best)==0) return(r_cmds[1])
+  r_cmds[best[1]]
+}
+
+
+stata_to_r_cmds_df = function(cmd) {
+  li = list(
+    # If you add commands here make to sure that you update the to_r_fixest.R code
+    fixest.. = c("regress","reg", "ivregress","ivreg","ivreg2","reghdfe","xtreg","areg","ppmlhdfe","logit","xtlogit","probit","xtprobit","dprobit"),
+    lm.. = c("regress","reg"),
+    ivreg.. = c("ivregress","ivreg","ivreg2"),
+    quantreg.. = c("qreg"),
+    # Note that parmest does return coefficients not marginal
+    # effects for dprobit. So we don't use mfx
+    #mfx... = c("dprobit"),
+    tobit.. = c("tobit")
+  )
+  stata_cmd = unlist(li)
+  r_cmd = str.left.of(names(stata_cmd),"..")
+  data.frame(stata_cmd=stata_cmd,r_cmd=r_cmd,row.names = NULL)
+}
+
+add_reg_function_code = function(code_df,add_results=TRUE, add_restore_point=isTRUE(opts$add_restore_point), opts=NULL) {
+  restore.point("add_reg_function_code")
+  fun_header = paste0("function(dat,...){")
+  rp_code = paste0('restore.point("regfun_',sample.int(1e10,1),'")')
+
+  if (add_results) {
+    results = paste0("results = list(reg=reg")
+    if ("rcmd" %in% code_df$part) {
+      results = paste0(results, ",rcmd=rcmd")
+    }
+
+    if ("sum" %in% code_df$part) {
+      results = paste0(results, ",sum=sum")
+    }
+    if ("tidy" %in% code_df$part) {
+      results = paste0(results, ",ct=ct")
+    }
+    if ("glance" %in% code_df$part) {
+      results = paste0(results, ",glance=glance")
+    }
+    results = paste0(results,")")
+    results_df = tibble(part="results", code=results)
+  } else {
+    results_df = NULL
+  }
+  fun_footer = paste0("return(results)\n}")
+
+  if (add_restore_point) {
+    rp_code = paste0('restore.point("regfun_',sample.int(1e10,1),'")')
+    head_df = tibble(part=c("fun_header","restorepoint"),code = c(fun_header, rp_code))
+  } else {
+    head_df = tibble(part=c("fun_header"), code = c(fun_header))
+  }
+  foot_df = tibble(part=c("fun_footer"), code = c(fun_footer))
+
+  bind_rows(
+    head_df,
+    code_df,
+    results_df,
+    foot_df
+  )
+}
+
+add_reg_broom_code = function(code_df, use_summary=any(code_df$part=="sum"), use_conf_int=TRUE) {
+  broom_x = if (use_summary) "sum" else "reg"
+  tidy_code = paste0('ct = broom::tidy(',broom_x,",conf.int=TRUE)")
+  glance_code = paste0('glance = broom::glance(',broom_x,')')
+
+  tidy_df = tibble(
+    part = c("tidy","glance"),
+    code = c(tidy_code, glance_code)
+  )
+  bind_rows(code_df, tidy_df)
+}
+
+# update: don't quote one-sided formulas
+quote_arg = function(arg) {
+  quote = suppressWarnings(!has.substr(arg,"(") & !startsWith(trimws(arg), "~") & is.na(as.numeric(arg)) & is.na(as.logical(arg)))
+  ifelse(quote, paste0('"', arg,'"'), arg)
+}
+
+# quote_arg = function(arg) {
+#   quote = suppressWarnings(!has.substr(arg,"(") & is.na(as.numeric(arg)) & is.na(as.logical(arg)))
+#   ifelse(quote, paste0('"', arg,'"'), arg)
+# }
+
+replace_regvar_prefix_sep = function(regvar, from="@", to=".") {
+  regvar$cterm = gsub(from, to, regvar$cterm, fixed=TRUE)
+  regvar$ia_cterm = gsub(from, to, regvar$ia_cterm, fixed=TRUE)
+  regvar
+}
+
+
+extract_clustervar_from_se_args = function(se_args) {
+  args = regdb_parse_se_args(se_args)
+  clustervar = args[startsWith(names(args),"cluster")]
+  clustervar
+}
+```
+# END OF FILE: to_r.R
+
+-----------------------------------------------------------
+
+
+# FILE: to_r_tobit.R
+```
+
+stata_to_r_code_tobit = function(reg, regvar, regxvar, cmdpart, opts=code_options(), parts = list()) {
+  restore.point("stata_to_r_code_mfx")
+
+  # Ignore dropped regvars (if they are nor part of an interaction)
+  #regvar = filter(regvar, !is_dropped | ia_cterm != cterm)
+
+  # Currently we just use the fixest formula
+  formula = regvar_to_formula_fixest(regvar, regxvar, cmdpart)
+
+  rcmd = "tobit"
+
+  library_code = paste0("library(AER)")
+  rcmd_code = paste0('rcmd = "',rcmd,'"')
+  # We use the default ssc arguments since they are closest to the
+  # Stata defaults
+  formula_code = paste0('formula = ', formula)
+
+  arg_str = NULL
+  if (reg$se_category == "robust") {
+    arg_str = "robust = true"
+  } else if (reg$se_category == "cluster") {
+    clustervar = extract_clustervar_from_se_args(reg$se_args)
+    arg_str = paste0('cluster = "', clustervar[1],'"')
+    if (reg$se_type == "twoway") {
+      stop("Two way clusters not yet implemented for tobit in R")
+    }
+  }
+  arg_str = c(
+    paste0("formula = formula"),
+    paste0('data = dat'),
+    arg_str
+  )
+
+  weight_var = regvar$cterm[regvar$role == "weight"]
+  if (length(weight_var)==1) {
+    arg_str = c(arg_str, paste0('weights = dat[["',weight_var,'"]]'))
+  } else if (length(weight_var)>1) {
+    stop("Cannot deal with mutliple weight variables.")
+  }
+
+
+  reg_code = paste0('reg = ', rcmd,'(', paste0(arg_str, collapse=","),")
+class(reg) = 'survreg'")
+
+  code_df = tibble(part = c("library", "rcmd","formula","reg"), code = c(library_code, rcmd_code,formula_code,reg_code))
+
+  if (opts$add_broom) {
+    code_df = add_reg_broom_code(code_df, use_summary=FALSE, use_conf_int=TRUE)
+  }
+  if (opts$add_function) {
+    code_df = add_reg_function_code(code_df)
+  }
+  code_df
+}
+
+tidy.tobit <- function(x, ...) {
+  class(x) <- "survreg"
+  tidy(x, ...)
+}
+```
+# END OF FILE: to_r_tobit.R
+
+-----------------------------------------------------------
+
+
+# package repboxStataReg
+
+
+# FILE: DESCRIPTION
+```
+Package: repboxStataReg
+Type: Package
+Title: Extraction of regression information from Stata reproduction run (before metareg)
+Version: 0.1.0
+Authors@R: c(
+    person(
+      "Sebastian", "Kranz",
+      email = "sebastian.kranz@uni-ulm.de",
+      role = c("aut", "cre")
+    )
+  )
+Description: Core part of previous huge repboxReg package. 
+  Only the functionality related to the original reproduction
+  run, no metareg stuff.
+License: GPL >= 2.0
+Encoding: UTF-8
+LazyData: true
+Depends: repboxDB, repboxUtils, repboxDRF, repboxStata
+```
+# END OF FILE: DESCRIPTION
+
+-----------------------------------------------------------
+
+
+# FILE: extract_reg_stata.R
+```
+# Will be called from repboxStata
+#
+# Extracts specified regression information
+#
+rsr_extract_stata_reg_output = function(project_dir, run.df=NULL, dotab=NULL, save=TRUE) {
+  restore.point("rsr_extract_stata_reg_output")
+
+  #if (is.null(runid_map)) {
+  #  runid_map = readRDS(file.path(project_dir, "repbox/stata/runid_repbox_map.Rds"))
+  #}
+
+  if (is.null(run.df) | is.null(dotab)) {
+    repbox_results = readRDS(file.path(project_dir, "repbox/stata/repbox_results.Rds"))
+    run.df = repbox_results$run.df
+    dotab = repbox_results$dotab
+  }
+
+  artid = basename(project_dir)
+  #++++++++++++++++++++++++++++++++++++++++++++++++++
+  # 1. Extract TSV information stored by esttab
+  #++++++++++++++++++++++++++++++++++++++++++++++++++
+
+  res.dir = file.path(project_dir,"repbox/stata/tsv")
+  files = list.files(res.dir,glob2rx(paste0("*.dta")),full.names = TRUE)
+
+  bfiles = basename(files)
+  donum = str.left.of(bfiles, "_") %>% as_integer()
+  str = str.right.of(bfiles,"_")
+  line = str.left.of(str, "_") %>% as_integer()
+  str = str.right.of(str,"_")
+  counter = str.remove.ends(str, right=4) %>% as_integer()
+
+  regtab = tibble(regresfile=files,donum=donum,line=line,counter=counter) %>%
+    arrange(donum, line, counter) %>%
+    group_by(donum, line) %>%
+    mutate(run = seq_len(n())) %>%
+    ungroup()
+
+  regtab$ct = lapply(regtab$regresfile, function(file) {
+    restore.point("inner.read.regres")
+    regres = haven::read_dta(file)
+    old.cols = c("eq","parm","label","estimate","stderr","dof", "z","p","min95","max95")
+    new.cols = c("eq","var","label", "coef","se","dof", "t","p","ci_low","ci_up")
+    regres = rename.cols(regres, old.cols, new.cols)
+    regres = regres[,intersect(new.cols, colnames(regres)), drop=FALSE]
+    if (!"eq" %in% colnames(regres)) {
+      regres$eq = rep("", NROW(regres))
+    }
+    regres
+  })
+  regtab = select(regtab, -regresfile)
+
+
+
+  #++++++++++++++++++++++++++++++++++++++++++++++++++
+  # 2. Extract regression information stored in logs
+  #++++++++++++++++++++++++++++++++++++++++++++++++++
+
+  dir = file.path(project_dir, "repbox/stata/logs")
+  log.files = list.files(dir,glob2rx("log_*.log"),full.names = TRUE)
+
+  reg.log = lapply(log.files, function(file) {
+    log.txt = readLines(file,warn=FALSE)  %>% enc2utf8()
+    bdf = extract.inject.blocks(log.txt, type="REG_ERETURN")
+    bdf$er = lapply(bdf$str,parse.ereturn.injection)
+    bdf
+  }) %>% bind_rows()
+
+  regtab = left_join(regtab, select(reg.log, donum, line, counter, er), by=c("donum","line","counter"))
+
+  #++++++++++++++++++++++++++++++++++++++++++++++++++
+  # 3. Merge with run.df
+  #++++++++++++++++++++++++++++++++++++++++++++++++++
+
+  regtab = left_join(regtab,run.df, by=c("donum","line","counter"))
+
+  # UPDATE: Only consider regression where missing_data = FALSE
+  # Otherwise we likely have faulty regressions that use an earlier data set
+  # Also ignore regression results with run error
+  regtab = regtab[regtab$has.data & !regtab$runerr,]
+
+
+  regtab$artid = artid
+
+  # merge with dotab to get doid
+  regtab = regtab %>% left_join(dotab %>% select(donum, doid), by="donum")
+
+  #colnames(regtab)
+  cols = c("artid", "runid", "donum", "doid", "line", "counter","cmd", "cmdline","ct","er", "datasig", "timevar" ,"panelvar", "tdelta",        "runerr",        "runerrcode",    "runerrmsg",     "runsec", "orgline", "in.program", "has.data")
+  regtab = regtab[,cols]
+
+
+  if (save) {
+    saveRDS(regtab, file.path(project_dir,"repbox/stata/regtab.Rds"))
+  }
+
+  regtab
+}
+
+
+
+# Used to extract additional regression information
+parse.ereturn.injection = function(str) {
+  restore.point("parse.ereturn.injection")
+
+  # scalars
+  start = which(str=="scalars:")+1
+  if (length(start)>0) {
+    end = min(which(str=="" & 1:NROW(str)>start))-1
+    svec = trimws(str[start:end])
+    var = trimws(str.left.of(svec,"=")) %>% str.remove.ends(2,1)
+    val = suppressWarnings(as.numeric(str.right.of(svec,"=") %>% trimws()))
+    scalars = as.list(val)
+    names(scalars) = var
+  } else {
+    scalars = list()
+  }
+
+  # macros (contains e.g. depvar)
+  start = which(str=="macros:")+1
+  if (length(start)>0) {
+    end = min(which((str=="" | startsWith(str, "#~# END INJECT")) & 1:NROW(str)>start))-1
+    svec = trimws(str[start:end])
+    var = trimws(str.left.of(svec,":")) %>% str.remove.ends(2,1)
+    val = str.right.of(svec,":") %>% trimws()%>% str.remove.ends(1,1)
+    macros = as.list(val)
+    names(macros) = var
+  } else {
+    macros = list()
+  }
+
+  as_tibble(c(scalars,macros))
+}
+
+
+
+```
+# END OF FILE: extract_reg_stata.R
+
+-----------------------------------------------------------
+
+
+# FILE: inject_reg_stata.R
+```
+
+# Will be called from repboxStata
+#
+# Inject regression specific information
+injection.reg = function(txt, lines=seq_along(txt),do, opts=rbs.opts()) {
+  restore.point("injection.reg")
+
+  repbox.dir = file.path(do$project_dir,"repbox/stata")
+  res.dir = file.path(repbox.dir,"tsv")
+
+  res.files = paste0(res.dir,"/",do$donum,"_",  lines,"_`repbox_local_cmd_count'",".dta")
+
+  paste0('
+local repbox_reg_rc = _rc
+', end.injection(do$donum, lines, "RUNCMD",do),'
+* REGRESSION INJECTION START
+if (`repbox_reg_rc\' == 0) {
+  parmest, label saving("', res.files,'", replace)
+
+',post.injection(txt,lines,do=do, report.xtset=TRUE),'
+  display "#~# INJECT REG_ERETURN ', do$donum,' ', lines,' `repbox_local_cmd_count\'"
+  ereturn list
+  display "#~# END INJECT REG_ERETURN ',do$donum,' ', lines,' `repbox_local_cmd_count\'"
+}
+else {
+  display "#~# REGRESSION COMMAND FAILED ',do$donum,' ', lines,' `repbox_local_cmd_count\' rc=`repbox_reg_rc\'"
+}
+
+* REGRESSION INJECTION END
+')
+}
+```
+# END OF FILE: inject_reg_stata.R
+
+-----------------------------------------------------------
+
+
+# FILE: rsr.R
+```
+example = function() {
+  library(repboxStataReg)
+  # Should point to this project dir
+  overwrite=TRUE
+  project_dir = "~/repbox/projects/aejapp_11_2_10"
+  parcels = list()
+
+  if (FALSE)
+    rstudioapi::filesPaneNavigate(project_dir)
+
+  rsr_make_reg_info(project_dir, overwrite=TRUE)
+}
+
+# Stores cmdpart parcels and internal reg info in repbox/stata dir
+# we cannot yet store any regcoef etc parcels
+# since that requires metaregBase semantic parsing with data set info
+rsr_make_reg_info = function(project_dir, overwrite=FALSE, parcels=list(), repbox_results=repbox_load_internal_repbox_results(project_dir)) {
+  restore.point("rsr_make_reg_info")
+  parcels = repdb_load_parcels(project_dir, "stata_run_cmd")
+  run_df = repboxDRF::repbox_get_run_df(project_dir = project_dir, parcels=parcels)
+  parcels = rsr_make_cmdpart_parcels(project_dir = project_dir, overwrite=overwrite, run_df=run_df)
+  rsr_make_stata_reg_run_info_parcel(project_dir, parcels=parcels,repbox_results=repbox_results)
+  regtab = rsr_extract_stata_reg_output(project_dir)
+
+  parcels
+}
+
+rsr_make_cmdpart_parcels = function(project_dir,  overwrite=FALSE, parcels=list(), run_df = repboxDRF::repbox_get_run_df(project_dir = project_dir, parcels=parcels)) {
+  restore.point("rsr_make_cmdpart_parcels")
+
+  if (!overwrite) {
+    if (repboxDB::repdb_has_parcel(project_dir, "reg_cmdpart")) {
+      return(parcels)
+    }
+  }
+
+  repdb_dir = file.path(project_dir, "repdb")
+
+  rows = which(run_df$cmd_type %in% c("reg"))
+  cp_df = cmdparts_of_stata_reg(run_df$cmdline[rows]) %>%
+    arrange(str_row)
+  cp_df$runid = run_df$runid[rows[cp_df$str_row]]
+  parcels[["reg_cmdpart"]] = cp_df
+
+  repboxDB::repdb_save_parcels(parcels[c("reg_cmdpart")],dir=repdb_dir)
+
+  rows = which(run_df$cmd_type %in% c("quasi_reg"))
+  if (length(rows)==0) return(parcels)
+
+  cp_df = cmdparts_of_stata_reg(run_df$cmdline[rows]) %>%
+    arrange(str_row)
+  cp_df$runid = run_df$runid[rows[cp_df$str_row]]
+  parcels[["quasi_reg_cmdpart"]] = cp_df
+  repboxDB::repdb_save_parcels(parcels[c("quasi_reg_cmdpart")],dir=repdb_dir)
+
+  parcels
+}
+
+
+# Only saves run_info after regression run
+# Regression information will be stored after metareg run
+rsr_make_stata_reg_run_info_parcel = function(project_dir, parcels=list(), repbox_results=repbox_load_internal_repbox_results(project_dir)) {
+  restore.point("repbox_save_stata_reg_run_parcels")
+
+  parcels = repdb_load_parcels(project_dir, c("stata_run_info","stata_file"), parcels=parcels)
+  artid = basename(project_dir)
+
+  res = repbox_results
+
+  # No Stata run results stored
+  if (is.null(res)) {
+    return(parcels)
+  }
+
+  dotab = res$dotab
+  dotab$file_path = str.right.of(dotab$file, paste0("/",artid,"/mod/"))
+
+  if (!has.col(res$tab,"in_loop")) {
+    cat("\nNote there was no 'in_loop' col in repbox_results$tab\n")
+    res$tab$in_loop = NA_integer_
+  }
+
+  run_df = res$run.df %>%
+    mutate(
+      artid = artid,
+      found_path = file_path_relative_to_supp(foundfile, paste0("/", artid, "/mod/"),wdir = wdir, supp.dir = paste0(project_dir, "/", artid, "/mod/"))
+    ) %>%
+    rename(
+
+      start_time = stime,
+      end_time = etime,
+      errcode = runerrcode,
+      errmsg = runerrmsg,
+      out_img_file = out.img.file
+    ) %>%
+    left_join(select(dotab, donum, file_path), by="donum") %>%
+    left_join(select(dotab, rootdonum = donum, root_file_path = file_path), by="rootdonum")
+
+  run_df$runid = seq_len(NROW(run_df))
+  script_df = parcels$stata_file
+  run_df = left_join(run_df, select(script_df, file_path, script_num), by="file_path")
+
+  # Don't save detailed run results after reg run
+
+  #repdb_check_data(run_df,"stata_run_cmd")
+  #repdb_check_data(run_df,"stata_run_log")
+
+  #parcels$stata_run_cmd = run_df
+  #parcels$stata_run_log = run_df
+
+  run_info = run_df %>%
+    summarize(
+      artid = first(artid),
+      runtype = "reg",
+      runs = n(),
+      ok_runs = sum(is.true(has.data & !runerr)),
+      no_dat_runs = sum(!is.true(has.data)),
+      err_runs = sum(runerr & is.true(has.data)),
+      reg_runs = sum(is.regcmd),
+      no_dat_reg_runs = sum(is.regcmd & !is.true(has.data)),
+      err_reg_runs = sum(is.regcmd & runerr & is.true(has.data)),
+      ok_reg_runs = reg_runs-err_reg_runs-no_dat_reg_runs,
+      start_time = first(start_time[!is.na(start_time)]),
+      end_time = last(end_time[!is.na(end_time)]),
+      run_sec = time.diff(start_time, end_time)
+    )
+
+
+
+
+
+
+  org_run_info = parcels$stata_run_info
+
+  if (NROW(org_run_info)==0) {
+    if (run_info$err_runs >0) {
+      repbox_problem(msg = paste0("The Stata run had ", run_info$err_runs, " commands that threw an error"), type = "stata_err",fail_action = "msg")
+    }
+    if (run_info$no_dat_runs >0) {
+      repbox_problem(msg = paste0(run_info$no_dat_runs, " of the ", run_info$runs, " run commands had a missing data set."), type = "stata_no_dat",fail_action = "msg")
+    }
+
+  } else {
+    if (run_info$err_runs > org_run_info$err_runs) {
+      repbox_problem(msg = paste0("The Stata run which stored regression information had more errors than the original run."), type = "stata_reg_err",fail_action = "msg")
+    } else if (run_info$runs != org_run_info$runs) {
+      repbox_problem(msg = paste0("The Stata run which stored regression information executed a different number of commands than the original run."), type = "stata_reg_runs_diff",fail_action = "msg")
+    } else if (run_info$err_runs < org_run_info$err_runs) {
+      repbox_problem(msg = paste0("The Stata run  which stored regression information had fewer errors than the original run."), type = "stata_reg_err",fail_action = "msg")
+    }
+  }
+  parcels$stata_reg_run_info = run_info
+
+  repdb_save_parcels(parcels[c("stata_reg_run_info")], file.path(project_dir, "repdb") )
+  invisible(parcels)
+}
+```
+# END OF FILE: rsr.R
+
+-----------------------------------------------------------
+
+
+# FILE: static_reg.R
+```
+# Static code analysis of regression commands
+# Note that the static code can still contain Stata macros
+# and thus cannot be as reliably analysed as the command line
+# we get from our dynamic analysis in which macros have been
+# replaced.
+
+example = function() {
+  project_dir = "~/repbox/projects_static/aejapp_10_1_1"
+  parcels = repboxDB::repdb_load_parcels(project_dir, "reg_stata_cmd")
+  reg_cmd = parcels$reg_stata_cmd$reg_stata_cmd
+  reg_cmd$sregnum = 1:NROW(reg_cmd)
+  reg_df = static_reg_cmd_to_reg_df(reg_cmd)
+}
+
+static_reg_cmd_to_reg_df = function(reg_cmd) {
+  restore.point("static_reg_cmd_to_reg_df")
+  if (NROW(reg_cmd)==0) return(NULL)
+  reg_cmd$sregnum = seq_len(NROW(reg_cmd))
+  cmdpart = cmdparts_of_stata_reg(reg_cmd$cmdline)
+  cmdpart$artid = reg_cmd$artid[cmdpart$str_row]
+  cmdpart$step  = cmdpart$sregnum = cmdpart$str_row
+  opts_df = cmdpart_to_opts_df(cmdpart)
+
+  unique(cmdpart$part)
+  unique(cmdpart$tag)
+
+  cols = union(c("artid", "sregnum"), setdiff(colnames(reg_cmd), c("num_runs","num_err_runs","is_reg")))
+  reg_cmd = reg_cmd[,cols]
+
+
+  i = 1
+  reg_df = bind_rows(lapply(seq_len(NROW(reg_cmd)), function(i) {
+    #restore.point("hhsfkhf")
+    reg=reg_cmd[i,]
+    opts = opts_df[opts_df$step==i,]
+    reg$opts_have_macro = isTRUE(any( has.substr(opts$opt_arg,"$") | has.substr(opts$opt_arg,"`")))
+    se_info = try(se_stata_to_repdb(reg_cmd$cmd[i], opts),silent = TRUE)
+
+    if (is(se_info,"try-error")) {
+      cat(paste0("\nCould not parse se info:\n   ", reg$cmdline,"\n"))
+      reg[c("se_category","se_type","se_args")] = rep(NA_character_,3)
+    } else {
+      reg[c("se_category","se_type","se_args")] = se_info[c("se_category","se_type","se_args")]
+    }
+    reg
+  }))
+
+  cmd_sum = cmdpart %>%
+    group_by(artid, sregnum) %>%
+    summarize(
+      has_weights = "weight_str" %in% part,
+      has_absorb = "absorb" %in% tag,
+      specifies_se = "se" %in% tag,
+      has_if = "if_str" %in% part,
+      has_in = "in_str" %in% part,
+      has_opt = "opt_str" %in% part
+    )
+
+  reg_df = reg_df %>% left_join_overwrite(cmd_sum, by = c("artid","sregnum"))
+  reg_df$uses_macro = has.substr(reg_df$cmdline,"`") & has.substr(reg_df$cmdline,"$")
+
+  reg_df
+
+}
+```
+# END OF FILE: static_reg.R
+
+-----------------------------------------------------------
+
+
+# FILE: utils.R
+```
+touchFile = function (pathname, ...) {
+  if (!exists("Sys.setFileTime", mode = "function")) {
+    Sys.setFileTime <- function(path, ...) {
+      info <- file.info(pathname)
+      if (info$isdir) {
+        stop(sprintf("In R v%s, it is not possible to change the timestamp of a directory: %s",
+                     getRversion(), pathname))
+      }
+      con <- NULL
+      on.exit({
+        if (!is.null(con)) close(con)
+      })
+      if (info$size == 0) {
+        con <- file(pathname, open = "w")
+      }
+      else {
+        con <- file(pathname, open = "r+b")
+        seek(con = con, where = 0, origin = "start",
+             rw = "read")
+        bfr <- readBin(con = con, what = raw(), n = 1)
+        seek(con = con, where = 0, origin = "start",
+             rw = "write")
+        writeBin(con = con, bfr)
+      }
+      invisible(TRUE)
+    }
+  }
+  pathname <- as.character(pathname)
+  nPathnames <- length(pathname)
+  if (nPathnames == 0L)
+    return(invisible(NULL))
+  if (nPathnames > 1L) {
+    res <- lapply(pathname, FUN = touchFile, ...)
+    res <- Reduce(c, res)
+    return(invisible(res))
+  }
+  if (!file.exists(pathname))
+    stop("No such file: ", pathname)
+  info <- file.info(pathname)
+  oldTimestamp <- info$mtime
+  if (!Sys.setFileTime(pathname, time = Sys.time())) {
+    cat("\nFailed to set timestamp: ", pathname)
+  }
+  invisible(oldTimestamp)
+}
+
+
+rstudio_job = function(name, expr, libs=NULL, wdir = getwd(), script.dir = tempdir(), importEnv=TRUE) {
+  expr = substitute(expr)
+  restore.point("as_job")
+  code = deparse1(expr)
+
+  #code = paste0('setwd("',wdir,'")\n', code)
+  if (!is.null(libs)) {
+    code = paste0(paste0("library(", libs,")", collapse="\n"), "\n", code)
+  }
+  cat("\nRun \n\n",code,"\n\n")
+
+  script.file = file.path(script.dir, paste0(name,".R"))
+  writeLines(code, script.file)
+  rstudioapi::jobRunScript(path = script.file,workingDir = wdir, name = name,importEnv = importEnv)
+
+}
+
+
+
+fe = function(val) {
+  as.factor(val)
+}
+
+
+df.rows.to.list = function(df) {
+  lapply(seq_len(NROW(df)), function(i) df[i,])
+}
+
+```
+# END OF FILE: utils.R
 
 -----------------------------------------------------------
 
 
 
-## Format of proposed changes to code or text files
+# here are my test scripts
+
+
+# FILE: probit_logit.do
+```
+use ../data/data.dta, clear
+
+* 1. Standard probit with robust SE and factor interactions
+probit d1 x1 c.x1#i.i1, vce(robust)
+
+* 2. Extract e(sample) to use it as a filter condition later
+gen byte probit_sample = e(sample)
+
+* 3. Standard logit using the extracted sample and clustered SE
+logit d2 x1 if probit_sample == 1, vce(cluster i)
+
+* 4. Legacy dprobit (marginal effects)
+* Tests whether the pipeline maps this correctly to R's mfx::probitmfx
+dprobit d1 x1
+
+xi: dprobit d1 x1 i.i1 i2
+```
+# END OF FILE: probit_logit.do
+
+-----------------------------------------------------------
+
+
+# here is the log file from the run repbox_ variation of the do file
+
+
+# FILE: repbox_probit_logit.log
+```
+
+  ___  ____  ____  ____  ____ ®
+ /__    /   ____/   /   ____/      17.0
+___/   /   /___/   /   /___/       SE—Standard Edition
+
+ Statistics and Data Science       Copyright 1985-2021 StataCorp LLC
+                                   StataCorp
+                                   4905 Lakeway Drive
+                                   College Station, Texas 77845 USA
+                                   800-STATA-PC        https://www.stata.com
+                                   979-696-4600        stata@stata.com
+
+Stata license: Single-user  perpetual
+Serial number: 401706320773
+  Licensed to: Sebastian Kranz
+               Ulm University
+
+Notes:
+      1. Stata is running in batch mode.
+      2. Unicode is supported; see help unicode_advice.
+      3. Maximum number of variables is set to 5,000; see help set_maxvar.
+
+. do "repbox_probit_logit.do", nostop 
+
+. 
+. file open repbox_timer_file using "~/repbox/projects_test/test/repbox/stata/t
+> imer/start.txt", write append
+(file ~/repbox/projects_test/test/repbox/stata/timer/start.txt not found)
+
+. file write repbox_timer_file "1;`c(current_time)';`c(current_date)'"
+
+. file write repbox_timer_file _n
+
+. file close repbox_timer_file
+
+. 
+. if "$repbox_cmd_count" == "" {
+.   set_defaults _all
+-> set maxvar 5000
+-> set matsize 400
+-> set niceness 5
+-> set min_memory 0
+-> set max_memory .
+-> set segmentsize 32m
+-> set adosize 1000
+-> set more on
+-> set rmsg off
+-> set dp period
+-> (linesize left at current value)
+-> (pagesize left at current value)
+-> set level 95
+-> set clevel 95
+-> set showbaselevels
+-> set showemptycells
+-> set showomitted
+-> set fvlabel on
+-> set fvwrap 1
+-> set fvwrapon word
+-> set lstretch
+-> set cformat
+-> set pformat
+-> set sformat
+-> set coeftabresults on
+-> set logtype smcl
+-> set collect_style default
+-> set collect_label default
+-> set table_style table
+-> set etable_style etable
+-> set collect_warn on
+-> set linegap 1
+-> set scrollbufsize 200000
+-> set reventries 5000
+-> set maxdb 50
+-> set graphics off
+-> set scheme s2color
+-> set printcolor automatic
+-> set copycolor automatic
+-> set checksum off
+-> set timeout1 30
+-> set timeout2 180
+-> set netdebug off
+-> set httpproxy off
+-> set httpproxyhost ""
+-> set httpproxyport 8080
+-> set httpproxyauth off
+-> set httpproxyuser ""
+-> set httpproxypw ""
+-> set trace off
+-> set tracedepth 32000
+-> set traceexpand on
+-> set tracesep on
+-> set traceindent on
+-> set tracenumber off
+-> set tracehilite ""
+-> set matastrict off
+-> set matalnum off
+-> set mataoptimize on
+-> set matafavor space
+-> set matacache 2000
+-> set matalibs ""
+-> set matamofirst off
+-> set locale_ui default
+-> set locale_functions default
+-> set type float
+-> set maxiter default
+-> set searchdefault all
+-> (seed left at current value)
+-> set varabbrev on
+(preferences reset)
+.   set more off
+.   global repbox_cmd_count = 0
+.   global repbox_root_donum = 1
+.   log using "/home/rstudio/repbox/projects_test/test/repbox/stata/logs/log_1.
+> log", replace name(repbox_log_1)
+(file /home/rstudio/repbox/projects_test/test/repbox/stata/logs/log_1.log not
+    found)
+-------------------------------------------------------------------------------
+      name:  repbox_log_1
+       log:  /home/rstudio/repbox/projects_test/test/repbox/stata/logs/log_1.lo
+> g
+  log type:  text
+ opened on:  28 Apr 2026, 10:20:15
+.   adopath + "~/ado/plus"
+  [1]  (BASE)      "/usr/local/stata/ado/base/"
+  [2]  (SITE)      "/usr/local/ado/"
+  [3]              "."
+  [4]  (PERSONAL)  "~/ado/personal/"
+  [5]  (PLUS)      "~/ado/plus/"
+  [6]  (OLDPLACE)  "~/ado/"
+  [7]              "~/ado/plus"
+. }
+
+. else {
+.   log using "/home/rstudio/repbox/projects_test/test/repbox/stata/logs/includ
+> e_1.log", replace name(repbox_log_1)
+. }
+
+. 
+. 
+. * PRECOMAND INJECTION START LINE 1
+. 
+. global repbox_cmd_count = $repbox_cmd_count +1
+
+. local repbox_local_cmd_count = $repbox_cmd_count
+
+. local repbox_cmdline = `"use ../data/data.dta, clear"'
+
+. 
+. 
+. local repbox_source_path = subinstr("../data/data.dta","\","/",.)
+
+. 
+. repbox_correct_path "file_exists" "`repbox_source_path'" "dta" "/home/rstudio
+> /repbox/projects_test/test/mod" "/home/rstudio/repbox/projects_test/test/mod/
+> code"
+  /home/rstudio/repbox/projects_test/test/mod/data/data.dta
+
+. capture noisily local repbox_corrected_path = "`r(repbox_corrected_path)'"
+
+. file open repbox_cmdlines using "~/repbox/projects_test/test//repbox/stata/cm
+> d/precmd_1.csv", write append
+(file ~/repbox/projects_test/test//repbox/stata/cmd/precmd_1.csv not found)
+
+. file write repbox_cmdlines `"1;1;`repbox_local_cmd_count';$repbox_root_donum;
+> $S_TIME;`c(pwd)';`r(repbox_corrected_path)';`repbox_cmdline'"'
+
+. file write repbox_cmdlines _n
+
+. file close repbox_cmdlines
+
+. 
+. * PRECOMMAND INJECTION END
+. display "#~# INJECT RUNCMD 1 1 `repbox_local_cmd_count'
+#~# INJECT RUNCMD 1 1 1
+
+. capture:  noisily: use "`r(repbox_corrected_path)'", clear
+
+. 
+. display "#~# END INJECT RUNCMD 1 1 `repbox_local_cmd_count'
+#~# END INJECT RUNCMD 1 1 1
+
+. 
+. * USE INJECTION START
+. 
+. 
+. qui {
+
+. * INJECTION END
+. 
+. 
+. * PRECOMAND INJECTION START LINE 2
+. 
+. global repbox_cmd_count = $repbox_cmd_count +1
+
+. local repbox_local_cmd_count = $repbox_cmd_count
+
+. local repbox_cmdline = `"probit d1 x1 c.x1#i.i1, vce(robust)"'
+
+. 
+. file open repbox_cmdlines using "~/repbox/projects_test/test//repbox/stata/cm
+> d/precmd_1.csv", write append
+
+. file write repbox_cmdlines `"1;2;`repbox_local_cmd_count';$repbox_root_donum;
+> $S_TIME;;;`repbox_cmdline'"'
+
+. file write repbox_cmdlines _n
+
+. file close repbox_cmdlines
+
+. 
+. * PRECOMMAND INJECTION END
+. display "#~# INJECT RUNCMD 1 2 `repbox_local_cmd_count'
+#~# INJECT RUNCMD 1 2 2
+
+. capture:  noisily: probit d1 x1 c.x1#i.i1, vce(robust)
+
+Iteration 0:   log pseudolikelihood = -69.294717  
+Iteration 1:   log pseudolikelihood = -65.414813  
+Iteration 2:   log pseudolikelihood = -65.400418  
+Iteration 3:   log pseudolikelihood = -65.400415  
+
+Probit regression                                       Number of obs =    100
+                                                        Wald chi2(4)  =   9.38
+                                                        Prob > chi2   = 0.0523
+Log pseudolikelihood = -65.400415                       Pseudo R2     = 0.0562
+
+------------------------------------------------------------------------------
+             |               Robust
+          d1 | Coefficient  std. err.      z    P>|z|     [95% conf. interval]
+-------------+----------------------------------------------------------------
+          x1 |  -.3904321   .2967356    -1.32   0.188    -.9720232     .191159
+             |
+     i1#c.x1 |
+          2  |    .973565   .3681635     2.64   0.008     .2519777    1.695152
+          3  |   .2736179   .4464989     0.61   0.540    -.6015039     1.14874
+          4  |   .5426026   .3961216     1.37   0.171    -.2337815    1.318987
+             |
+       _cons |  -.0631297   .1305146    -0.48   0.629    -.3189336    .1926742
+------------------------------------------------------------------------------
+
+. local repbox_reg_rc = _rc
+
+. 
+. display "#~# END INJECT RUNCMD 1 2 `repbox_local_cmd_count'
+#~# END INJECT RUNCMD 1 2 2
+
+. 
+. * REGRESSION INJECTION START
+. if (`repbox_reg_rc' == 0) {
+.   parmest, label saving("~/repbox/projects_test/test/repbox/stata/tsv/1_2_`re
+> pbox_local_cmd_count'.dta", replace)
+(file /home/rstudio/repbox/projects_test/test/repbox/stata/tsv/1_2_2.dta not
+    found)
+file ~/repbox/projects_test/test/repbox/stata/tsv/1_2_2.dta saved
+. 
+. 
+. 
+. qui {
+.   display "#~# INJECT REG_ERETURN 1 2 `repbox_local_cmd_count'"
+#~# INJECT REG_ERETURN 1 2 2
+.   ereturn list
+
+scalars:
+               e(rank) =  5
+                  e(N) =  100
+                 e(ic) =  3
+                  e(k) =  6
+               e(k_eq) =  1
+               e(k_dv) =  1
+          e(converged) =  1
+                 e(rc) =  0
+                 e(ll) =  -65.40041531870908
+         e(k_eq_model) =  1
+               e(ll_0) =  -69.29471672244782
+               e(df_m) =  4
+               e(chi2) =  9.37896626212077
+                  e(p) =  .0522945183444159
+              e(N_cdf) =  0
+              e(N_cds) =  0
+               e(r2_p) =  .0561991099456676
+
+macros:
+            e(cmdline) : "probit d1 x1 c.x1#i.i1, vce(robust)"
+                e(cmd) : "probit"
+          e(estat_cmd) : "probit_estat"
+            e(predict) : "probit_p"
+          e(marginsok) : "default Pr"
+       e(marginsnotok) : "stdp DEviance SCore"
+              e(title) : "Probit regression"
+           e(chi2type) : "Wald"
+                e(opt) : "moptimize"
+            e(vcetype) : "Robust"
+                e(vce) : "robust"
+               e(user) : "mopt__probit_e2()"
+          e(ml_method) : "e2"
+          e(technique) : "nr"
+              e(which) : "max"
+             e(depvar) : "d1"
+         e(properties) : "b V"
+
+matrices:
+                  e(b) :  1 x 6
+                  e(V) :  6 x 6
+                e(Cns) :  1 x 7
+                e(mns) :  1 x 6
+              e(rules) :  1 x 4
+               e(ilog) :  1 x 20
+           e(gradient) :  1 x 6
+       e(V_modelbased) :  6 x 6
+
+functions:
+             e(sample)   
+.   display "#~# END INJECT REG_ERETURN 1 2 `repbox_local_cmd_count'"
+#~# END INJECT REG_ERETURN 1 2 2
+. }
+
+. else {
+.   display "#~# REGRESSION COMMAND FAILED 1 2 `repbox_local_cmd_count' rc=`rep
+> box_reg_rc'"
+. }
+
+. 
+. * REGRESSION INJECTION END
+. 
+. 
+. * PRECOMAND INJECTION START LINE 3
+. 
+. global repbox_cmd_count = $repbox_cmd_count +1
+
+. local repbox_local_cmd_count = $repbox_cmd_count
+
+. local repbox_cmdline = `"gen byte probit_sample = e(sample)"'
+
+. 
+. file open repbox_cmdlines using "~/repbox/projects_test/test//repbox/stata/cm
+> d/precmd_1.csv", write append
+
+. file write repbox_cmdlines `"1;3;`repbox_local_cmd_count';$repbox_root_donum;
+> $S_TIME;;;`repbox_cmdline'"'
+
+. file write repbox_cmdlines _n
+
+. file close repbox_cmdlines
+
+. 
+. * PRECOMMAND INJECTION END
+. display "#~# INJECT RUNCMD 1 3 `repbox_local_cmd_count'
+#~# INJECT RUNCMD 1 3 3
+
+. capture:  noisily: gen byte probit_sample = e(sample)
+
+. 
+. display "#~# END INJECT RUNCMD 1 3 `repbox_local_cmd_count'
+#~# END INJECT RUNCMD 1 3 3
+
+. 
+. 
+. 
+. qui {
+
+. 
+. 
+. * PRECOMAND INJECTION START LINE 4
+. 
+. global repbox_cmd_count = $repbox_cmd_count +1
+
+. local repbox_local_cmd_count = $repbox_cmd_count
+
+. local repbox_cmdline = `"logit d2 x1 if probit_sample == 1, vce(cluster i)"'
+
+. 
+. file open repbox_cmdlines using "~/repbox/projects_test/test//repbox/stata/cm
+> d/precmd_1.csv", write append
+
+. file write repbox_cmdlines `"1;4;`repbox_local_cmd_count';$repbox_root_donum;
+> $S_TIME;;;`repbox_cmdline'"'
+
+. file write repbox_cmdlines _n
+
+. file close repbox_cmdlines
+
+. 
+. * PRECOMMAND INJECTION END
+. display "#~# INJECT RUNCMD 1 4 `repbox_local_cmd_count'
+#~# INJECT RUNCMD 1 4 4
+
+. capture:  noisily: logit d2 x1 if probit_sample == 1, vce(cluster i)
+
+Iteration 0:   log pseudolikelihood = -69.294717  
+Iteration 1:   log pseudolikelihood = -68.790612  
+Iteration 2:   log pseudolikelihood = -68.790565  
+Iteration 3:   log pseudolikelihood = -68.790565  
+
+Logistic regression                                     Number of obs =    100
+                                                        Wald chi2(1)  =   1.53
+                                                        Prob > chi2   = 0.2168
+Log pseudolikelihood = -68.790565                       Pseudo R2     = 0.0073
+
+                                      (Std. err. adjusted for 5 clusters in i)
+------------------------------------------------------------------------------
+             |               Robust
+          d2 | Coefficient  std. err.      z    P>|z|     [95% conf. interval]
+-------------+----------------------------------------------------------------
+          x1 |   .2125917   .1721239     1.24   0.217    -.1247649    .5499483
+       _cons |  -.0654961   .1587345    -0.41   0.680    -.3766099    .2456178
+------------------------------------------------------------------------------
+
+. local repbox_reg_rc = _rc
+
+. 
+. display "#~# END INJECT RUNCMD 1 4 `repbox_local_cmd_count'
+#~# END INJECT RUNCMD 1 4 4
+
+. 
+. * REGRESSION INJECTION START
+. if (`repbox_reg_rc' == 0) {
+.   parmest, label saving("~/repbox/projects_test/test/repbox/stata/tsv/1_4_`re
+> pbox_local_cmd_count'.dta", replace)
+(file /home/rstudio/repbox/projects_test/test/repbox/stata/tsv/1_4_4.dta not
+    found)
+file ~/repbox/projects_test/test/repbox/stata/tsv/1_4_4.dta saved
+. 
+. 
+. 
+. qui {
+.   display "#~# INJECT REG_ERETURN 1 4 `repbox_local_cmd_count'"
+#~# INJECT REG_ERETURN 1 4 4
+.   ereturn list
+
+scalars:
+               e(rank) =  2
+                  e(N) =  100
+                 e(ic) =  3
+                  e(k) =  2
+               e(k_eq) =  1
+               e(k_dv) =  1
+          e(converged) =  1
+                 e(rc) =  0
+            e(N_clust) =  5
+                 e(ll) =  -68.79056508483097
+         e(k_eq_model) =  1
+               e(ll_0) =  -69.29471672244782
+               e(df_m) =  1
+               e(chi2) =  1.525493487446586
+                  e(p) =  .2167900539621481
+              e(N_cdf) =  0
+              e(N_cds) =  0
+               e(r2_p) =  .00727547007135
+
+macros:
+            e(cmdline) : "logit d2 x1 if probit_sample == 1, vce(cluster i)"
+                e(cmd) : "logit"
+          e(estat_cmd) : "logit_estat"
+            e(predict) : "logit_p"
+          e(marginsok) : "default Pr"
+       e(marginsnotok) : "stdp DBeta DEviance DX2 DDeviance Hat Number Resi.."
+              e(title) : "Logistic regression"
+           e(chi2type) : "Wald"
+                e(opt) : "moptimize"
+            e(vcetype) : "Robust"
+           e(clustvar) : "i"
+                e(vce) : "cluster"
+               e(user) : "mopt__logit_e2()"
+          e(ml_method) : "e2"
+          e(technique) : "nr"
+              e(which) : "max"
+             e(depvar) : "d2"
+         e(properties) : "b V"
+
+matrices:
+                  e(b) :  1 x 2
+                  e(V) :  2 x 2
+                e(mns) :  1 x 2
+              e(rules) :  1 x 4
+               e(ilog) :  1 x 20
+           e(gradient) :  1 x 2
+       e(V_modelbased) :  2 x 2
+
+functions:
+             e(sample)   
+.   display "#~# END INJECT REG_ERETURN 1 4 `repbox_local_cmd_count'"
+#~# END INJECT REG_ERETURN 1 4 4
+. }
+
+. else {
+.   display "#~# REGRESSION COMMAND FAILED 1 4 `repbox_local_cmd_count' rc=`rep
+> box_reg_rc'"
+. }
+
+. 
+. * REGRESSION INJECTION END
+. 
+. 
+. * PRECOMAND INJECTION START LINE 5
+. 
+. global repbox_cmd_count = $repbox_cmd_count +1
+
+. local repbox_local_cmd_count = $repbox_cmd_count
+
+. local repbox_cmdline = `"dprobit d1 x1"'
+
+. 
+. file open repbox_cmdlines using "~/repbox/projects_test/test//repbox/stata/cm
+> d/precmd_1.csv", write append
+
+. file write repbox_cmdlines `"1;5;`repbox_local_cmd_count';$repbox_root_donum;
+> $S_TIME;;;`repbox_cmdline'"'
+
+. file write repbox_cmdlines _n
+
+. file close repbox_cmdlines
+
+. 
+. * PRECOMMAND INJECTION END
+. display "#~# INJECT RUNCMD 1 5 `repbox_local_cmd_count'
+#~# INJECT RUNCMD 1 5 5
+
+. capture:  noisily: dprobit d1 x1
+
+Iteration 0:   log likelihood = -69.294717
+Iteration 1:   log likelihood = -68.765878
+Iteration 2:   log likelihood = -68.765793
+
+Probit regression, reporting marginal effects           Number of obs =    100
+                                                        LR chi2(1)    =   1.06
+                                                        Prob > chi2   = 0.3037
+Log likelihood = -68.765793                             Pseudo R2     = 0.0076
+
+------------------------------------------------------------------------------
+      d1 |      dF/dx   Std. err.      z    P>|z|     x-bar  [    95% C.I.   ]
+---------+--------------------------------------------------------------------
+      x1 |   .0543959    .053137     1.02   0.306   .118868  -.049751  .158543
+---------+--------------------------------------------------------------------
+  obs. P |        .49
+ pred. P |   .4902143  (at x-bar)
+------------------------------------------------------------------------------
+    z and P>|z| correspond to the test of the underlying coefficient being 0
+
+. local repbox_reg_rc = _rc
+
+. 
+. display "#~# END INJECT RUNCMD 1 5 `repbox_local_cmd_count'
+#~# END INJECT RUNCMD 1 5 5
+
+. 
+. * REGRESSION INJECTION START
+. if (`repbox_reg_rc' == 0) {
+.   parmest, label saving("~/repbox/projects_test/test/repbox/stata/tsv/1_5_`re
+> pbox_local_cmd_count'.dta", replace)
+(file /home/rstudio/repbox/projects_test/test/repbox/stata/tsv/1_5_5.dta not
+    found)
+file ~/repbox/projects_test/test/repbox/stata/tsv/1_5_5.dta saved
+. 
+. 
+. 
+. qui {
+.   display "#~# INJECT REG_ERETURN 1 5 `repbox_local_cmd_count'"
+#~# INJECT REG_ERETURN 1 5 5
+.   ereturn list
+
+scalars:
+                  e(N) =  100
+               e(ll_0) =  -69.29471672244782
+                 e(ll) =  -68.76579264571393
+               e(df_m) =  1
+               e(chi2) =  1.057848153467774
+               e(r2_p) =  .0076329639798144
+              e(N_cdf) =  0
+              e(N_cds) =  0
+               e(pbar) =  .49
+               e(xbar) =  -.0245316700339493
+             e(offbar) =  0
+
+macros:
+                e(cmd) : "dprobit"
+            e(cmdline) : "dprobit d1 x1"
+              e(dummy) : " 0 0"
+              e(title) : "Probit regression"
+                e(vce) : "oim"
+             e(depvar) : "d1"
+            e(predict) : "probit_p"
+         e(properties) : "b V"
+          e(estat_cmd) : "probit_estat"
+           e(chi2type) : "LR"
+
+matrices:
+                  e(b) :  1 x 2
+                  e(V) :  2 x 2
+            e(se_dfdx) :  1 x 1
+               e(dfdx) :  1 x 1
+                e(mns) :  1 x 2
+              e(rules) :  1 x 4
+
+functions:
+             e(sample)   
+.   display "#~# END INJECT REG_ERETURN 1 5 `repbox_local_cmd_count'"
+#~# END INJECT REG_ERETURN 1 5 5
+. }
+
+. else {
+.   display "#~# REGRESSION COMMAND FAILED 1 5 `repbox_local_cmd_count' rc=`rep
+> box_reg_rc'"
+. }
+
+. 
+. * REGRESSION INJECTION END
+. 
+. 
+. * PRECOMAND INJECTION START LINE 6
+. 
+. global repbox_cmd_count = $repbox_cmd_count +1
+
+. local repbox_local_cmd_count = $repbox_cmd_count
+
+. local repbox_cmdline = `"xi: dprobit d1 x1 i.i1 i2"'
+
+. 
+. file open repbox_cmdlines using "~/repbox/projects_test/test//repbox/stata/cm
+> d/precmd_1.csv", write append
+
+. file write repbox_cmdlines `"1;6;`repbox_local_cmd_count';$repbox_root_donum;
+> $S_TIME;;;`repbox_cmdline'"'
+
+. file write repbox_cmdlines _n
+
+. file close repbox_cmdlines
+
+. 
+. * PRECOMMAND INJECTION END
+. display "#~# INJECT RUNCMD 1 6 `repbox_local_cmd_count'
+#~# INJECT RUNCMD 1 6 6
+
+. capture:  noisily: xi: dprobit d1 x1 i.i1 i2
+i.i1              _Ii1_1-4            (naturally coded; _Ii1_1 omitted)
+
+Iteration 0:   log likelihood = -69.294717
+Iteration 1:   log likelihood = -66.057206
+Iteration 2:   log likelihood = -66.049949
+Iteration 3:   log likelihood = -66.049949
+
+Probit regression, reporting marginal effects           Number of obs =    100
+                                                        LR chi2(5)    =   6.49
+                                                        Prob > chi2   = 0.2615
+Log likelihood = -66.049949                             Pseudo R2     = 0.0468
+
+------------------------------------------------------------------------------
+      d1 |      dF/dx   Std. err.      z    P>|z|     x-bar  [    95% C.I.   ]
+---------+--------------------------------------------------------------------
+      x1 |   .0578137   .0537527     1.08   0.282   .118868   -.04754  .163167
+  _Ii1_2*|  -.1632153   .1335948    -1.19   0.233       .29  -.425056  .098626
+  _Ii1_3*|   .0955377   .1488356     0.64   0.524       .21  -.196175   .38725
+  _Ii1_4*|  -.0409815   .1476988    -0.28   0.782       .24  -.330466  .248503
+      i2 |  -.0614007   .0438167    -1.40   0.161      2.61   -.14728  .024478
+---------+--------------------------------------------------------------------
+  obs. P |        .49
+ pred. P |   .4880994  (at x-bar)
+------------------------------------------------------------------------------
+(*) dF/dx is for discrete change of dummy variable from 0 to 1
+    z and P>|z| correspond to the test of the underlying coefficient being 0
+
+. local repbox_reg_rc = _rc
+
+. 
+. display "#~# END INJECT RUNCMD 1 6 `repbox_local_cmd_count'
+#~# END INJECT RUNCMD 1 6 6
+
+. 
+. * REGRESSION INJECTION START
+. if (`repbox_reg_rc' == 0) {
+.   parmest, label saving("~/repbox/projects_test/test/repbox/stata/tsv/1_6_`re
+> pbox_local_cmd_count'.dta", replace)
+(file /home/rstudio/repbox/projects_test/test/repbox/stata/tsv/1_6_6.dta not
+    found)
+file ~/repbox/projects_test/test/repbox/stata/tsv/1_6_6.dta saved
+. 
+. 
+. 
+. qui {
+.   display "#~# INJECT REG_ERETURN 1 6 `repbox_local_cmd_count'"
+#~# INJECT REG_ERETURN 1 6 6
+.   ereturn list
+
+scalars:
+                  e(N) =  100
+               e(ll_0) =  -69.29471672244782
+                 e(ll) =  -66.04994929171828
+               e(df_m) =  5
+               e(chi2) =  6.489534861459077
+               e(r2_p) =  .0468256107276704
+              e(N_cdf) =  0
+              e(N_cds) =  0
+               e(pbar) =  .49
+               e(xbar) =  -.0298349220225253
+             e(offbar) =  0
+
+macros:
+                e(cmd) : "dprobit"
+            e(cmdline) : "dprobit d1 x1 _Ii1_* i2"
+              e(dummy) : " 0 1 1 1 0 0"
+              e(title) : "Probit regression"
+                e(vce) : "oim"
+             e(depvar) : "d1"
+            e(predict) : "probit_p"
+         e(properties) : "b V"
+          e(estat_cmd) : "probit_estat"
+           e(chi2type) : "LR"
+
+matrices:
+                  e(b) :  1 x 6
+                  e(V) :  6 x 6
+            e(se_dfdx) :  1 x 5
+               e(dfdx) :  1 x 5
+                e(mns) :  1 x 6
+              e(rules) :  1 x 4
+
+functions:
+             e(sample)   
+.   display "#~# END INJECT REG_ERETURN 1 6 `repbox_local_cmd_count'"
+#~# END INJECT REG_ERETURN 1 6 6
+. }
+
+. else {
+.   display "#~# REGRESSION COMMAND FAILED 1 6 `repbox_local_cmd_count' rc=`rep
+> box_reg_rc'"
+. }
+
+. 
+. * REGRESSION INJECTION END
+. 
+. 
+. display "#~# FINISHED DO",
+#~# FINISHED DO 
+
+. capture log close repbox_log_1
+
+. 
+. file open repbox_timer_file using "~/repbox/projects_test/test/repbox/stata/t
+> imer/end.txt", write append
+(file ~/repbox/projects_test/test/repbox/stata/timer/end.txt not found)
+
+. file write repbox_timer_file "1;`c(current_time)';`c(current_date)'"
+
+. file write repbox_timer_file _n
+
+. file close repbox_timer_file
+
+. 
+. 
+end of do-file
+```
+# END OF FILE: repbox_probit_logit.log
+
+-----------------------------------------------------------
+
+
+# here is the mrb_test test test report
+
+
+
+
+## Format of proposed changes to code  files
 
 When you suggest changes to code or text files or completely new files, you MUST use the following format for each modification. Each change must be enclosed in a `!MODIFICATION` block.
 
@@ -5891,27 +9358,13 @@ Each modification block has three parts:
 !END_MODIFICATION {{what}}
 ```
 
-### Modification Scope
-
-Each modification is of one of the following two scopes:
-
-* `file` (re-)writes a complete file
-
-* `function` (re-)writes a complete function (including comments above).
-
-
-
-If more than two functions or more than two line edits will be performed in the same file, better rewrite the whole file using a `file` scope. For extremely long files also more smaller edits are ok.
-
-Function scope only works for R code files, but in R files it is preferred if one or two functions in a larger file are changed.
-
-The metadata block **MUST** contain a `scope` field, which can be `"file"`, `"function"`, or `"lines"`.
-
----
+We have two possible scopes for modification:
+  - file (replaces complete file) or
+  - function (replaces an R function).
 
 ### **Scope 1: `file`**
 
-Use this to create a new file or to completely rewrite an existing one.
+Use this format to create a new file or to completely rewrite an existing one.
 
 **Required Fields:**
 *   `scope = "file"`
@@ -5935,7 +9388,7 @@ say_hello = function(name) {
 
 ### **Scope 2: `function`**
 
-Use this to replace an existing function or to insert a new function. The new code payload should contain the complete function, including any preceding comments.
+Use this fomrat to replace an existing function or to insert a new function. The new code payload should contain the complete function, including any preceding comments.
 
 #### **Fields for replacing an existing function:**
 *   `scope = "function"`
@@ -5999,30 +9452,75 @@ is_negative = function(n) {
   n < 0
 }
 ```
-!END_MODIFICATION is_negative in R/utils.R
-
-
-# General coding instructions
-
-- For string operations try to use `stringi` functions.
-
-- Try to avoid loops, vectorize if possible.
-
-- Use `=` instead of `<-` as assignment operator.
-
-- Very Important: Do not warp code into `try` statements to generally catch errors.
-  I want that the code fails if there are errors we have not yet understood dealt with.
-  General try catch wrappers will dillude this goal. Existing wrappers are probably
-  ok, but don't add new ones, unless there is really a strong reason to believe that
-  this cleanly solves the underlying problem and does not hide other possible problems.
-
-
 
 
 ##################################
 # Your Task
 ##################################
 
-I think it is better to store in the regcoef parcel only the coefficients of the state base variant (sb). Currently for probit / logit also sometimes a variant sb_mfx is stored. Can we basically make a separate parcel for each variant, i.e. if there is a variant `sb_mfx` I want to store the coefs in a parcel regcoef_sb_mfx. If there should be a variant `rb_mfx` (I don't it exists) in a parcel `regcoef_rb_mfx`. The only outlier of naming convention is that `sb` variant is stored in `regcoef` instead of `regcoef_sb`. Try to adapt the code that it works even if at some place we generate a new variant. regscalars or regstrings / regmacros do not need to be saved for such additional variants. What is the most elegant (ideally small) code change?
+I wonder about the issue in runid=5. Can you detect, explain and fix the problem in the code?
+Here relevant packages:
+
+All parcel contents for runid=5
+
+Parcel regcoef:
+
+# A tibble: 2 × 12
+  runid variant cterm       shown_term label      eq       coef    se
+  <int> <chr>   <chr>       <chr>      <chr>      <chr>   <dbl> <dbl>
+1     5 sb      x1          x1         ""         d1     0.136  0.133
+2     5 sb      (Intercept) /d1        "Constant" d1    -0.0407 0.127
+       t     p ci_low ci_up
+   <dbl> <dbl>  <dbl> <dbl>
+1  1.02  0.306 -0.125 0.398
+2 -0.322 0.748 -0.289 0.207
+
+Parcel regcoef_so:
+
+# A tibble: 2 × 12
+  runid variant cterm       shown_term label      eq       coef    se
+  <int> <chr>   <chr>       <chr>      <chr>      <chr>   <dbl> <dbl>
+1     5 so      x1          x1         ""         ""     0.136  0.133
+2     5 so      (Intercept) _cons      "Constant" ""    -0.0407 0.127
+       t     p ci_low ci_up
+   <dbl> <dbl>  <dbl> <dbl>
+1  1.02  0.306 -0.125 0.398
+2 -0.322 0.748 -0.289 0.207
+
+Parcel regcoef_rb:
+
+# A tibble: 2 × 12
+  runid variant cterm       shown_term  label eq       coef    se      t
+  <int> <chr>   <chr>       <chr>       <chr> <chr>   <dbl> <dbl>  <dbl>
+1     5 rb      (Intercept) (Intercept) ""    d1    -0.0407 0.127 -0.320
+2     5 rb      x1          x1          ""    d1     0.136  0.134  1.02 
+      p ci_low ci_up
+  <dbl>  <dbl> <dbl>
+1 0.749 -0.290 0.209
+2 0.307 -0.125 0.398
+
+Parcel regvar:
+
+# A tibble: 2 × 17
+  runid variant cterm ia_cterm basevar role  var_org_type var_reg_type
+  <int> <chr>   <chr> <chr>    <chr>   <chr> <chr>        <chr>       
+1     5 sb      d1    d1       d1      dep   dummy        dummy       
+2     5 sb      x1    x1       x1      exo   numeric      numeric     
+  ia_reg_type absorbed_fe main_pos ia_pos ia_num ia_source_expr
+  <chr>       <lgl>          <int>  <int>  <int> <chr>         
+1 dummies     FALSE              1      1      1 d1            
+2 numeric     FALSE              2      1      1 x1            
+  var_source_expr transform transform_par
+  <chr>           <chr>     <chr>        
+1 d1              ""        ""           
+2 x1              ""        ""           
+
+Parcel regxvar:
+
+# A tibble: 1 × 6
+  runid ia_cterm cterm role  in_regcoef org_coef
+  <int> <chr>    <chr> <chr> <lgl>         <dbl>
+1     5 x1       x1    exo   TRUE          0.136
+
 
 

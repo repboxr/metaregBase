@@ -77,6 +77,60 @@ ct_to_regcoef = function(ct, lang="stata", variant=NULL, artid=NULL, regvar=NULL
 }
 
 
+regcoef_variant_parcel_name = function(
+  variant,
+  base_variant = "sb",
+  base_parcel = "regcoef",
+  root_parcel = "regcoef"
+) {
+  variant = as.character(variant)
+  variant[is.na(variant) | variant == ""] = base_variant
+
+  variant = stringi::stri_replace_all_regex(variant, "[^A-Za-z0-9_]+", "_")
+
+  ifelse(
+    variant == base_variant,
+    base_parcel,
+    paste0(root_parcel, "_", variant)
+  )
+}
+
+
+regcoef_split_variant_parcels = function(
+  co,
+  base_variant = "sb",
+  base_parcel = "regcoef",
+  root_parcel = "regcoef"
+) {
+  if (is.null(co) || NROW(co) == 0) {
+    return(list())
+  }
+
+  if (!"variant" %in% names(co)) {
+    co$variant = base_variant
+  }
+
+  co$variant = as.character(co$variant)
+  co$variant[is.na(co$variant) | co$variant == ""] = base_variant
+
+  parcel_name = regcoef_variant_parcel_name(
+    co$variant,
+    base_variant = base_variant,
+    base_parcel = base_parcel,
+    root_parcel = root_parcel
+  )
+
+  row_split = split(seq_len(NROW(co)), parcel_name)
+
+  res = lapply(row_split, function(rows) {
+    co[rows, , drop = FALSE]
+  })
+
+  ord = unique(c(base_parcel, sort(names(res))))
+  res[intersect(ord, names(res))]
+}
+
+
 regcoef_normalize_dropped_coef = function(co, lang="stata") {
   restore.point("regcoef_normalize_dropped_coef")
   if (lang=="r") {

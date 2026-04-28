@@ -87,16 +87,28 @@ mrb_run_r_base_step = function(mrb, pid, with_try = isTRUE(mrb$with_try)) {
 
   step_parcels = list()
 
-  # A. REGCOEF (Parsed Stata Coefficients from metaregBase 'sb' run)
+  # A. REGCOEF (Parsed Stata Coefficients from metaregBase runs)
   if (!is.null(stata_ct) && nrow(stata_ct) > 0) {
-    # Create regcoef containing all variants, but force main to be 'sb'
-    step_parcels$regcoef = ct_to_regcoef(stata_ct, artid = mrb$artid)
-    regcoef_main = step_parcels$regcoef %>% filter(variant == "sb")
-    regcoef_main = regcoef_keep_default_eq(regcoef_main)
+    # Split all coefficient variants into separate parcels.
+    # The only naming outlier is sb, which remains stored in regcoef.
+    co_all = ct_to_regcoef(stata_ct, artid = mrb$artid)
+    co_parcels = regcoef_split_variant_parcels(
+      co_all,
+      base_variant = "sb",
+      base_parcel = "regcoef"
+    )
+    step_parcels[names(co_parcels)] = co_parcels
+
+    regcoef_main = if (!is.null(step_parcels$regcoef)) {
+      regcoef_keep_default_eq(step_parcels$regcoef)
+    } else {
+      tibble()
+    }
   } else {
     step_parcels$regcoef = tibble()
     regcoef_main = tibble()
   }
+
 
   # A2. REGCOEF_SO (Parsed Stata Coefficients from Original DRF run 'so')
   step_parcels$regcoef_so = tibble()
@@ -253,21 +265,39 @@ mrb_run_r_base = function(mrb, just_pids=NULL, make_parcels=TRUE) {
 mrb_make_r_base_parcels = function(mrb, save=TRUE, is_partial_run = isTRUE(mrb$is_partial_run)) {
   restore.point("mrb_make_r_base_parcels")
 
-  if (is_partial_run) {
-    mrb$parcels = repdb_load_parcels(mrb$project_dir, c("reg","regcoef","regcoef_so","regvar","regxvar","colstat_numeric","colstat_dummy","colstat_factor", "colinfo","regscalar","regstring"))
-  }
-
-
-  parcels = list()
   all_step_parcels = mrb$all_step_parcels
   if (is.null(all_step_parcels)) {
     cat("\nmrb_save_step_parcels: mrb$all_step_parcels were not yet generated. Make sure mrb_run_r_base is called beforehand.\n")
     return(mrb)
   }
 
+  step_fields = unique(unlist(lapply(all_step_parcels, names), use.names = FALSE))
+  extra_regcoef_fields = grep("^regcoef_", step_fields, value = TRUE)
+  extra_regcoef_fields = setdiff(
+    extra_regcoef_fields,
+    c("regcoef_so", "regcoef_rb", "regcoef_diff")
+  )
+  extra_regcoef_fields = sort(extra_regcoef_fields)
+
+  if (is_partial_run) {
+    mrb$parcels = repdb_load_parcels(
+      mrb$project_dir,
+      c(
+        "reg", "regcoef", "regcoef_so", "regvar", "regxvar",
+        "colstat_numeric", "colstat_dummy", "colstat_factor",
+        "colinfo", "regscalar", "regstring",
+        extra_regcoef_fields
+      ),
+      mrb$parcels
+    )
+  }
+
+  parcels = list()
+
   combine_steps = function(field) {
     res_list = lapply(all_step_parcels, function(x) x[[field]])
     res_list = res_list[!sapply(res_list, is.null)]
+
     if (length(res_list) == 0) {
       new_data = tibble()
     } else {
@@ -283,6 +313,7 @@ mrb_make_r_base_parcels = function(mrb, save=TRUE, is_partial_run = isTRUE(mrb$i
         new_data = old_data
       }
     }
+
     new_data
   }
 
@@ -292,6 +323,11 @@ mrb_make_r_base_parcels = function(mrb, save=TRUE, is_partial_run = isTRUE(mrb$i
   # Coefs & Variables
   parcels$regcoef = combine_steps("regcoef")
   parcels$regcoef_so = combine_steps("regcoef_so")
+
+  for (field in extra_regcoef_fields) {
+    parcels[[field]] = combine_steps(field)
+  }
+
   parcels$regvar = combine_steps("regvar")
   parcels$regxvar = combine_steps("regxvar")
 
@@ -307,7 +343,7 @@ mrb_make_r_base_parcels = function(mrb, save=TRUE, is_partial_run = isTRUE(mrb$i
   parcels$regstring = combine_steps("regstring")
 
   # regsource parcel is just a combination of existing parcels
-  mrb$parcels = repdb_load_parcels(mrb$project_dir, c("stata_file", "stata_cmd"),parcels = mrb$parcels)
+  mrb$parcels = repdb_load_parcels(mrb$project_dir, c("stata_file", "stata_cmd"), parcels = mrb$parcels)
   run_df = mrb$drf$run_df
 
   regsource = parcels$reg %>%
@@ -320,15 +356,24 @@ mrb_make_r_base_parcels = function(mrb, save=TRUE, is_partial_run = isTRUE(mrb$i
 
   parcels$regsource = regsource
 
-  # Save everything directly into the repdb directory
   if (save) {
     repdb_dir = file.path(mrb$project_dir, "repdb")
-    repboxDB::repdb_save_parcels(parcels, repdb_dir, check = TRUE)
+
+    static_parcels = parcels[setdiff(names(parcels), extra_regcoef_fields)]
+    repboxDB::repdb_save_parcels(static_parcels, repdb_dir, check = TRUE)
+
+    # Dynamic variant parcels use the regcoef schema but have dynamic names,
+    # so they are saved without table-name based checking.
+    if (length(extra_regcoef_fields) > 0) {
+      extra_parcels = parcels[extra_regcoef_fields]
+      repboxDB::repdb_save_parcels(extra_parcels, repdb_dir, check = FALSE)
+    }
   }
 
   mrb$parcels[names(parcels)] = parcels
   return(mrb)
 }
+
 
 
 
