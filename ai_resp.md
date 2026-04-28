@@ -1,425 +1,350 @@
-An analysis of the test report highlights four distinct issues causing the test failures:
+Yes. I would make this a small “split-at-the-edge” refactor: keep `ct_to_regcoef()` unchanged, but immediately split its output into parcel-named data frames by `variant`.
 
-1.  **Improper Equation Selection for Interaction Terms (Runid 2)**: The Stata pipeline correctly generated marginal effects stored as a secondary equation variant (`"sb_mfx"` with `eq=""`). However, `mrb_run_r_base_step` ingested *both* model coefficients and MFX into `stata_co` and selected `eq=""` as the default, discarding the true model coefficients. This caused the model formula builder to omit the interaction components (`i1=3#x1`, etc.) from `regxvar`, resulting in a malformed R formula.
-2.  **Improper R Regression Comparisons (Runids 2 & 6)**: Similar to the data-prep step, the evaluation step `mrb_run_r_reg_step` didn't filter the Stata coefficients to `variant == "sb"`. This caused the R regression test to mistakenly attempt to map and compare the generated R coefficients to the Stata MFX coefficients.
-3.  **Missing Stata GLM Small-Sample Corrections (Runids 4 & 5)**: In non-linear models (Logit/Probit), Stata omits the standard `(N-1)/(N-K)` degree of freedom multiplier for standard errors, whereas `fixest`'s `feglm` automatically applies it. We need to disable the `adj` attribute within `fixest::ssc` for ML models to emulate Stata exactly.
-4.  **Optimizer Numerical Noise (Runid 6)**: The 6th regression correctly built the formula, but `feglm` converged with an absolute variance offset of roughly `2e-6` from Stata's optimizer. The test script used `OR` instead of `AND` for relative and absolute differences, causing an overly strict numeric failure.
+Main idea:
 
-Here are the fixes for these problems.
+`variant == "sb"` -> `regcoef`
+`variant == "sb_mfx"` -> `regcoef_sb_mfx`
+`variant == "rb"` -> `regcoef_rb`
+`variant == "rb_mfx"` -> `regcoef_rb_mfx`
 
-!MODIFICATION mrb_run_r_base_step in mrb_r_base.R
+Here are the proposed changes.
+
+!MODIFICATION regcoef variant helpers
 scope = "function"
-file = "metaregBase/R/mrb_r_base.R"
-function_name = "mrb_run_r_base_step"
-description = "Filter stata_ct for variant 'sb' before creating step_parcels$regcoef and regcoef_main to prevent MFX equations from corrupting regxvar."
----
-```R
-#' Process a single regression, expand syntax, and format standard parcels
-mrb_run_r_base_step = function(mrb, pid) {
-  restore.point("mrb_run_r_base_step")
+file = "/home/rstudio/repbox/metaregBase/R/mrb_regcoef.R"
+insert_after_fun = "ct_to_regcoef"
+description = "Add helpers that map coefficient variants to parcel names and split a regcoef table into variant-specific parcels."
+----------------------------------------------------------------------------------------------------------------------------------
 
-  project_dir = mrb$project_dir
-  runid = pid
+```r
 
-  xtvar = mrb$parcels$xtvar
-  xtvar = xtvar[xtvar$runid==pid,]
-  if (NROW(xtvar)==0) {
-    xtvar = list(timevar=NA, panelvar=NA, tdelta=NA_integer_)
+regcoef_variant_parcel_name = function(
+  variant,
+  base_variant = "sb",
+  base_parcel = "regcoef",
+  root_parcel = "regcoef"
+) {
+  variant = as.character(variant)
+  variant[is.na(variant) | variant == ""] = base_variant
+
+  variant = stringi::stri_replace_all_regex(variant, "[^A-Za-z0-9_]+", "_")
+
+  ifelse(
+    variant == base_variant,
+    base_parcel,
+    paste0(root_parcel, "_", variant)
+  )
+}
+
+
+regcoef_split_variant_parcels = function(
+  co,
+  base_variant = "sb",
+  base_parcel = "regcoef",
+  root_parcel = "regcoef"
+) {
+  if (is.null(co) || NROW(co) == 0) {
+    return(list())
   }
 
+  if (!"variant" %in% names(co)) {
+    co$variant = base_variant
+  }
 
-  # 1. Base Components
-  run_obj = mrb$drf$run_df %>% filter(runid == pid)
-  cmd = run_obj$cmd[1]
+  co$variant = as.character(co$variant)
+  co$variant[is.na(co$variant) | co$variant == ""] = base_variant
 
-  all_cmdpart = mrb$parcels$reg_cmdpart
-  cmdpart = all_cmdpart %>% filter(runid == pid)
-  if (NROW(cmdpart) == 0) stop(paste0("No cmdpart stored for runid = ", pid))
+  parcel_name = regcoef_variant_parcel_name(
+    co$variant,
+    base_variant = base_variant,
+    base_parcel = base_parcel,
+    root_parcel = root_parcel
+  )
 
-  # 2. Extract specific Stata outcomes for this step (metaregBase 'sb')
-  stata_ct = if (!is.null(mrb$stata_ct_sb)) mrb$stata_ct_sb %>% filter(runid == pid) else NULL
-  stata_scalars = if (!is.null(mrb$stata_scalars)) mrb$stata_scalars %>% filter(runid == pid) else NULL
-  stata_macros = if (!is.null(mrb$stata_macros)) mrb$stata_macros %>% filter(runid == pid) else NULL
+  row_split = split(seq_len(NROW(co)), parcel_name)
 
-  # 3. Load Data & Expand Syntax
-  dat = repboxDRF::drf_get_data(pid, drf = mrb$drf)
-  org_dat = dat
-  cmdpart = cmdpart_expand_vars(cmdpart, colnames(dat)) # From previous refactor
+  res = lapply(row_split, function(rows) {
+    co[rows, , drop = FALSE]
+  })
 
-  # 4. Extract Options, SE, and build initial regvar
-  opts_df = cmdpart_to_opts_df(cmdpart)
-  se_info = se_stata_to_repdb(cmd, opts_df)
-  regvar = cmdpart_to_regvar(cmdpart, dat, opts_df, se_info)
+  ord = unique(c(base_parcel, sort(names(res))))
+  res[intersect(ord, names(res))]
+}
+```
 
-  depvar = regvar$cterm[regvar$role == "dep"]
+!END_MODIFICATION regcoef variant helpers
 
-  # 5. Data Mutations & Stats
-  ct_cterms = unique(c(depvar, regvar$var, regvar$cterm, regvar$ia_cterm)) %>% setdiff(c("(Intercept)",""))
+!MODIFICATION mrb_run_r_base_step regcoef split
+scope = "lines"
+file = "/home/rstudio/repbox/metaregBase/R/mrb_r_base.R"
+description = "Replace the regcoef creation block so only variant sb is stored in regcoef and other variants are stored in variant-specific parcels."
+-----------------------------------------------------------------------------------------------------------------------------------------------------
 
-  # NEW: Keep the full expanded dataset so make_regxvar can access generated time-series columns!
-  wide_dat_full = create_cterm_cols(dat, ct_cterms, timevar=xtvar$timevar, panelvar=xtvar$panelvar, tdelta=xtvar$tdelta)
-  wide_dat = wide_dat_full[, ct_cterms, drop=FALSE]
-
-  reg_types = bind_rows(
-    regvar %>% select(term = cterm, reg_type = var_reg_type),
-    regvar %>% select(term = ia_cterm, reg_type = ia_reg_type)
-  ) %>% unique()
-
-  colstats = make_colstats(ct_cterms, wide_dat, wide_dat, reg_types)
-
-  #####################
-  # Create step parcels
-  #####################
-
-  step_parcels = list()
-
-  # A. REGCOEF (Parsed Stata Coefficients from metaregBase 'sb' run)
+```r
+  # A. REGCOEF (Parsed Stata Coefficients from metaregBase runs)
   if (!is.null(stata_ct) && nrow(stata_ct) > 0) {
-    # Create regcoef containing all variants, but force main to be 'sb'
-    step_parcels$regcoef = ct_to_regcoef(stata_ct, artid = mrb$artid)
-    regcoef_main = step_parcels$regcoef %>% filter(variant == "sb")
-    regcoef_main = regcoef_keep_default_eq(regcoef_main)
+    # Split all coefficient variants into separate parcels.
+    # The only naming outlier is sb, which remains stored in regcoef.
+    co_all = ct_to_regcoef(stata_ct, artid = mrb$artid)
+    co_parcels = regcoef_split_variant_parcels(
+      co_all,
+      base_variant = "sb",
+      base_parcel = "regcoef"
+    )
+    step_parcels[names(co_parcels)] = co_parcels
+
+    regcoef_main = if (!is.null(step_parcels$regcoef)) {
+      regcoef_keep_default_eq(step_parcels$regcoef)
+    } else {
+      tibble()
+    }
   } else {
     step_parcels$regcoef = tibble()
     regcoef_main = tibble()
   }
+```
 
-  # A2. REGCOEF_SO (Parsed Stata Coefficients from Original DRF run 'so')
-  step_parcels$regcoef_so = tibble()
-  if (!is.null(mrb$regtab_so)) {
-    rt_row = mrb$regtab_so %>% filter(runid == pid)
-    if (nrow(rt_row) > 0 && !is.null(rt_row$ct[[1]])) {
-      so_df = rt_row$ct[[1]]
-      if (nrow(so_df) > 0) {
-        so_df$runid = pid
-        step_parcels$regcoef_so = ct_to_regcoef(so_df, variant = "so", artid = mrb$artid)
+!END_MODIFICATION mrb_run_r_base_step regcoef split
+
+!MODIFICATION mrb_make_r_base_parcels dynamic regcoef variants
+scope = "function"
+file = "/home/rstudio/repbox/metaregBase/R/mrb_r_base.R"
+function_name = "mrb_make_r_base_parcels"
+description = "Save dynamically generated regcoef_* variant parcels, while keeping known parcels checked normally."
+-------------------------------------------------------------------------------------------------------------------
+
+```r
+# The step parcels are generated in mrb_r
+mrb_make_r_base_parcels = function(mrb, save=TRUE, is_partial_run = isTRUE(mrb$is_partial_run)) {
+  restore.point("mrb_make_r_base_parcels")
+
+  all_step_parcels = mrb$all_step_parcels
+  if (is.null(all_step_parcels)) {
+    cat("\nmrb_save_step_parcels: mrb$all_step_parcels were not yet generated. Make sure mrb_run_r_base is called beforehand.\n")
+    return(mrb)
+  }
+
+  step_fields = unique(unlist(lapply(all_step_parcels, names), use.names = FALSE))
+  extra_regcoef_fields = grep("^regcoef_", step_fields, value = TRUE)
+  extra_regcoef_fields = setdiff(
+    extra_regcoef_fields,
+    c("regcoef_so", "regcoef_rb", "regcoef_diff")
+  )
+  extra_regcoef_fields = sort(extra_regcoef_fields)
+
+  if (is_partial_run) {
+    mrb$parcels = repdb_load_parcels(
+      mrb$project_dir,
+      c(
+        "reg", "regcoef", "regcoef_so", "regvar", "regxvar",
+        "colstat_numeric", "colstat_dummy", "colstat_factor",
+        "colinfo", "regscalar", "regstring",
+        extra_regcoef_fields
+      ),
+      mrb$parcels
+    )
+  }
+
+  parcels = list()
+
+  combine_steps = function(field) {
+    res_list = lapply(all_step_parcels, function(x) x[[field]])
+    res_list = res_list[!sapply(res_list, is.null)]
+
+    if (length(res_list) == 0) {
+      new_data = tibble()
+    } else {
+      new_data = bind_rows(res_list)
+    }
+
+    if (isTRUE(is_partial_run) && !is.null(mrb$parcels[[field]])) {
+      old_data = mrb$parcels[[field]]
+      if (NROW(old_data) > 0 && NROW(new_data) > 0) {
+        old_kept = old_data[!old_data$runid %in% mrb$partial_pids, , drop = FALSE]
+        new_data = bind_rows(old_kept, new_data)
+      } else if (NROW(old_data) > 0 && NROW(new_data) == 0) {
+        new_data = old_data
       }
+    }
+
+    new_data
+  }
+
+  # reg
+  parcels$reg = combine_steps("reg")
+
+  # Coefs & Variables
+  parcels$regcoef = combine_steps("regcoef")
+  parcels$regcoef_so = combine_steps("regcoef_so")
+
+  for (field in extra_regcoef_fields) {
+    parcels[[field]] = combine_steps(field)
+  }
+
+  parcels$regvar = combine_steps("regvar")
+  parcels$regxvar = combine_steps("regxvar")
+
+  # Column Stats
+  parcels$colstat_numeric = combine_steps("colstat_numeric")
+  parcels$colstat_dummy = combine_steps("colstat_dummy")
+  parcels$colstat_factor = combine_steps("colstat_factor")
+
+  parcels$colinfo = combine_steps("colinfo")
+
+  # Scalars & Macros
+  parcels$regscalar = combine_steps("regscalar")
+  parcels$regstring = combine_steps("regstring")
+
+  # regsource parcel is just a combination of existing parcels
+  mrb$parcels = repdb_load_parcels(mrb$project_dir, c("stata_file", "stata_cmd"), parcels = mrb$parcels)
+  run_df = mrb$drf$run_df
+
+  regsource = parcels$reg %>%
+    select(runid) %>%
+    left_join(run_df %>% select(runid, file_path, line), by="runid") %>%
+    left_join(mrb$parcels$stata_cmd %>% select(file_path, line, code_line_start=orgline_start, code_line_end = orgline_end), by = c("file_path", "line")) %>%
+    left_join(mrb$parcels$stata_file, by="file_path") %>%
+    rename(script_path = file_path, script_name = file_name,script_type = file_type) %>%
+    mutate(script_file = basename(script_path))
+
+  parcels$regsource = regsource
+
+  if (save) {
+    repdb_dir = file.path(mrb$project_dir, "repdb")
+
+    static_parcels = parcels[setdiff(names(parcels), extra_regcoef_fields)]
+    repboxDB::repdb_save_parcels(static_parcels, repdb_dir, check = TRUE)
+
+    # Dynamic variant parcels use the regcoef schema but have dynamic names,
+    # so they are saved without table-name based checking.
+    if (length(extra_regcoef_fields) > 0) {
+      extra_parcels = parcels[extra_regcoef_fields]
+      repboxDB::repdb_save_parcels(extra_parcels, repdb_dir, check = FALSE)
     }
   }
 
-  # B. REGVAR (Variables with prefixes and dropping info)
-  dropped_cterms = if (nrow(regcoef_main) > 0) {
-    regcoef_main %>% filter(is.na(coef)) %>% pull(cterm)
-  } else { character(0) }
-
-  step_parcels$regvar = regvar %>%
-    mutate(
-      artid = mrb$artid,
-      runid = runid,
-      variant = "sb",
-      basevar = basevar,
-      ia_source_expr = ia_expr,
-      var_source_expr = var_expr,
-      prefix_type = tolower(substring(prefix, 1, 1)),
-      prefix_num = trimws(substring(prefix, 2)),
-      prefix_num = ifelse(prefix_num == "", 1, as_integer(prefix_num)),
-      transform = prefix_type,
-      transform_par = ifelse(transform %in% c("", "log"), "", change_val(prefix_num, "", "1")),
-      is_dropped = (cterm %in% dropped_cterms) & (role %in% c("exo", "endo"))
-    )
-
-  # C. REGXVAR
-  # Pass wide_dat_full instead of dat!
-  step_parcels$regxvar = make_regxvar(step_parcels$regvar, wide_dat_full, regcoef_main)
-
-  # D. REGSCALAR & REGSTRING
-  if (!is.null(stata_scalars) && nrow(stata_scalars) > 0) {
-    step_parcels$regscalar = stata_scalars %>%
-      rename(scalar_name = var, scalar_val = val) %>%
-      mutate(variant = "sb", runid = runid)
-
-    stats_wide = stata_scalars %>% pivot_wider(names_from = var, values_from = val)
-  } else {
-    step_parcels$regscalar = tibble()
-    stats_wide = tibble()
-  }
-
-  if (!is.null(stata_macros) && nrow(stata_macros) > 0) {
-    step_parcels$regstring = stata_macros %>%
-      rename(string_name = var, string_val = val) %>%
-      mutate(variant = "sb", runid = runid)
-  } else {
-    step_parcels$regstring = tibble()
-  }
-
-  # E. COLSTAT
-  step_parcels$colstat_numeric = if (nrow(colstats$colstat_numeric) > 0) {
-    colstats$colstat_numeric %>% mutate(artid = mrb$artid, variant = "sb", runid = runid, cterm = col)
-  } else { tibble() }
-
-  step_parcels$colstat_dummy = if (nrow(colstats$colstat_dummy) > 0) {
-    colstats$colstat_dummy %>% mutate(artid = mrb$artid, variant = "sb", runid = runid, cterm = col)
-  } else { tibble() }
-
-  step_parcels$colstat_factor = if (nrow(colstats$colstat_factor) > 0) {
-    colstats$colstat_factor %>% mutate(artid = mrb$artid, variant = "sb", runid = runid, cterm = col)
-  } else { tibble() }
-
-  # F. REG & REGSOURCE
-  nobs_val = if ("N" %in% names(stats_wide)) as.numeric(stats_wide$N) else NA_real_
-  r2_val = if ("r2" %in% names(stats_wide)) as.numeric(stats_wide$r2) else if ("r2_p" %in% names(stats_wide)) as.numeric(stats_wide$r2_p) else NA_real_
-
-
-  reg_dat = tibble(
-    runid = pid,
-    variant = "sb",
-    base_variant = "sb",
-    lang = "stata",
-    source_lang = "stata",
-    cmd = cmd,
-    cmdline = run_obj$cmdline[1],
-    timevar = xtvar$timevar,
-    panelvar = xtvar$panelvar,
-    tdelta = as_integer(xtvar$tdelta[1]),
-    se_category = se_info$se_category,
-    se_type = se_info$se_type,
-    se_args = se_info$se_args,
-    ncoef = if (nrow(step_parcels$regcoef) > 0) nrow(step_parcels$regcoef) else NA_integer_,
-    iv_code = any(step_parcels$regvar$role == "instr"),
-    nobs = nobs_val,
-    nobs_org = NROW(org_dat),
-    r2 = r2_val,
-    error_in_r = FALSE
-  )
-
-  step_parcels$reg = reg_dat
-  step_parcels$colinfo = repbox_compute_col_info(runid, project_dir, dat, org_dat, reg_dat)
-
-  return(step_parcels)
+  mrb$parcels[names(parcels)] = parcels
+  return(mrb)
 }
 ```
-!END_MODIFICATION mrb_run_r_base_step in mrb_r_base.R
 
-!MODIFICATION mrb_run_r_reg_step in mrb_r_reg.R
-scope = "function"
-file = "metaregBase/R/mrb_r_reg.R"
-function_name = "mrb_run_r_reg_step"
-description = "Filter stata_co for variant=='sb' to prevent comparing against MFX outputs and choosing the wrong default_eq."
----
-```R
-#' Process a single regression, expand syntax, and format standard parcels
-mrb_run_r_reg_step = function(mrb, pid) {
-  restore.point("mrb_run_r_reg_step")
+!END_MODIFICATION mrb_make_r_base_parcels dynamic regcoef variants
 
-  project_dir = mrb$project_dir
-  parcels = mrb$parcels
-  artid = mrb$artid
-  runid = pid
+!MODIFICATION mrb_run_r_reg_step rb variant split
+scope = "lines"
+file = "/home/rstudio/repbox/metaregBase/R/mrb_r_reg.R"
+description = "When R ever creates multiple coefficient variants, split them into regcoef_rb and regcoef_<variant> parcels."
+----------------------------------------------------------------------------------------------------------------------------
 
-  reg = parcel_for_runid(parcels$reg, runid)
-  regvar = parcel_for_runid(parcels$regvar, runid)
-  regxvar = if (!is.null(parcels$regxvar)) parcel_for_runid(parcels$regxvar, runid) else tibble()
-  cmdpart = parcel_for_runid(parcels$reg_cmdpart, runid)
-
-  stata_co = parcel_for_runid(parcels$regcoef, runid)
-  stata_co = stata_co[stata_co$variant == "sb", , drop = FALSE]
-  stata_so = parcel_for_runid(parcels$regcoef_so, runid)
-  default_eq = regcoef_default_eq(stata_co)
-
-  step_parcels = list()
-
-  diff_sb_so = NULL
-  if (NROW(stata_co) > 0 && NROW(stata_so) > 0) {
-     if (!"variant" %in% names(stata_co)) stata_co$variant = "sb"
-     if (!"variant" %in% names(stata_so)) stata_so$variant = "so"
-     diff_tab = coef_diff_table(stata_co, stata_so)
-     if (!is.null(diff_tab)) {
-        diff_sb_so = coef_diff_summary(diff_tab, compare_what=c("all","coef"))
-     }
-  }
-
-  if (NROW(regvar) == 0 || NROW(cmdpart) == 0) {
-    # Cannot translate if base parcels are empty, but we must return whatever diff we have
-    step_parcels$regcoef_diff = diff_sb_so
-    return(step_parcels)
-  }
-
-  library(regtranslate)
-  opts = code_options(add_function = TRUE, add_broom = TRUE)
-  code_df = try(reg_stata_to_r_code(reg, regvar, regxvar, cmdpart, prefer="fixest", opts=opts), silent=TRUE)
-
-  reg_rb = reg %>% mutate(variant = "rb", error_in_r = FALSE, error_msg = "")
-
-  if (is(code_df, "try-error") || any(grepl("# Stata command .* not fully translated", code_df$code)) || any(grepl("# Translation failed", code_df$code))) {
-     reg_rb$error_in_r = TRUE
-     reg_rb$error_msg = "Stata regression could not be translated to R."
-     step_parcels$reg_rb = reg_rb
-     step_parcels$regcoef_diff = diff_sb_so
-     return(step_parcels)
-  }
-
-  code = paste0(code_df$code, collapse="\n")
-  reg_fun_code = paste0("reg_fun = ", code)
-
-  reg_fun = try(eval(parse(text=reg_fun_code)), silent=TRUE)
-  if (is(reg_fun, "try-error")) {
-     reg_rb$error_in_r = TRUE
-     reg_rb$error_msg = "Error parsing translated R code."
-     step_parcels$reg_rb = reg_rb
-     step_parcels$regcoef_diff = diff_sb_so
-     return(step_parcels)
-  }
-
-  # Fetch and prepare the data using our new refactored helper function
-  dat = try(mrb_get_regression_data(runid, drf = mrb$drf, reg=reg, regvar = regvar, regxvar = regxvar), silent=TRUE)
-  if (is(dat, "try-error")) {
-     reg_rb$error_in_r = TRUE
-     reg_rb$error_msg = "Error preparing regression data."
-     step_parcels$reg_rb = reg_rb
-     step_parcels$regcoef_diff = diff_sb_so
-     return(step_parcels)
-  }
-
-  results = try(reg_fun(dat), silent=TRUE)
-  if (is(results, "try-error")) {
-     reg_rb$error_in_r = TRUE
-     reg_rb$error_msg = as.character(attr(results, "condition")$message)
-     step_parcels$reg_rb = reg_rb
-     step_parcels$regcoef_diff = diff_sb_so
-     return(step_parcels)
-  }
-
-
-  # Process R results
-  ct = results$ct
-  diff_sb_rb = NULL
-
-  if (!is.null(ct) && nrow(ct) > 0) {
-    ct$cterm = cterm_of_r_coefs(ct$term, regvar, dot_to_at = TRUE)
+```r
     co_df = ct_to_regcoef(ct, lang="r", variant="rb", artid=artid, default_eq=default_eq)
     co_df$runid = runid
-    step_parcels$regcoef_rb = co_df
 
-    # Comparison sb vs rb
-    if (!is.null(stata_co) && nrow(stata_co) > 0) {
-      if (!"variant" %in% names(stata_co)) stata_co$variant = "sb"
-      diff_tab_rb = coef_diff_table(stata_co, co_df)
-      if (!is.null(diff_tab_rb)) {
-        diff_sb_rb = coef_diff_summary(diff_tab_rb, compare_what=c("all","coef"))
+    co_parcels = regcoef_split_variant_parcels(
+      co_df,
+      base_variant = "rb",
+      base_parcel = "regcoef_rb"
+    )
+    step_parcels[names(co_parcels)] = co_parcels
+```
+
+!END_MODIFICATION mrb_run_r_reg_step rb variant split
+
+!MODIFICATION mrb_make_r_reg_parcels dynamic rb variants
+scope = "function"
+file = "/home/rstudio/repbox/metaregBase/R/mrb_r_reg.R"
+function_name = "mrb_make_r_reg_parcels"
+description = "Save dynamically generated R-side regcoef_* variant parcels, e.g. regcoef_rb_mfx, if they ever appear."
+----------------------------------------------------------------------------------------------------------------------
+
+```r
+# The step parcels are generated in mrb_r
+mrb_make_r_reg_parcels = function(mrb, save=TRUE,is_partial_run=mrb$is_partial_run) {
+  restore.point("mrb_make_r_reg_parcels")
+
+  all_step_parcels = mrb$all_step_parcels
+  if (is.null(all_step_parcels)) {
+    cat("\nAll step parcels were not generated in mrb.\n")
+    return(mrb)
+  }
+
+  step_fields = unique(unlist(lapply(all_step_parcels, names), use.names = FALSE))
+  extra_regcoef_fields = grep("^regcoef_", step_fields, value = TRUE)
+  extra_regcoef_fields = setdiff(
+    extra_regcoef_fields,
+    c("regcoef_rb", "regcoef_so", "regcoef_diff")
+  )
+  extra_regcoef_fields = sort(extra_regcoef_fields)
+
+  if (is_partial_run) {
+    mrb$parcels = repdb_load_parcels(
+      mrb$project_dir,
+      c(
+        "reg_rb", "regcoef_rb", "regcoef_diff",
+        "regscalar_rb", "regstring_rb",
+        extra_regcoef_fields
+      )
+    )
+  }
+
+  parcels = list()
+
+  combine_steps = function(field, check_table = field) {
+    res_list = lapply(all_step_parcels, function(x) x[[field]])
+    res_list = res_list[!sapply(res_list, is.null)]
+
+    if (length(res_list) == 0) {
+      new_data = tibble()
+    } else {
+      new_data = bind_rows(res_list)
+    }
+
+    if (isTRUE(is_partial_run) && !is.null(mrb$parcels[[field]])) {
+      old_data = mrb$parcels[[field]]
+      if (NROW(old_data) > 0 && NROW(new_data) > 0) {
+        old_kept = old_data[!old_data$runid %in% mrb$partial_pids, , drop = FALSE]
+        new_data = bind_rows(old_kept, new_data)
+      } else if (NROW(old_data) > 0 && NROW(new_data) == 0) {
+        new_data = old_data
       }
     }
+
+    if (NROW(new_data) > 0) {
+      repdb_check_data(new_data, table=check_table)
+    }
+
+    new_data
   }
 
-  step_parcels$regcoef_diff = dplyr::bind_rows(diff_sb_so, diff_sb_rb)
+  parcels$reg_rb = combine_steps("reg_rb")
+  parcels$regcoef_rb = combine_steps("regcoef_rb")
+  parcels$regcoef_diff = combine_steps("regcoef_diff")
+  parcels$regscalar_rb = combine_steps("regscalar_rb")
+  parcels$regstring_rb = combine_steps("regstring_rb")
 
-  glance = results$glance
+  for (field in extra_regcoef_fields) {
+    parcels[[field]] = combine_steps(field, check_table = "regcoef")
+  }
 
-  if (!is.null(glance)) {
-    glance$runid = runid
-    glance$variant = "r"
-    glance$artid = artid
+  if (save) {
+    repdb_dir = file.path(mrb$project_dir, "repdb")
 
-    res_scalars = mrb_stats_to_regscalar_regstring(glance, variant="rb")
-    if (!is.null(res_scalars$regscalar)) {
-      step_parcels$regscalar_rb = res_scalars$regscalar
-    }
-    if (!is.null(res_scalars$regstring)) {
-      step_parcels$regstring_rb = res_scalars$regstring
-    }
+    static_parcels = parcels[setdiff(names(parcels), extra_regcoef_fields)]
+    repboxDB::repdb_save_parcels(static_parcels, repdb_dir, check = TRUE)
 
-    # Manual extraction of stats for reg table update
-    stats = glance
-    if ("r.squared" %in% names(stats)) stats$r2 = as.numeric(stats$r.squared)
-    if ("adj.r.squared" %in% names(stats)) stats$adj_r2 = as.numeric(stats$adj.r.squared)
-    if ("df.residual" %in% names(stats)) stats$df_r = as.numeric(stats$df.residual)
-    if ("statistic" %in% names(stats)) stats$F = as.numeric(stats$statistic)
-
-    stat_cols = intersect(c("r2", "adj_r2", "df_r", "F"), names(stats))
-    for(col in stat_cols) {
-      reg_rb[[col]] = stats[[col]]
+    if (length(extra_regcoef_fields) > 0) {
+      extra_parcels = parcels[extra_regcoef_fields]
+      repboxDB::repdb_save_parcels(extra_parcels, repdb_dir, check = FALSE)
     }
   }
-  reg_rb$cmd = results$rcmd
-  reg_rb$lang = "r"
 
-  step_parcels$reg_rb = reg_rb
-
-  return(step_parcels)
+  mrb$parcels[names(parcels)] = parcels
+  return(mrb)
 }
 ```
-!END_MODIFICATION mrb_run_r_reg_step in mrb_r_reg.R
 
+!END_MODIFICATION mrb_make_r_reg_parcels dynamic rb variants
 
-!MODIFICATION fixest_ssc_code_from_reg in to_r_fixest.R
-scope = "function"
-file = "regtranslate/R/to_r_fixest.R"
-function_name = "fixest_ssc_code_from_reg"
-description = "Disable (N-1)/(N-K) adjustment (adj=FALSE) for ML models like logit/probit to match Stata's non-linear SE models perfectly."
----
-```R
-# Choose default fixest::ssc() settings for translated Stata commands.
-# This centralizes command-specific small sample correction choices.
-fixest_ssc_code_from_reg = function(reg, vcov_type = fixest_vcov_type_from_regdb(reg$se_type, reg$se_args)) {
-  restore.point("fixest_ssc_code_from_reg")
+The key behavioral change is in `mrb_run_r_base_step`: `step_parcels$regcoef` now only receives `variant == "sb"`. Any additional Stata variant from `stata_ct`, such as `sb_mfx`, is still preserved, but under its own parcel name like `regcoef_sb_mfx`.
 
-  is_ml = reg$cmd %in% c("logit", "xtlogit", "probit", "xtprobit", "dprobit", "poisson", "xtpoisson", "nbreg", "gnbreg", "clogit")
-
-  if (vcov_type %in% c("cluster", "twoway", "DK", "NW")) {
-    if (reg$cmd == "areg") {
-      return('fixest::ssc(K.adj = TRUE, K.fixef = "full", G.adj = TRUE)')
-    }
-    if (is_ml) {
-      return('fixest::ssc(adj = FALSE, cluster.adj = TRUE)')
-    }
-    return('fixest::ssc()')
-  }
-
-  if (is_ml) {
-    return('fixest::ssc(adj = FALSE)')
-  }
-
-  NULL
-}
-```
-!END_MODIFICATION fixest_ssc_code_from_reg in to_r_fixest.R
-
-
-!MODIFICATION mrb_test_annotate_diff_tab in mrb_test_coef.R
-scope = "function"
-file = "metaregBase/R/mrb_test_coef.R"
-function_name = "mrb_test_annotate_diff_tab"
-description = "Change difference detection to require BOTH absolute and relative errors to exceed tolerances, to avoid failing on small optimizer artifacts."
----
-```R
-mrb_test_annotate_diff_tab = function(
-  diff_tab,
-  cmd = NA_character_,
-  variant2 = "rb",
-  max_rel_diff_tol = 0.01,
-  max_deviation_tol = 1e-6
-) {
-  restore.point("mrb_test_annotate_diff_tab")
-
-  diff_tab = mrb_test_filter_ignored_intercept_diff(diff_tab, cmd = cmd, variant2 = variant2)
-
-  if (is.null(diff_tab) || NROW(diff_tab) == 0) {
-    return(tibble())
-  }
-
-  diff_tab %>%
-    mutate(
-      abs_err_coef = as.numeric(abs_err_coef),
-      rel_err_coef = as.numeric(rel_err_coef),
-      abs_err_se = as.numeric(abs_err_se),
-      rel_err_se = as.numeric(rel_err_se),
-
-      coef_missing_one = xor(is.na(coef_1), is.na(coef_2)),
-      se_missing_one = xor(is.na(se_1), is.na(se_2)),
-
-      coef_diff_abs = !coef_missing_one & !is.na(abs_err_coef) & abs_err_coef > max_deviation_tol,
-      coef_diff_rel = !coef_missing_one & !is.na(rel_err_coef) & rel_err_coef > max_rel_diff_tol,
-      se_diff_abs = !se_missing_one & !is.na(abs_err_se) & abs_err_se > max_deviation_tol,
-      se_diff_rel = !se_missing_one & !is.na(rel_err_se) & rel_err_se > max_rel_diff_tol,
-
-      is_coef_diff = coef_missing_one | (coef_diff_abs & coef_diff_rel),
-      is_se_diff = se_missing_one | (se_diff_abs & se_diff_rel),
-      any_diff = is_coef_diff | is_se_diff,
-
-      safe_abs_coef = dplyr::coalesce(abs_err_coef, -Inf),
-      safe_rel_coef = dplyr::coalesce(rel_err_coef, -Inf),
-      safe_abs_se = dplyr::coalesce(abs_err_se, -Inf),
-      safe_rel_se = dplyr::coalesce(rel_err_se, -Inf)
-    )
-}
-```
-!END_MODIFICATION mrb_test_annotate_diff_tab in mrb_test_coef.R
+The dynamic save logic keeps normal `repdb` checking for known parcels and uses `check = FALSE` only for dynamic coefficient parcel names, because their schema is really `regcoef` but their table names are not known in advance.

@@ -24,8 +24,13 @@ example = function() {
 
 
 #' Process a single regression, expand syntax, and format standard parcels
-mrb_run_r_base_step = function(mrb, pid) {
+mrb_run_r_base_step = function(mrb, pid, with_try = isTRUE(mrb$with_try)) {
   restore.point("mrb_run_r_base_step")
+  if (with_try) {
+    res = repboxUtils::try_catch_repbox_problems(mrb_run_r_base_step(mrb,pid, with_try=FALSE),project_dir = mrb$project_dir,runid = pid,msg_prefix = "mrb_run_r_base_step: ", err_val=NULL)
+    return(res$value)
+  }
+
 
   project_dir = mrb$project_dir
   runid = pid
@@ -84,8 +89,10 @@ mrb_run_r_base_step = function(mrb, pid) {
 
   # A. REGCOEF (Parsed Stata Coefficients from metaregBase 'sb' run)
   if (!is.null(stata_ct) && nrow(stata_ct) > 0) {
-    step_parcels$regcoef = ct_to_regcoef(stata_ct, variant = "sb", artid = mrb$artid)
-    regcoef_main = regcoef_keep_default_eq(step_parcels$regcoef)
+    # Create regcoef containing all variants, but force main to be 'sb'
+    step_parcels$regcoef = ct_to_regcoef(stata_ct, artid = mrb$artid)
+    regcoef_main = step_parcels$regcoef %>% filter(variant == "sb")
+    regcoef_main = regcoef_keep_default_eq(regcoef_main)
   } else {
     step_parcels$regcoef = tibble()
     regcoef_main = tibble()
@@ -126,7 +133,7 @@ mrb_run_r_base_step = function(mrb, pid) {
     )
 
   # C. REGXVAR
-  # NEW: Pass wide_dat_full instead of dat!
+  # Pass wide_dat_full instead of dat!
   step_parcels$regxvar = make_regxvar(step_parcels$regvar, wide_dat_full, regcoef_main)
 
   # D. REGSCALAR & REGSTRING

@@ -81,6 +81,7 @@ mrb_run_r_reg_step = function(mrb, pid) {
   cmdpart = parcel_for_runid(parcels$reg_cmdpart, runid)
 
   stata_co = parcel_for_runid(parcels$regcoef, runid)
+  stata_co = stata_co[stata_co$variant == "sb", , drop = FALSE]
   stata_so = parcel_for_runid(parcels$regcoef_so, runid)
   default_eq = regcoef_default_eq(stata_co)
 

@@ -11,7 +11,7 @@ example = function() {
   drf = drf_load(project_dir)
 }
 
-mrb_run_all = function(project_dir, drf=repboxDRF::drf_load(project_dir), repair_failed=TRUE) {
+mrb_run_all = function(project_dir, drf=repboxDRF::drf_load(project_dir), repair_failed=FALSE) {
   restore.point("mrb_run_all")
   mrb = mrb_init(project_dir, drf=drf)
   mrb = mrb_full_stata_script(mrb)
@@ -27,7 +27,7 @@ mrb_run_all = function(project_dir, drf=repboxDRF::drf_load(project_dir), repair
   mrb
 }
 
-mrb_init = function(project_dir=drf$project_dir, drf=NULL,use_mcache=TRUE, mcache_files = use_mcache, mcache_runid=use_mcache, mcache_clear = TRUE) {
+mrb_init = function(project_dir=drf$project_dir, drf=NULL,use_mcache=TRUE, mcache_files = use_mcache, mcache_runid=use_mcache, mcache_clear = TRUE, with_try=TRUE) {
   project_dir = normalizePath(project_dir)
   if (is.null(drf)) {
     drf = drf_load(project_dir)
@@ -43,7 +43,8 @@ mrb_init = function(project_dir=drf$project_dir, drf=NULL,use_mcache=TRUE, mcach
     repdb_dir = file.path(project_dir, "repdb"),
     mrb_dir = file.path(project_dir, "metareg", "base"),
     parcels = drf$parcels,
-    reg_runids = unique(drf$path_df$pid)
+    reg_runids = unique(drf$path_df$pid),
+    with_try = with_try
   )
   mrb
 }

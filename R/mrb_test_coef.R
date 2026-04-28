@@ -50,8 +50,8 @@ mrb_test_annotate_diff_tab = function(
       se_diff_abs = !se_missing_one & !is.na(abs_err_se) & abs_err_se > max_deviation_tol,
       se_diff_rel = !se_missing_one & !is.na(rel_err_se) & rel_err_se > max_rel_diff_tol,
 
-      is_coef_diff = coef_missing_one | coef_diff_abs | coef_diff_rel,
-      is_se_diff = se_missing_one | se_diff_abs | se_diff_rel,
+      is_coef_diff = coef_missing_one | (coef_diff_abs & coef_diff_rel),
+      is_se_diff = se_missing_one | (se_diff_abs & se_diff_rel),
       any_diff = is_coef_diff | is_se_diff,
 
       safe_abs_coef = dplyr::coalesce(abs_err_coef, -Inf),

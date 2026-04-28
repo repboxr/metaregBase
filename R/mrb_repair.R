@@ -23,7 +23,7 @@ mrb_repair_failed_runs = function(project_dir = mrb$project_dir, mrb=NULL) {
 
   drf_clear_mcache()
 
-  failed_pids = mrb_get_failed_rb_runids(mrb=mrb)
+  failed_pids = mrb_get_to_repair_runids(mrb=mrb)
   if (length(failed_pids) == 0) {
     cat("\nNo failed runs to repair.\n")
     return(mrb)
@@ -46,19 +46,36 @@ mrb_repair_failed_runs = function(project_dir = mrb$project_dir, mrb=NULL) {
   return(mrb)
 }
 
-mrb_get_failed_rb_runids = function(mrb, parcels=mrb$parcels) {
-  restore.point("mrb_get_failed_rb_runids")
-  parcels = repboxDB::repdb_load_parcels(mrb$project_dir, "regcheck", parcels)
+mrb_get_to_repair_runids = function(mrb, parcels=mrb$parcels) {
+  restore.point("mrb_get_to_repair_runids")
+  parcels = repboxDB::repdb_load_parcels(mrb$project_dir, c("regcheck","reg"), parcels)
 
   regcheck = parcels$regcheck
   if (is.null(regcheck)) {
     cat("\nNo regcheck parcel found. Run mrb_make_regcheck_parcel() first.\n")
     return(NULL)
   }
+  reg = parcels$reg
+  if (!is.null(reg)) {
+    regcheck = left_join(regcheck, reg %>% select(cmd, runid), by="runid")
+  } else {
+    regcheck$cmd = NA
+  }
+  regcheck$cmd = na.val(regcheck$cmd, "")
+
+  regcheck = regcheck %>%
+    # repair if rb did not run
+    mutate(do_repair = (sb_raw_did_run) & (!rb_did_run)) %>%
+    # repair if sb and rb coefs are different
+    # suggests wrong data set, unless we have an R
+    # command known to not match coefs
+    mutate(do_repair = do_repair | (!rb_sb_coef_same & !(has.substr(cmd,"logit")|has.substr(cmd, "probit")) )) %>%
+    # only repair commands that have an r translation
+    mutate(do_repair = do_repair & (stata_reg_cmd_has_r_trans(cmd) | cmd==""))
 
   # 1. Identify failed runs
   # Failure criteria: sb ran, but rb failed or coefficients mismatch
-  failed_pids = regcheck$runid[regcheck$sb_did_run & (!regcheck$rb_did_run | !regcheck$rb_sb_coef_same)]
+  failed_pids = regcheck$runid[ regcheck$do_repair]
   failed_pids
 }
 
@@ -101,6 +118,9 @@ mrb_cache_reg_data = function(mrb, pids, overwrite=FALSE) {
 
   cat("\nRunning Stata repair script...\n")
   mrb_run_stata_script(mrb, do_file = script_file)
+}
 
-
+stata_reg_cmd_has_r_trans = function(cmd) {
+  sr_df = regtranslate::stata_to_r_cmds_df()
+  cmd %in% sr_df$stata_cmd
 }

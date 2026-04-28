@@ -135,8 +135,10 @@ mrb_code_reg_stata = function(code_df, run_df=NULL, outdir=NULL,runid = code_df$
   }
 
   code = paste0(
-    'capture ereturn clear
-',
+
+# Don't add ereturn clear:  not needed and not compatible with e(sample) stuff in if condition
+#    'capture ereturn clear
+#',
     cap_str, main_stata_code, '
 local repbox_reg_rc = _rc
 

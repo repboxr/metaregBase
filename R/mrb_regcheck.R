@@ -72,10 +72,14 @@ mrb_make_regcheck_parcel = function(mrb, save = TRUE, just_pids=NULL, repair_cod
     }
 
     # Evaluate any detected problem strings
-    if (!rb_did_run) {
-      problem = paste0("R replication failed: ", error_msg)
+    if (!rb_did_run & !sb_did_run & !so_did_run) {
+      problem = "All reproductions failed: so, sb and rb"
+    } else if (!sb_did_run & !rb_did_run) {
+      problem = "metaregBase reproductions failed: sb and rb"
+    } else if (!rb_did_run) {
+      problem = paste0("R replication rb failed: ", error_msg)
     } else if (!sb_did_run) {
-      problem = "Stata base replication failed."
+      problem = "Stata base sb replication failed, but rb did run."
     } else if (!so_did_run) {
       problem = "Original Stata reproduction results missing."
     } else if (isTRUE(!rb_sb_coef_same)) {
@@ -105,6 +109,10 @@ mrb_make_regcheck_parcel = function(mrb, save = TRUE, just_pids=NULL, repair_cod
   })
 
   regcheck = dplyr::bind_rows(res_li)
+
+  regcheck$so_raw_did_run = regcheck$so_did_run | regcheck$runid %in% mrb$regtab_so$runid
+  regcheck$sb_raw_did_run = regcheck$sb_did_run | regcheck$runid %in% mrb$stata_ct_sb$runid
+
 
 
   if (!is.null(just_pids)) {
