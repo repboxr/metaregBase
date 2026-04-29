@@ -293,7 +293,14 @@ coef_diff_summary = function(diff_tab, compare_what=c("all","coef"), problem="")
   sum
 }
 
-coef_diff_table = function(co1, co2, check.ref.levels = TRUE, eq_mode = c("auto", "exact")[1], ignore_intercept_cmds = mrb_cmds_ignore_intercept_in_r()) {
+coef_diff_table = function(
+  co1,
+  co2,
+  check.ref.levels = TRUE,
+  eq_mode = c("auto", "exact")[1],
+  cmd = NULL,
+  ignore_intercept_cmds = mrb_cmds_ignore_intercept_in_r()
+) {
   restore.point("regcoef_check_same")
 
   if (is.null(co1) | is.null(co2)) return(NULL)
@@ -306,20 +313,58 @@ coef_diff_table = function(co1, co2, check.ref.levels = TRUE, eq_mode = c("auto"
   co2 = prep$co2
 
   # Match results
-  cod = full_join(co1, co2, by=c("eq","cterm","runid"), suffix=c("_1","_2"))
+  cod = full_join(co1, co2, by = c("eq", "cterm", "runid"), suffix = c("_1", "_2"))
 
-  # Ignore (Intercept) if translating to R natively absorbs it for these commands
-  # full_join only suffixes columns present in BOTH. If cmd is only in co1, it remains cmd.
-  cmd_col = if ("cmd_1" %in% names(cod)) "cmd_1" else if ("cmd" %in% names(cod)) "cmd" else NULL
+  # Ignore (Intercept) if translating to R natively absorbs it for these commands.
+  # In saved regcoef parcels the cmd column is usually not present, so callers can
+  # pass cmd explicitly. This is needed for reghdfe, areg, xtreg, etc.
+  if (!is.null(ignore_intercept_cmds) && v2 == "rb" && NROW(cod) > 0) {
+    cmd_for_ignore = rep(NA_character_, NROW(cod))
 
-  if (!is.null(ignore_intercept_cmds) && v2 == "rb" && !is.null(cmd_col)) {
+    if (!is.null(cmd)) {
+      cmd_chr = as.character(cmd)
+
+      if (!is.null(names(cmd_chr)) && "runid" %in% names(cod)) {
+        ind = match(as.character(cod$runid), names(cmd_chr))
+        cmd_for_ignore = cmd_chr[ind]
+      } else if (length(cmd_chr) == 1) {
+        cmd_for_ignore = rep(cmd_chr, NROW(cod))
+      } else if (length(cmd_chr) == NROW(cod)) {
+        cmd_for_ignore = cmd_chr
+      }
+    }
+
+    if (all(is.na(cmd_for_ignore))) {
+      cmd_col = if ("cmd_1" %in% names(cod)) {
+        "cmd_1"
+      } else if ("cmd" %in% names(cod)) {
+        "cmd"
+      } else {
+        NULL
+      }
+
+      if (!is.null(cmd_col)) {
+        cmd_for_ignore = as.character(cod[[cmd_col]])
+      }
+    }
+
+    cod$.repbox_cmd_for_ignore = cmd_for_ignore
+
     cod = cod %>%
-      filter(!(cterm == "(Intercept)" & !is.na(.data[[cmd_col]]) & .data[[cmd_col]] %in% ignore_intercept_cmds))
+      filter(
+        !(
+          cterm == "(Intercept)" &
+            !is.na(.data$.repbox_cmd_for_ignore) &
+            nzchar(.data$.repbox_cmd_for_ignore) &
+            .data$.repbox_cmd_for_ignore %in% ignore_intercept_cmds
+        )
+      ) %>%
+      select(-.repbox_cmd_for_ignore)
   }
 
   # Ignore coefficients that are missing in both co1 and co2
   cod = cod %>%
-    filter(! (is.na(coef_1) & is.na(coef_2)))
+    filter(!(is.na(coef_1) & is.na(coef_2)))
 
   # Should be TRUE whenever co1 and co2 come from different regression commands
   # We try to correct for the fact that they may pick different reference levels
@@ -327,33 +372,19 @@ coef_diff_table = function(co1, co2, check.ref.levels = TRUE, eq_mode = c("auto"
   if (check.ref.levels) {
     cod = cod %>%
       mutate(
-        is_ia = has.substr(cterm ,"#"),
+        is_ia = has.substr(cterm, "#"),
         is_factor = has.substr(cterm, "="),
-        factor_group = stringi::stri_replace_all_regex(paste0(cterm,":"), "=([^\\:]*):",":") %>% str.remove.ends(right=1)
+        factor_group = stringi::stri_replace_all_regex(paste0(cterm, ":"), "=([^\\:]*):", ":") %>% str.remove.ends(right = 1)
       ) %>%
       group_by(runid, eq, factor_group) %>%
       mutate(
-        # We will normalize reference levels to those of coef_1
-        # Note that rows where both coef_1 and coef_2
-        # is NA are removed
-
-        # Reference levels differ if some coef_2 is NA
         ref_level_differs = is_factor & any(is.na(coef_2)),
-
-        # We compute the offset for coef_2
-        offset.2 = ifelse(ref_level_differs, -coef_1[first(which(is.na(coef_2)))],0),
+        offset.2 = ifelse(ref_level_differs, -coef_1[first(which(is.na(coef_2)))], 0),
         num_diff_ref_coef_2 = sum(is.na(coef_2))
       ) %>%
       ungroup() %>%
       mutate(
-        # Replace NA by 0 for coef_2 if ref_level_differs
         coef_2 = ifelse(is.na(coef_2) & ref_level_differs, 0, coef_2),
-
-        # We keep the SE currently as NA as I don't know how
-        # to adapt them
-        # se.2 = ???
-
-        # Now adapt all coef_2 by offset.2 if ref level differs
         coef_2 = ifelse(ref_level_differs, coef_2 + offset.2, coef_2)
       )
 
@@ -361,21 +392,21 @@ coef_diff_table = function(co1, co2, check.ref.levels = TRUE, eq_mode = c("auto"
     cod = cod %>%
       group_by(runid, eq) %>%
       mutate(
-        ref_level_differs = ifelse(cterm=="(Intercept)" & any(ref_level_differs), any(ref_level_differs, na.rm=TRUE), ref_level_differs),
-        offset.2.intercept =  ifelse(cterm=="(Intercept)" & any(ref_level_differs), -sum(unique(offset.2), na.rm=TRUE), offset.2),
-        coef_2 = ifelse(cterm=="(Intercept)" & any(ref_level_differs), coef_2 + offset.2.intercept, coef_2)
+        ref_level_differs = ifelse(cterm == "(Intercept)" & any(ref_level_differs), any(ref_level_differs, na.rm = TRUE), ref_level_differs),
+        offset.2.intercept = ifelse(cterm == "(Intercept)" & any(ref_level_differs), -sum(unique(offset.2), na.rm = TRUE), offset.2),
+        coef_2 = ifelse(cterm == "(Intercept)" & any(ref_level_differs), coef_2 + offset.2.intercept, coef_2)
       )
   } else {
     cod$ref_level_differs = rep(FALSE, NROW(cod))
   }
 
-  # Compute absolute and relative differences between coeficients and se
+  # Compute absolute and relative differences between coefficients and se
   cod = cod %>%
     mutate(
-      abs_err_coef = abs(coef_1-coef_2),
-      abs_err_se = abs(se_1-se_2),
-      rel_err_coef = abs_err_coef / (0.5*(abs(coef_1)+abs(coef_2))),
-      rel_err_se = abs_err_se / (0.5*(abs(se_1)+abs(se_2))),
+      abs_err_coef = abs(coef_1 - coef_2),
+      abs_err_se = abs(se_1 - se_2),
+      rel_err_coef = abs_err_coef / (0.5 * (abs(coef_1) + abs(coef_2))),
+      rel_err_se = abs_err_se / (0.5 * (abs(se_1) + abs(se_2))),
 
       rel_within_1pc_coef = rel_err_coef < 0.01,
       rel_within_1pc = rel_err_coef < 0.01 & rel_err_se < 0.01,
@@ -383,15 +414,12 @@ coef_diff_table = function(co1, co2, check.ref.levels = TRUE, eq_mode = c("auto"
       identical = identical_coef & se_1 == se_2
     )
 
-  # If Stata uses a dummy set like month1 month2 month3 ...
-  # we cannot repair different dummy dropping between Stata and R
-  # we just add an indicator
   cod = cod %>%
     group_by(runid, eq) %>%
     mutate(
       step_refs_differ =
         any(ref_level_differs) |
-        any( !is.na(coef_1) & is.na(coef_2) )
+        any(!is.na(coef_1) & is.na(coef_2))
     ) %>%
     ungroup()
 
