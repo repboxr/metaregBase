@@ -1,10 +1,10 @@
 
-I am currently debugging my repbox framework
+Below is code from selected R projects from my repbox / metareg toolbox.
 
-# package metaregBase
+# Package metaregBase
 
 
-# FILE: DESCRIPTION
+# FILE: /home/rstudio/repbox/metaregBase/DESCRIPTION
 ```
 Package: metaregBase
 Type: Package
@@ -24,12 +24,12 @@ Encoding: UTF-8
 LazyData: true
 Depends: repboxDB, repboxUtils, repboxDRF, repboxStataReg, regtranslate
 ```
-# END OF FILE: DESCRIPTION
+# END OF FILE: /home/rstudio/repbox/metaregBase/DESCRIPTION
 
 -----------------------------------------------------------
 
 
-# FILE: colstat.R
+# FILE: /home/rstudio/repbox/metaregBase/R/colstat.R
 ```
 make_cols_small_info = function(df, cols = colnames(df)) {
   restore.point("make_cols_small_info")
@@ -244,12 +244,12 @@ colstat_dummy = function(col,df, reg_df=df, val = as_integer(df[[col]]), reg_val
   )
 }
 ```
-# END OF FILE: colstat.R
+# END OF FILE: /home/rstudio/repbox/metaregBase/R/colstat.R
 
 -----------------------------------------------------------
 
 
-# FILE: debug_tools.R
+# FILE: /home/rstudio/repbox/metaregBase/R/debug_tools.R
 ```
 set_debug_mode = function(debug_mode=TRUE) {
   options(repbox.debug_mode = debug_mode)
@@ -362,12 +362,12 @@ mrb_test_traceback = function() {
   #print(str)
 }
 ```
-# END OF FILE: debug_tools.R
+# END OF FILE: /home/rstudio/repbox/metaregBase/R/debug_tools.R
 
 -----------------------------------------------------------
 
 
-# FILE: mrb_agg_stata.R
+# FILE: /home/rstudio/repbox/metaregBase/R/mrb_agg_stata.R
 ```
 # TO DO: Transform to parcels
 mrb_agg_stata = function(mrb, skip_if_has = TRUE) {
@@ -532,12 +532,12 @@ mrb_agg_stata_regcoef = function(mrb, file_prefix="reg_", dir = file.path(mrb$mr
 
 
 ```
-# END OF FILE: mrb_agg_stata.R
+# END OF FILE: /home/rstudio/repbox/metaregBase/R/mrb_agg_stata.R
 
 -----------------------------------------------------------
 
 
-# FILE: mrb_cmd_types.R
+# FILE: /home/rstudio/repbox/metaregBase/R/mrb_cmd_types.R
 ```
 stata_cmds_with_margin = function() {
   #cmds = readLines("~/repbox/repboxReg/inst/misc/reg_margin_cmds.txt")
@@ -557,12 +557,12 @@ mrb_cmds_ignore_intercept_in_r = function() {
   c("areg", "xtreg", "reghdfe", "ivreghdfe", "xtlogit", "xtprobit", "xtpoisson", "clogit")
 }
 ```
-# END OF FILE: mrb_cmd_types.R
+# END OF FILE: /home/rstudio/repbox/metaregBase/R/mrb_cmd_types.R
 
 -----------------------------------------------------------
 
 
-# FILE: mrb_col_info.R
+# FILE: /home/rstudio/repbox/metaregBase/R/mrb_col_info.R
 ```
 # Store information about all columns in data set
 # (not only those used in the regression)
@@ -704,12 +704,12 @@ recompute_colinfo_groups = function(colinfo) {
   df
 }
 ```
-# END OF FILE: mrb_col_info.R
+# END OF FILE: /home/rstudio/repbox/metaregBase/R/mrb_col_info.R
 
 -----------------------------------------------------------
 
 
-# FILE: mrb_cterms.R
+# FILE: /home/rstudio/repbox/metaregBase/R/mrb_cterms.R
 ```
 # Parse and map the shown coefficient names (terms) in regression
 # ouputs of different stata and r functions.
@@ -1386,12 +1386,12 @@ sort_interaction_terms = function(terms) {
 }
 
 ```
-# END OF FILE: mrb_cterms.R
+# END OF FILE: /home/rstudio/repbox/metaregBase/R/mrb_cterms.R
 
 -----------------------------------------------------------
 
 
-# FILE: mrb.R
+# FILE: /home/rstudio/repbox/metaregBase/R/mrb.R
 ```
 # runs a complete metaregBase analysis
 
@@ -1444,12 +1444,12 @@ mrb_init = function(project_dir=drf$project_dir, drf=NULL,use_mcache=TRUE, mcach
   mrb
 }
 ```
-# END OF FILE: mrb.R
+# END OF FILE: /home/rstudio/repbox/metaregBase/R/mrb.R
 
 -----------------------------------------------------------
 
 
-# FILE: mrb_r_base.R
+# FILE: /home/rstudio/repbox/metaregBase/R/mrb_r_base.R
 ```
 # metaregBase R run that
 # aggregates all information from Stata base run
@@ -1833,12 +1833,12 @@ mrb_make_r_base_parcels = function(mrb, save=TRUE, is_partial_run = isTRUE(mrb$i
 
 
 ```
-# END OF FILE: mrb_r_base.R
+# END OF FILE: /home/rstudio/repbox/metaregBase/R/mrb_r_base.R
 
 -----------------------------------------------------------
 
 
-# FILE: mrb_regcheck.R
+# FILE: /home/rstudio/repbox/metaregBase/R/mrb_regcheck.R
 ```
 #' Assemble the 'regcheck' parcel checking cross-language replication success
 #'
@@ -1875,16 +1875,28 @@ mrb_make_regcheck_parcel = function(
     pids = intersect(pids, just_pids)
   }
 
+  pid = pids[1]
+
   res_li = lapply(pids, function(pid) {
     so_did_run = !is.null(parcels$regcoef_so) && pid %in% parcels$regcoef_so$runid
     sb_did_run = !is.null(parcels$reg) && pid %in% parcels$reg$runid
 
+    run_cmd = ""
+    if (!is.null(parcels$reg) && "cmd" %in% names(parcels$reg) && pid %in% parcels$reg$runid) {
+      reg_row = parcels$reg[parcels$reg$runid == pid, , drop = FALSE][1, ]
+      run_cmd = as.character(reg_row$cmd[1])
+      if (is.na(run_cmd)) run_cmd = ""
+    }
+
     rb_did_run = FALSE
     error_msg = ""
     if (!is.null(parcels$reg_rb) && pid %in% parcels$reg_rb$runid) {
-      row = parcels$reg_rb[parcels$reg_rb$runid == pid, , drop = FALSE][1,]
-      rb_did_run = !isTRUE(row$error_in_r)
-      error_msg = if (!is.na(row$error_msg)) row$error_msg else ""
+      rb_row = parcels$reg_rb[parcels$reg_rb$runid == pid, , drop = FALSE][1, ]
+      rb_did_run = !isTRUE(rb_row$error_in_r)
+
+      if ("error_msg" %in% names(rb_row) && !is.na(rb_row$error_msg[1])) {
+        error_msg = as.character(rb_row$error_msg[1])
+      }
     }
 
     sb_so_identical = NA
@@ -1909,7 +1921,7 @@ mrb_make_regcheck_parcel = function(
       co_sb = parcels$regcoef[parcels$regcoef$runid == pid, , drop = FALSE]
       co_so = parcels$regcoef_so[parcels$regcoef_so$runid == pid, , drop = FALSE]
 
-      diff_so = coef_diff_table(co_sb, co_so)
+      diff_so = coef_diff_table(co_sb, co_so, cmd = run_cmd)
       ev_so = mrb_regcheck_diff_eval(
         diff_so,
         max_rel_diff_tol = max_rel_diff_tol,
@@ -1929,7 +1941,7 @@ mrb_make_regcheck_parcel = function(
       co_sb = parcels$regcoef[parcels$regcoef$runid == pid, , drop = FALSE]
       co_rb = parcels$regcoef_rb[parcels$regcoef_rb$runid == pid, , drop = FALSE]
 
-      diff_rb = coef_diff_table(co_sb, co_rb)
+      diff_rb = coef_diff_table(co_sb, co_rb, cmd = run_cmd)
       ev_rb = mrb_regcheck_diff_eval(
         diff_rb,
         max_rel_diff_tol = rb_max_rel_diff_tol,
@@ -1937,10 +1949,10 @@ mrb_make_regcheck_parcel = function(
       )
 
       rb_sb_coef_same = ev_rb$coef_same
-      rb_sb_coef_max_dev = ev_rb$coef_max_rel
+      rb_sb_coef_max_dev = ev_rb$coef_max_dev
       rb_sb_coef_max_rel = ev_rb$coef_max_rel
       rb_sb_se_same = ev_rb$se_same
-      rb_sb_se_max_dev = ev_rb$se_max_rel
+      rb_sb_se_max_dev = ev_rb$se_max_dev
       rb_sb_se_max_rel = ev_rb$se_max_rel
     }
 
@@ -2102,12 +2114,12 @@ mrb_regcheck_diff_eval = function(
   )
 }
 ```
-# END OF FILE: mrb_regcheck.R
+# END OF FILE: /home/rstudio/repbox/metaregBase/R/mrb_regcheck.R
 
 -----------------------------------------------------------
 
 
-# FILE: mrb_regcoef.R
+# FILE: /home/rstudio/repbox/metaregBase/R/mrb_regcoef.R
 ```
 # Helper function for regcoef (repdb table)
 
@@ -2404,7 +2416,14 @@ coef_diff_summary = function(diff_tab, compare_what=c("all","coef"), problem="")
   sum
 }
 
-coef_diff_table = function(co1, co2, check.ref.levels = TRUE, eq_mode = c("auto", "exact")[1], ignore_intercept_cmds = mrb_cmds_ignore_intercept_in_r()) {
+coef_diff_table = function(
+  co1,
+  co2,
+  check.ref.levels = TRUE,
+  eq_mode = c("auto", "exact")[1],
+  cmd = NULL,
+  ignore_intercept_cmds = mrb_cmds_ignore_intercept_in_r()
+) {
   restore.point("regcoef_check_same")
 
   if (is.null(co1) | is.null(co2)) return(NULL)
@@ -2417,20 +2436,58 @@ coef_diff_table = function(co1, co2, check.ref.levels = TRUE, eq_mode = c("auto"
   co2 = prep$co2
 
   # Match results
-  cod = full_join(co1, co2, by=c("eq","cterm","runid"), suffix=c("_1","_2"))
+  cod = full_join(co1, co2, by = c("eq", "cterm", "runid"), suffix = c("_1", "_2"))
 
-  # Ignore (Intercept) if translating to R natively absorbs it for these commands
-  # full_join only suffixes columns present in BOTH. If cmd is only in co1, it remains cmd.
-  cmd_col = if ("cmd_1" %in% names(cod)) "cmd_1" else if ("cmd" %in% names(cod)) "cmd" else NULL
+  # Ignore (Intercept) if translating to R natively absorbs it for these commands.
+  # In saved regcoef parcels the cmd column is usually not present, so callers can
+  # pass cmd explicitly. This is needed for reghdfe, areg, xtreg, etc.
+  if (!is.null(ignore_intercept_cmds) && v2 == "rb" && NROW(cod) > 0) {
+    cmd_for_ignore = rep(NA_character_, NROW(cod))
 
-  if (!is.null(ignore_intercept_cmds) && v2 == "rb" && !is.null(cmd_col)) {
+    if (!is.null(cmd)) {
+      cmd_chr = as.character(cmd)
+
+      if (!is.null(names(cmd_chr)) && "runid" %in% names(cod)) {
+        ind = match(as.character(cod$runid), names(cmd_chr))
+        cmd_for_ignore = cmd_chr[ind]
+      } else if (length(cmd_chr) == 1) {
+        cmd_for_ignore = rep(cmd_chr, NROW(cod))
+      } else if (length(cmd_chr) == NROW(cod)) {
+        cmd_for_ignore = cmd_chr
+      }
+    }
+
+    if (all(is.na(cmd_for_ignore))) {
+      cmd_col = if ("cmd_1" %in% names(cod)) {
+        "cmd_1"
+      } else if ("cmd" %in% names(cod)) {
+        "cmd"
+      } else {
+        NULL
+      }
+
+      if (!is.null(cmd_col)) {
+        cmd_for_ignore = as.character(cod[[cmd_col]])
+      }
+    }
+
+    cod$.repbox_cmd_for_ignore = cmd_for_ignore
+
     cod = cod %>%
-      filter(!(cterm == "(Intercept)" & !is.na(.data[[cmd_col]]) & .data[[cmd_col]] %in% ignore_intercept_cmds))
+      filter(
+        !(
+          cterm == "(Intercept)" &
+            !is.na(.data$.repbox_cmd_for_ignore) &
+            nzchar(.data$.repbox_cmd_for_ignore) &
+            .data$.repbox_cmd_for_ignore %in% ignore_intercept_cmds
+        )
+      ) %>%
+      select(-.repbox_cmd_for_ignore)
   }
 
   # Ignore coefficients that are missing in both co1 and co2
   cod = cod %>%
-    filter(! (is.na(coef_1) & is.na(coef_2)))
+    filter(!(is.na(coef_1) & is.na(coef_2)))
 
   # Should be TRUE whenever co1 and co2 come from different regression commands
   # We try to correct for the fact that they may pick different reference levels
@@ -2438,33 +2495,19 @@ coef_diff_table = function(co1, co2, check.ref.levels = TRUE, eq_mode = c("auto"
   if (check.ref.levels) {
     cod = cod %>%
       mutate(
-        is_ia = has.substr(cterm ,"#"),
+        is_ia = has.substr(cterm, "#"),
         is_factor = has.substr(cterm, "="),
-        factor_group = stringi::stri_replace_all_regex(paste0(cterm,":"), "=([^\\:]*):",":") %>% str.remove.ends(right=1)
+        factor_group = stringi::stri_replace_all_regex(paste0(cterm, ":"), "=([^\\:]*):", ":") %>% str.remove.ends(right = 1)
       ) %>%
       group_by(runid, eq, factor_group) %>%
       mutate(
-        # We will normalize reference levels to those of coef_1
-        # Note that rows where both coef_1 and coef_2
-        # is NA are removed
-
-        # Reference levels differ if some coef_2 is NA
         ref_level_differs = is_factor & any(is.na(coef_2)),
-
-        # We compute the offset for coef_2
-        offset.2 = ifelse(ref_level_differs, -coef_1[first(which(is.na(coef_2)))],0),
+        offset.2 = ifelse(ref_level_differs, -coef_1[first(which(is.na(coef_2)))], 0),
         num_diff_ref_coef_2 = sum(is.na(coef_2))
       ) %>%
       ungroup() %>%
       mutate(
-        # Replace NA by 0 for coef_2 if ref_level_differs
         coef_2 = ifelse(is.na(coef_2) & ref_level_differs, 0, coef_2),
-
-        # We keep the SE currently as NA as I don't know how
-        # to adapt them
-        # se.2 = ???
-
-        # Now adapt all coef_2 by offset.2 if ref level differs
         coef_2 = ifelse(ref_level_differs, coef_2 + offset.2, coef_2)
       )
 
@@ -2472,21 +2515,21 @@ coef_diff_table = function(co1, co2, check.ref.levels = TRUE, eq_mode = c("auto"
     cod = cod %>%
       group_by(runid, eq) %>%
       mutate(
-        ref_level_differs = ifelse(cterm=="(Intercept)" & any(ref_level_differs), any(ref_level_differs, na.rm=TRUE), ref_level_differs),
-        offset.2.intercept =  ifelse(cterm=="(Intercept)" & any(ref_level_differs), -sum(unique(offset.2), na.rm=TRUE), offset.2),
-        coef_2 = ifelse(cterm=="(Intercept)" & any(ref_level_differs), coef_2 + offset.2.intercept, coef_2)
+        ref_level_differs = ifelse(cterm == "(Intercept)" & any(ref_level_differs), any(ref_level_differs, na.rm = TRUE), ref_level_differs),
+        offset.2.intercept = ifelse(cterm == "(Intercept)" & any(ref_level_differs), -sum(unique(offset.2), na.rm = TRUE), offset.2),
+        coef_2 = ifelse(cterm == "(Intercept)" & any(ref_level_differs), coef_2 + offset.2.intercept, coef_2)
       )
   } else {
     cod$ref_level_differs = rep(FALSE, NROW(cod))
   }
 
-  # Compute absolute and relative differences between coeficients and se
+  # Compute absolute and relative differences between coefficients and se
   cod = cod %>%
     mutate(
-      abs_err_coef = abs(coef_1-coef_2),
-      abs_err_se = abs(se_1-se_2),
-      rel_err_coef = abs_err_coef / (0.5*(abs(coef_1)+abs(coef_2))),
-      rel_err_se = abs_err_se / (0.5*(abs(se_1)+abs(se_2))),
+      abs_err_coef = abs(coef_1 - coef_2),
+      abs_err_se = abs(se_1 - se_2),
+      rel_err_coef = abs_err_coef / (0.5 * (abs(coef_1) + abs(coef_2))),
+      rel_err_se = abs_err_se / (0.5 * (abs(se_1) + abs(se_2))),
 
       rel_within_1pc_coef = rel_err_coef < 0.01,
       rel_within_1pc = rel_err_coef < 0.01 & rel_err_se < 0.01,
@@ -2494,15 +2537,12 @@ coef_diff_table = function(co1, co2, check.ref.levels = TRUE, eq_mode = c("auto"
       identical = identical_coef & se_1 == se_2
     )
 
-  # If Stata uses a dummy set like month1 month2 month3 ...
-  # we cannot repair different dummy dropping between Stata and R
-  # we just add an indicator
   cod = cod %>%
     group_by(runid, eq) %>%
     mutate(
       step_refs_differ =
         any(ref_level_differs) |
-        any( !is.na(coef_1) & is.na(coef_2) )
+        any(!is.na(coef_1) & is.na(coef_2))
     ) %>%
     ungroup()
 
@@ -2522,12 +2562,12 @@ max_empty_na = function(x, na.rm=TRUE) {
   max(x)
 }
 ```
-# END OF FILE: mrb_regcoef.R
+# END OF FILE: /home/rstudio/repbox/metaregBase/R/mrb_regcoef.R
 
 -----------------------------------------------------------
 
 
-# FILE: mrb_reg_tools.R
+# FILE: /home/rstudio/repbox/metaregBase/R/mrb_reg_tools.R
 ```
 # ==============================================================================
 # PART 1: Rescued & Adapted Variable Expansion (Globbing, Ranges, Abbreviations)
@@ -2986,12 +3026,12 @@ vi_add_ia_type = function(vi) {
 }
 
 ```
-# END OF FILE: mrb_reg_tools.R
+# END OF FILE: /home/rstudio/repbox/metaregBase/R/mrb_reg_tools.R
 
 -----------------------------------------------------------
 
 
-# FILE: mrb_regxvar.R
+# FILE: /home/rstudio/repbox/metaregBase/R/mrb_regxvar.R
 ```
 # Store information about expanded interaction terms and factors
 # This will allow to rebuild regressions in a way that drops exactly
@@ -3166,12 +3206,12 @@ make_regxvar_cols = function(dat, regxvar) {
 }
 
 ```
-# END OF FILE: mrb_regxvar.R
+# END OF FILE: /home/rstudio/repbox/metaregBase/R/mrb_regxvar.R
 
 -----------------------------------------------------------
 
 
-# FILE: mrb_repair.R
+# FILE: /home/rstudio/repbox/metaregBase/R/mrb_repair.R
 ```
 # FILE: /home/rstudio/repbox/metaregBase/R/mrb_repair.R
 
@@ -3300,12 +3340,12 @@ stata_reg_cmd_has_r_trans = function(cmd) {
   cmd %in% sr_df$stata_cmd
 }
 ```
-# END OF FILE: mrb_repair.R
+# END OF FILE: /home/rstudio/repbox/metaregBase/R/mrb_repair.R
 
 -----------------------------------------------------------
 
 
-# FILE: mrb_r_reg.R
+# FILE: /home/rstudio/repbox/metaregBase/R/mrb_r_reg.R
 ```
 # metaregBase R run that
 # runs regressions in R
@@ -3705,12 +3745,12 @@ extract_reg_stats_from_regscalar = function(regscalar) {
 
 
 ```
-# END OF FILE: mrb_r_reg.R
+# END OF FILE: /home/rstudio/repbox/metaregBase/R/mrb_r_reg.R
 
 -----------------------------------------------------------
 
 
-# FILE: mrb_se.R
+# FILE: /home/rstudio/repbox/metaregBase/R/mrb_se.R
 ```
 # Parses SE information from a Stata regression and
 # returns the relevant SE info stored in the repdb reg table
@@ -3863,12 +3903,12 @@ repdb_parse_se_args = function(se_args, as_df=FALSE) {
   tibble(arg_name=var, arg_val=val)
 }
 ```
-# END OF FILE: mrb_se.R
+# END OF FILE: /home/rstudio/repbox/metaregBase/R/mrb_se.R
 
 -----------------------------------------------------------
 
 
-# FILE: mrb_stata.R
+# FILE: /home/rstudio/repbox/metaregBase/R/mrb_stata.R
 ```
 # New attempt metareg base: compute Stata code
 # for repboxDRF generated Stata file
@@ -4043,12 +4083,12 @@ mrb_clear_stata_reg_out = function(project_dir, runids=NULL) {
 }
 
 ```
-# END OF FILE: mrb_stata.R
+# END OF FILE: /home/rstudio/repbox/metaregBase/R/mrb_stata.R
 
 -----------------------------------------------------------
 
 
-# FILE: mrb_test_code_path.R
+# FILE: /home/rstudio/repbox/metaregBase/R/mrb_test_code_path.R
 ```
 # For a given runid=pid
 # create a text that shows the complete path including Stata data modification steps,
@@ -4177,12 +4217,12 @@ mrb_test_code_path = function(project_dir, runid, parcels, drf, opts = mrb_test_
 
 
 ```
-# END OF FILE: mrb_test_code_path.R
+# END OF FILE: /home/rstudio/repbox/metaregBase/R/mrb_test_code_path.R
 
 -----------------------------------------------------------
 
 
-# FILE: mrb_test_coef.R
+# FILE: /home/rstudio/repbox/metaregBase/R/mrb_test_coef.R
 ```
 mrb_test_filter_ignored_intercept_diff = function(diff_tab, cmd = NA_character_, variant2 = "rb", ignore_intercept_cmds = mrb_cmds_ignore_intercept_in_r()) {
   restore.point("mrb_test_filter_ignored_intercept_diff")
@@ -4526,12 +4566,12 @@ mrb_test_fmt_num = function(x, digits = 4) {
 }
 
 ```
-# END OF FILE: mrb_test_coef.R
+# END OF FILE: /home/rstudio/repbox/metaregBase/R/mrb_test_coef.R
 
 -----------------------------------------------------------
 
 
-# FILE: mrb_test_data.R
+# FILE: /home/rstudio/repbox/metaregBase/R/mrb_test_data.R
 ```
 example = function() {
   mrb_print_parcels(project_dir, runid=7)
@@ -4658,12 +4698,12 @@ mrb_test_data_preview_text = function(runid, drf, parcels, n = 5, opts=mrb_test_
 
 
 ```
-# END OF FILE: mrb_test_data.R
+# END OF FILE: /home/rstudio/repbox/metaregBase/R/mrb_test_data.R
 
 -----------------------------------------------------------
 
 
-# FILE: mrb_test.R
+# FILE: /home/rstudio/repbox/metaregBase/R/mrb_test.R
 ```
 # Tools for systematic testing the metaregBase pipeline
 # Will be used for specific test projects
@@ -5725,12 +5765,12 @@ mrb_test_regcheck_is_usable = function(regcheck, pids, just_runid = NULL, projec
   TRUE
 }
 ```
-# END OF FILE: mrb_test.R
+# END OF FILE: /home/rstudio/repbox/metaregBase/R/mrb_test.R
 
 -----------------------------------------------------------
 
 
-# FILE: mrb_test_source.R
+# FILE: /home/rstudio/repbox/metaregBase/R/mrb_test_source.R
 ```
 mrb_test_first_non_missing_value = function(df, cols, default = NA) {
   restore.point("mrb_test_first_non_missing_value")
@@ -5937,12 +5977,12 @@ mrb_test_source_text = function(runid, parcels = list(), drf = NULL) {
   paste0(out, collapse = "\n")
 }
 ```
-# END OF FILE: mrb_test_source.R
+# END OF FILE: /home/rstudio/repbox/metaregBase/R/mrb_test_source.R
 
 -----------------------------------------------------------
 
 
-# FILE: stata_util.R
+# FILE: /home/rstudio/repbox/metaregBase/R/stata_util.R
 ```
 expand_stata_abbr_one_val = function(val, abbr.li) {
   for (i in seq_along(abbr.li)) {
@@ -5956,12 +5996,12 @@ in_stata_abbr = function(val, abbr.li) {
   val %in% all.abbr
 }
 ```
-# END OF FILE: stata_util.R
+# END OF FILE: /home/rstudio/repbox/metaregBase/R/stata_util.R
 
 -----------------------------------------------------------
 
 
-# FILE: static_reg.R
+# FILE: /home/rstudio/repbox/metaregBase/R/static_reg.R
 ```
 # Static code analysis of regression commands
 # Note that the static code can still contain Stata macros
@@ -6028,12 +6068,12 @@ static_reg_cmd_to_reg_df = function(reg_cmd) {
 
 }
 ```
-# END OF FILE: static_reg.R
+# END OF FILE: /home/rstudio/repbox/metaregBase/R/static_reg.R
 
 -----------------------------------------------------------
 
 
-# FILE: utils.R
+# FILE: /home/rstudio/repbox/metaregBase/R/utils.R
 ```
 parcel_for_runid = function(parcel, runid) {
   parcel[parcel$runid==runid, ]
@@ -6129,3702 +6169,13 @@ files_to_md_fences = function(files, path=NULL) {
 }
 
 ```
-# END OF FILE: utils.R
+# END OF FILE: /home/rstudio/repbox/metaregBase/R/utils.R
 
 -----------------------------------------------------------
 
 
-# package repboxDRF
 
-
-# FILE: DESCRIPTION
-```
-Package: repboxDRF
-Type: Package
-Title: Repbox Direct Replication Format
-Version: 0.1.0
-Authors@R: c(
-    person(
-      "Sebastian", "Kranz",
-      email = "sebastian.kranz@uni-ulm.de",
-      role = c("aut", "cre")
-    )
-  )
-Description: Tools to transform a Stata reproduction package into a format that facilitates direct
-  replications of regressions in Stata or R. Key idea is to identify data modification steps,
-  determine which can be translated to R. 
-License: GPL >= 2.0
-Encoding: UTF-8
-LazyData: true
-Depends: repboxUtils, repboxDB, stata2r
-```
-# END OF FILE: DESCRIPTION
-
------------------------------------------------------------
-
-
-# FILE: cmd_types.R
-```
-# Helper function to make vector function
-
-helper_make_drf_stata_cmd_types_vec = function() {
-  cmd_types = drf_stata_cmd_types()
-  types = names(cmd_types)
-  res = unlist(lapply(types, function(type) {
-    if (type=="need_cache") return(NULL)
-    cmds = cmd_types[[type]]
-    if (type=="possible_mod") type="mod"
-    res = rep(type, length(cmds))
-    names(res) = cmds
-    res
-  }))
-  cat(paste0(names(res),'="', res,'"', collapse=", "))
-
-
-}
-
-
-drf_stata_cmd_types = function() {
-  #
-  # IMPORTANT: IF YOU ADD A COMMAND HERE
-  # ALSO ADD IT IN stata.data.cmd.types.vec
-  # Otherwise strange errors occur
-  #
-  list(
-    load = c("u","us", "use","insheet","infix","import","sysuse","guse","gzuse"),
-    preserve = c("preserve"),
-    restore = c("restore"),
-    # Commands that modify data and can be translated to R
-    mod = c("g","ge","gen","generate","replace","drop","keep","rename","merge","egen","xtset","tsset", "xtile","pctile","append","tabulate","tabul","tabu", "tab","ta","encode","predict","xi", "collapse", "sort","so","tab1", "winsor"),
-    #scalar = c("scalar"),
-    # Commands that modify data but cannot be translated to R
-    # predict also needs cache because it may use
-    # results from previous regression
-    need_cache = c("merge","xtile","pctile","append","tabulate","tabul","tabu", "tab","ta","encode","predict","xi","collapse","sort","so","tab1", "winsor"),
-
-    # Commands that under certain conditions modify the data
-    # tabulate creates vpidiables if called with the gen option
-    possible_mod = c("tabulate","tabul","tabu", "tab","ta","tab1"),
-    xtset = c("xtset","tsset"),
-    reg = repboxStata::stata_cmds_reg(),
-    quasi_reg = repboxStata::stata_cmds_quasireg(),
-    post_reg = repboxStata::stata_cmds_postreg()
-
-  )
-}
-
-drf_stata_cmd_types_vec = function() {
-  return(c(
-u="load", us="load", use="load", insheet="load", infix="load", import="load", sysuse="load", guse="load", gzuse="load", preserve="preserve", restore="restore", g="mod", ge="mod", gen="mod", generate="mod", replace="mod", drop="mod", keep="mod", rename="mod", merge="mod", egen="mod", xtset="mod", tsset="mod", xtile="mod", pctile="mod", append="mod", tabulate="mod", tabul="mod", tabu="mod", tab="mod", ta="mod", encode="mod", predict="mod", xi="mod", collapse="mod", sort="mod", so="mod", tab1="mod", winsor="mod", tabulate="mod", tabul="mod", tabu="mod", tab="mod", ta="mod", tab1="mod", reg="reg", areg="reg", ivregress="reg", ivreg="reg", ivreg2="reg", sureg="reg", reghdfe="reg", reg2hdfe="reg", xtreg="reg", xtivreg2="reg", xtlogit="reg", xtprobit="reg", xttobit="reg", regress="reg", cgmreg="reg", intreg="reg", boxcox="reg", qreg="reg", truncreg="reg", cnsreg="reg", eivreg="reg", nl="reg", rreg="reg", bsqreg="reg", sqreg="reg", iqreg="reg", vwls="reg", sem="reg", gsem="reg", glm="reg", cloglog="reg", logit="reg", logistic="reg", blogit="reg", glogit="reg", binreg="reg", scobit="reg", probit="reg", dprobit="reg", ivprobit="reg", bprobit="reg", gprobit="reg", hetprobit="reg", heckprobit="reg", biprobit="reg", tobit="reg", ivtobit="reg", clogit="reg", obprobit="reg", ologit="reg", heckoprobit="reg", rologit="reg", asroprobit="reg", slogit="reg", mlogit="reg", asclogit="reg", nlogit="reg", asmprobit="reg", mprobit="reg", poisson="reg", ivpoisson="reg", nbreg="reg", gnbreg="reg", tpoisson="reg", tnbreg="reg", zip="reg", zinb="reg", exlogistic="reg", expoisson="reg", arch="reg", frontier="reg", reg3="reg", heckman="reg", etregress="reg", etpoisson="reg", arima="reg", arfima="reg", newey="reg", var="reg", svar="reg", vec="reg", dfactor="reg", ppmlhdfe="reg", svyreg="reg", ppml="reg", rd="quasi_reg", rdrobust="quasi_reg", psmatch2="quasi_reg", leebounds="quasi_reg", a2reg="quasi_reg", xtabond2="quasi_reg", altrdrobust="quasi_reg", hausman="quasi_reg", stcox="quasi_reg", xtivreg="quasi_reg", ivreghdfe="quasi_reg", condivreg="quasi_reg", oprobit="quasi_reg", xtpoisson="quasi_reg", newey2="quasi_reg", hetprob="quasi_reg", reg2hdfespatial="quasi_reg", outreg2="post_reg", estadd="post_reg", estimates="post_reg", predict="post_reg", test="post_reg", matrix="post_reg", est="post_reg", outreg="post_reg", eststo="post_reg", testparm="post_reg", lincom="post_reg", esttab="post_reg", margins="post_reg", estout="post_reg", estat="post_reg", nlcom="post_reg", plotcoeffs="post_reg", mfx="post_reg", boottest="post_reg", regsave="post_reg", center_estimates="post_reg", estimate="post_reg", est2vec="post_reg", suest="post_reg", fitstat="post_reg", parmest="post_reg", post="post_reg", estpost="post_reg", savereg="post_reg", wild="post_reg", rivtest="post_reg", sigstar2="post_reg", modl="post_reg", svmat="post_reg", sig_p="post_reg", ttest="post_reg", lincomestadd="post_reg", coefplot="post_reg", eret2="post_reg", get_coef="post_reg", cgmwildboot="post_reg", vareffects="post_reg", bootwildct="post_reg", post_param="post_reg", avplot="post_reg", addtotable="post_reg", margin="post_reg", vce2way="post_reg", save_results="post_reg", ivstack="post_reg", predictnl="post_reg", spatdiag="post_reg", parmby="post_reg", testnl="post_reg", b_xt="post_reg", V_xt="post_reg", p_vals="post_reg", inteff="post_reg", est2tex="post_reg", meff="post_reg", marginsplot="post_reg", iv_stack="post_reg", dfuller="post_reg", ivhettest="post_reg", pValueFormatting="post_reg", estwrite="post_reg", dfbeta="post_reg", margeff="post_reg", modltbl="post_reg", outsheet="post_reg", outtex="post_reg", lincomest="post_reg", mfx2="post_reg", addstars="post_reg",
-    #scalar="scalar",
-    xtset="xtset",tsset="xtset"
-    ))
-}
-
-
-
-pide_possible_mod_cmd_real_mod = function(run.df) {
-  restore.point("pide_possible_mod_cmd_real_mod_cmd")
-  is.mod = rep(TRUE, NROW(run.df))
-
-  tab.rows = which(run.df$cmd %in% c("tabulate","tabul","tabu", "tab","ta"))
-  if (length(tab.rows)>0) {
-    opts = str.right.of(run.df$cmdline[tab.rows],",")
-    opts = trimws_pidound(opts,"\\(")
-    rx = paste0("(", c("gen","gene","gener","generate"),"\\()", collapse="|")
-    is.gen = grepl(rx, opts)
-    is.mod[tab.rows] = is.gen
-  }
-  is.mod
-}
-
-
-
-
-```
-# END OF FILE: cmd_types.R
-
------------------------------------------------------------
-
-
-# FILE: drf_cache_files.R
-```
-example = function() {
-  project_dir = "~/repbox/projects/aejapp_1_3_4"
-  drf = drf_load(project_dir)
-
-  run_df = drf$run_df
-  names(run_df)
-  path_df = drf$path_df
-  cached_runids = drf_get_cached_runids(project_dir)
-}
-
-
-drf_has_cache_file = function(project_dir, runid) {
-  cache_dir = file.path(project_dir, "drf/cached_dta")
-  files = paste0(cache_dir, "/", runid, "_cache.dta")
-  file.exists(files)
-}
-
-drf_load_cache_file = function(project_dir, runid) {
-  cache_dir = file.path(project_dir, "drf/cached_dta")
-  file = paste0(cache_dir, "/", runid, "_cache.dta")
-  haven::read_dta(file)
-}
-
-
-# runids that currently have file caches
-drf_get_cached_runids = function(project_dir=drf$project_dir, drf) {
-  cache_dir = file.path(project_dir, "drf/cached_dta")
-  files = list.files(cache_dir,full.names = FALSE)
-  as.integer(str.left.of(files,"_"))
-}
-
-
-
-drf_import_stata_caches = function(drf, move = TRUE) {
-  restore.point("drf_import_stata_caches")
-  src_dir = file.path(drf$project_dir, "repbox", "stata", "cached_dta")
-  dest_dir = file.path(drf$project_dir, "drf", "cached_dta")
-
-  drf$run_df$has_file_cache = rep(FALSE, NROW(drf$run_df))
-  drf$run_df$drf_cache_file = rep(NA_character_, NROW(drf$run_df))
-
-  if (!dir.exists(src_dir)) return(drf)
-
-  cache_info_file = file.path(drf$project_dir, "repbox", "stata", "cache_files.Rds")
-  if (!file.exists(cache_info_file)) return(drf)
-
-  cache_df = readRDS(cache_info_file)
-  if (NROW(cache_df) == 0) return(drf)
-
-  dir.create(dest_dir, recursive = TRUE, showWarnings = FALSE)
-
-  cache_df$drf_cache_file = file.path(dest_dir,paste0(cache_df$runid, "_cache.dta"))
-
-  for (i in seq_len(NROW(cache_df))) {
-    src_file = file.path(src_dir, cache_df$cache_file[i])
-    dest_file = cache_df$drf_cache_file[i]
-
-    if (file.exists(src_file)) {
-      if (move) {
-        file.rename(src_file, dest_file)
-      } else {
-        file.copy(src_file, dest_file, overwrite = TRUE)
-      }
-    }
-  }
-
-  #drf$cache_df = cache_df %>% filter(!is.na(runid))
-  return(drf)
-}
-
-drf_available_file_caches = function(drf, path_df=NULL) {
-  restore.point("drf_available_file_caches")
-  cache_dir = file.path(drf$project_dir, "drf", "cached_dta")
-  cache_files = list.files(cache_dir, glob2rx("*.dta"),full.names = FALSE)
-
-  available_caches = as.integer(str.left.of(basename(cache_files),"_cache.dta"))
-
-  if (!is.null(path_df)) {
-    available_caches = intersect(available_caches, path_df$runid)
-  }
-  available_caches
-}
-
-drf_find_save_cache = function(path_df, c_runids, drf) {
-  restore.point("drf_find_save_cache")
-
-  # xi dependencies don't invalidate a cache
-  # only r() and e() dependencies matter
-  dep_df = drf$dep_df
-  dep_df = dep_df %>% filter(dep_type != "xi")
-
-  # A regression cache that is not the pid
-  # is not save if it has an if or an in filter condition
-  run_df = drf$run_df
-  pid = path_df$pid[1]
-  rows = match(c_runids, run_df$runid)
-  is_save = (!run_df$cmd_type[rows] %in% c("reg","quasi_reg")) | (c_runids == pid)
-
-  if (any(!is_save)) {
-    code = run_df$cmdline[rows[!is_save]]
-    in_match = stringi::stri_detect_regex(code, "\\b(?:in)\\s+(.*)$")
-    if_match = stringi::stri_detect_regex(code, "\\b(?:if)\\s+(.*)$")
-    is_save[!in_match & !if_match] = TRUE
-  }
-  c_runids = c_runids[is_save]
-
-  is_save = function(c_runid) {
-    skipped_runids = path_df$runid[path_df$runid <= c_runid]
-    remaining_runids = path_df$runid[path_df$runid > c_runid]
-
-    has_dep = any(dep_df$runid %in% remaining_runids & dep_df$source_runid %in% skipped_runids)
-    !has_dep
-  }
-
-
-  for (c_runid in rev(sort(c_runids))) {
-    if (is_save(c_runid)) {
-      return(c_runid)
-    }
-  }
-  return(NULL)
-
-}
-
-
-drf_apply_caches = function(drf, just_pids=NULL) {
-  restore.point("drf_apply_caches")
-
-  cache_dir = file.path(drf$project_dir, "drf", "cached_dta")
-  cache_files = list.files(cache_dir, glob2rx("*.dta"),full.names = FALSE)
-
-  available_caches = as.integer(str.left.of(basename(cache_files),"_cache.dta"))
-
-  if (length(available_caches) == 0) return(drf)
-
-  path_df = drf$path_df
-  run_df = drf$run_df
-  pids = unique(path_df$pid)
-  if (!is.null(just_pids)) {
-    pids = intersect(pids, just_pids)
-  }
-
-  new_path_df_list = vector("list", length(pids))
-
-  for (i in seq_along(pids)) {
-    current_pid = pids[i]
-    pdf = path_df[path_df$pid == current_pid, ]
-
-    # Check if there are save caches for this specific path
-    # A cache is save if there is no e() or r()
-    # dependency on an earlier command
-    c_runids = intersect(pdf$runid, available_caches)
-    c_runid = drf_find_save_cache(pdf, c_runids, drf=drf)
-    cache_applied = FALSE
-    if (!is.null(c_runid)) {
-      # Truncate the path to start EXACTLY at the cached runid
-      pdf = pdf[pdf$runid >= c_runid, ]
-
-      # Mark run_df globally so code generators know this runid can act as a load point
-      cache_row_idx = match(c_runid, run_df$runid)
-      drf$run_df$has_file_cache[cache_row_idx] = TRUE
-
-      # Match to cache filename
-      cache_filename = paste0(cache_dir,"/", c_runid, "_cache.dta")
-      drf$run_df$drf_cache_file[cache_row_idx] = cache_filename[1]
-
-      cache_applied = TRUE
-    }
-    new_path_df_list[[i]] = pdf
-  }
-  new_path_df = bind_rows(new_path_df_list)
-
-  if (is.null(just_pids)) {
-    drf$path_df = new_path_df
-  } else {
-    old_path_df = anti_join(drf$path_df, new_path_df, by="pid")
-    drf$path_df = bind_rows(new_path_df, old_path_df) %>%
-      arrange(pid, runid)
-  }
-  return(drf)
-}
-```
-# END OF FILE: drf_cache_files.R
-
------------------------------------------------------------
-
-
-# FILE: drf_create.R
-```
-# Creates a new DRF
-# can be run after a reproduction run
-
-example = function() {
-  # Should point to this project dir
-  project_dir = "~/repbox/projects/aejapp_11_2_10"
-
-  if (FALSE)
-    rstudioapi::filesPaneNavigate(project_dir)
-
-  drf = drf_create(project_dir, overwrite=TRUE)
-
-}
-
-has_drf = function(project_dir) {
-  file.exists(file.path(project_dir,"drf/path_df.fst"))
-}
-
-drf_create = function(project_dir, parcels=list(), acmds = drf_acmds(), overwrite=FALSE, move_from_mod=TRUE) {
-  restore.point("drf_create")
-
-  if (!overwrite & has_drf(project_dir)) {
-    return(NULL)
-  }
-  project_dir = normalizePath(project_dir)
-
-  drf = list(project_dir = project_dir, drf_dir = file.path(project_dir, "drf"), parcels = parcels, acmds=acmds)
-  drf$parcels = repboxDB::repdb_load_parcels(project_dir, "stata_run_cmd", parcels=parcels)
-
-
-  run_df = drf_make_run_df(drf=drf,add_rcode = FALSE)
-  if (is.null(run_df)) {
-    cat(("\nNo stata_run_cmd parcel exists, cannot create drf.\n"))
-    return(NULL)
-  }
-
-  drf$run_df = run_df
-
-  drf = drf_add_scalar_map(drf)
-  drf = drf_add_dep_df(drf)
-
-  drf$pids = drf_find_pid(drf$run_df, drf$acmds)
-
-  drf$path_df = drf_make_paths(drf)
-  drf$runids = drf_runids(drf)
-
-  drf_copy_org_data(drf=drf, move_from_mod=move_from_mod)
-
-  # Incorporate Caches cleanly
-  drf = drf_import_stata_caches(drf, move = move_from_mod)
-  drf = drf_apply_caches(drf)
-
-  # Save path_df index AFTER caches have definitively resolved the shortest paths
-  drf$index_df = drf_save_path_df(drf=drf)
-
-
-  drf = drf_make_r_trans_parcel(drf)
-
-  invisible(drf)
-}
-
-
-# gets run_df from parcels including up-to-date cmd_type column
-repbox_get_run_df = function(project_dir, parcels=list()) {
-  parcels = repboxDB::repdb_load_parcels(project_dir, "stata_run_cmd", parcels=parcels)
-  run_df = parcels$stata_run_cmd
-  cmd_types = drf_stata_cmd_types_vec()
-  run_df$cmd_type = cmd_types[run_df$cmd]
-  run_df
-}
-
-# Analysis commands
-drf_acmds = function() {
-  # Don't use post regression commands for normal paths
-  unique(c(repboxStata::stata_cmds_reg(), repboxStata::stata_cmds_quasireg()))
-  #unique(c(repboxStata::stata_cmds_reg(), repboxStata::stata_cmds_postreg_comp(), repboxStata::stata_cmds_quasireg()))
-
-}
-
-
-
-drf_find_pid = function(run_df,acmds = drf_acmds()) {
-  restore.point("drf_find_pid")
-  run_df$runid[(run_df$cmd %in% acmds) & run_df$ok]
-}
-
-require_project_dir = function(project_dir) {
-  if (is.null(project_dir)) stop("You must supply a valid project_dir")
-  if (!dir.exists(project_dir)) stop("You must supply an existing project_dir")
-}
-
-
-require_drf_dir = function(drf_dir) {
-  if (is.null(drf_dir)) stop("You must supply a valid drf_dir")
-  project_dir = dirname(drf_dir)
-  if (dir.exists(project_dir)) stop("You must supply a valid drf_dir for an existing project_dir.")
-
-}
-```
-# END OF FILE: drf_create.R
-
------------------------------------------------------------
-
-
-# FILE: drf_deps.R
-```
-# scalar dependencies between Stata commans
-example = function() {
-  library(repboxDRF)
-  project_dir = "~/repbox/projects_test/test"
-  drf = drf_load(project_dir)
-  drf = drf_add_scalar_map(drf)
-  drf = drf_add_dep_df(drf)
-}
-
-drf_add_scalar_map = function(drf) {
-  restore.point("drf_add_scalar_map")
-  project_dir = drf$project_dir
-  drf$parcels = repboxDB::repdb_load_parcels(project_dir, "stata_scalar", drf$parcels)
-  scalar_df = drf$parcels$stata_scalar
-  drf$scalar_map = NULL
-  if (NROW(scalar_df)==0) {
-    return(drf)
-  }
-  run_df = drf$run_df
-  scalar_vars = unique(scalar_df$scalar_var)
-  scalar_rx = paste0("\\b(", paste0(scalar_vars, collapse="|"), ")")
-
-  # rows in run_df that use at least one of the scalars
-  rows = which(stringi::stri_detect_regex(run_df$cmdline,scalar_rx) & run_df$cmd != "scalar")
-  if (NROW(scalar_df)==0) {
-    return(drf)
-  }
-
-  runids = run_df$runid[rows]
-  ma_li = stringi::stri_extract_all_regex(run_df$cmdline[rows], scalar_rx, simplify = FALSE)
-
-  scalar_map = bind_rows(lapply(seq_along(runids), function(i) {
-    as.data.frame(list(runid=runids[i], scalar_var = unique(ma_li[[i]])))
-  }))
-
-  drf$scalar_map = scalar_map %>%
-    left_join(
-      scalar_df %>% select(scalar_var, source_runid=runid,scalar_val),
-      by = join_by(
-        scalar_var,
-        closest(runid >= source_runid)
-      ),
-      relationship = "many-to-one"
-    )
-
-  drf_dir = file.path(drf$project_dir,"drf")
-  if (!dir.exists(drf_dir)) dir.create(drf_dir)
-  outfile = file.path(drf_dir,"scalar_map.Rds")
-  saveRDS(drf$scalar_map, outfile)
-  drf = drf_scalar_map_to_scalar_code(drf)
-
-  drf
-}
-
-drf_scalar_map_to_scalar_code = function(drf) {
-  scalar_map = drf$scalar_map
-  if (is.null(scalar_map)) {
-    drf$scalar_code = tibble(runid=integer(0), scalar_stata_code = character(0), scalar_r_code=character(0))
-    return(drf)
-  }
-  drf$scalar_code = scalar_map %>%
-    group_by(runid) %>%
-    summarize(
-      scalar_stata_code = paste0("scalar ", scalar_var, " = ", scalar_val,"\n", collapse=""),
-      scalar_r_code = paste0(scalar_var, " = ", scalar_val,"\n", collapse="")
-    )
-  drf
-
-}
-
-
-#' Compute r(), e() or xi dependencies between run_df commands
-drf_add_dep_df = function(drf) {
-  restore.point("drf_make_deps_df")
-  run_df = drf$run_df
-
-  cmdlines = run_df$cmdline
-
-  run_df$code = run_df$cmdline
-
-  rx_or = function(els) {
-    els = stringi::stri_replace_all_fixed(els, "(","\\(")
-    els = stringi::stri_replace_all_fixed(els, ")","\\)")
-    paste0("\\b(", paste0(els, collapse="|"), ")")
-  }
-
-  make_r_cmds = stata_make_r_cmds()
-
-  run_df = run_df %>% mutate(
-    uses_e =  stringi::stri_detect_regex(code, rx_or(c("e(sample)", "e(N)", "e(r2)", "e(df_r)", "e(rmse)", "e(b)", "e(V)"))),
-    uses_r =  stringi::stri_detect_regex(code, "\\br\\("),
-    uses_xi = stringi::stri_detect_fixed(code, "\\b_I[a-zA-Z0-9_]+"),
-    makes_e = run_df$cmd_type %in% c("reg","quasi_reg"),
-    makes_r = cmd %in% stata_make_r_cmds()
-  )
-
-  run_df$makes_xi = run_df$cmd == "xi"
-  rows = which(run_df$cmd_type %in%  c("reg","quasi_reg"))
-  mxi = stringi::stri_detect_regex(run_df$code[rows], "\\bxi\\:")
-  run_df$makes_xi[rows[mxi]] = TRUE
-
-
-  # e() dependencies (via regression commands)
-  make_df = run_df %>%
-    filter(cmd_type %in% c("reg","quasi_reg")) %>%
-    select(source_runid=runid)
-
-  edep_df = run_df %>%
-    filter(stringi::stri_detect_regex(cmdline, rx_or(c("e(sample)", "e(N)", "e(r2)", "e(df_r)", "e(rmse)", "e(b)", "e(V)")))) %>%
-    select(runid) %>%
-    mutate(dep_type = "e") %>%
-    left_join(make_df,by = join_by(closest(runid > source_runid)),relationship = "many-to-one")
-
-  # r() dependencies (via commands like summarize)
-  make_df = run_df %>%
-    filter(cmd %in% stata_make_r_cmds()) %>%
-    select(source_runid=runid)
-
-  rdep_df = run_df %>%
-    filter(stringi::stri_detect_regex(cmdline, "\\br\\(")) %>%
-    select(runid) %>%
-    mutate(dep_type = "r") %>%
-    left_join(make_df,by = join_by(closest(runid > source_runid)),relationship = "many-to-one")
-
-  # xi dependencies (via xi or xi:)
-  makes_xi = run_df$cmd == "xi"
-  rows = which(run_df$cmd_type %in%  c("reg","quasi_reg"))
-  mxi = stringi::stri_detect_regex(run_df$cmdline[rows], "\\bxi\\:")
-  makes_xi[rows[mxi]] = TRUE
-
-  make_df = data.frame(source_runid = run_df$runid[makes_xi])
-
-  xidep_df = run_df %>%
-    filter(stringi::stri_detect_regex(cmdline, "\\b_I[a-zA-Z0-9_]+")) %>%
-    select(runid) %>%
-    mutate(dep_type = "xi") %>%
-    left_join(make_df,by = join_by(closest(runid > source_runid)),relationship = "many-to-one")
-
-  drf$dep_df = bind_rows(edep_df, rdep_df, xidep_df)
-  outfile = file.path(drf$project_dir,"drf/dep_df.Rds")
-
-  save_rds_create_dir(drf$dep_df, outfile)
-
-  drf
-}
-
-
-
-stata_make_r_cmds = function() {
-
-  abbr = function(long, short) {
-    stringi::stri_sub(long, 1, nchar(short):nchar(long))
-  }
-
-  cmds = c(
-    abbr("summarize", "su"),
-    abbr("centile", "cen"),
-    abbr("count", "cou"),
-    "correlate",
-    "corr",
-    "pwcorr",
-    "tabstat",
-    abbr("describe", "desc"),
-    "ds",
-    abbr("codebook", "codeb"),
-    abbr("inspect", "ins"),
-    abbr("levelsof", "lev"),
-    abbr("duplicates", "dup"),
-    abbr("oneway", "onew"),
-    abbr("ttest", "tt"),
-    abbr("prtest", "prt"),
-    abbr("sdtest", "sdt"),
-    abbr("ranksum", "ra"),
-    abbr("signrank", "signr"),
-    abbr("signtest", "signt"),
-    abbr("kwallis", "kwa"),
-    "tab1",
-    "tab2",
-    "tabi",
-    "pctile"
-  )
-
-  sort(unique(cmds))
-}
-#
-# # list of stata commands that generate particular r() values, like r(mean), r(median) etc
-# stata_r_cmds = function() {
-#   add_cmd = function(long, short, ...) {
-#     if (long != short) {
-#       cmds = stringi::stri_sub(long, 1, nchar(short):nchar(long))
-#     } else {
-#       cmds = long
-#     }
-#     list(cmd = list(cmds), r_var = list(c(...)))
-#   }
-#
-#   li = list(
-#     add_cmd(
-#       "summarize", "su",
-#       "N", "sum_w", "mean", "Var", "sd", "min", "max", "sum",
-#       "p1", "p5", "p10", "p25", "p50", "p75", "p90", "p95", "p99",
-#       "skewness", "kurtosis"
-#     ),
-#
-#     add_cmd(
-#       "centile", "cen",
-#       "N", "n_cent", "c_#", "lb_#", "ub_#", "centiles"
-#     ),
-#
-#     add_cmd(
-#       "count", "cou",
-#       "N"
-#     ),
-#
-#     add_cmd(
-#       "correlate", "corr",
-#       "N", "rho", "cov_12", "Var_1", "Var_2", "sum_w", "C"
-#     ),
-#
-#     add_cmd(
-#       "pwcorr", "pwcorr",
-#       "N", "rho", "C"
-#     ),
-#
-#     add_cmd(
-#       "tabstat", "tabstat",
-#       "StatTotal", "Stat#", "name#"
-#     ),
-#
-#     add_cmd(
-#       "describe", "desc",
-#       "N", "k", "width", "changed", "datalabel", "varlist", "sortlist"
-#     ),
-#
-#     add_cmd(
-#       "ds", "ds",
-#       "varlist"
-#     ),
-#
-#     add_cmd(
-#       "codebook", "codeb",
-#       "cons", "labelnotfound", "notlabeled",
-#       "str_type", "str_leading", "str_trailing", "str_embedded", "str_embedded0"
-#     ),
-#
-#     add_cmd(
-#       "inspect", "ins",
-#       "N", "N_neg", "N_0", "N_pos", "N_negint", "N_posint", "N_unique", "N_undoc"
-#     ),
-#
-#     add_cmd(
-#       "levelsof", "lev",
-#       "N", "r", "levels"
-#     ),
-#
-#     add_cmd(
-#       "duplicates", "dup",
-#       "N", "unique_value", "N_drop"
-#     ),
-#
-#     add_cmd(
-#       "oneway", "onew",
-#       "N", "df_m", "F", "df_r", "mss", "rss", "chi2bart", "df_bart", "ANOVA"
-#     ),
-#
-#     add_cmd(
-#       "ttest", "tt",
-#       "N_1", "N_2",
-#       "mu_1", "mu_2", "mu_diff", "mu_combined",
-#       "sd", "sd_1", "sd_2", "sd_diff",
-#       "se", "se_1", "se_2", "se_combined",
-#       "lb_1", "ub_1", "lb_2", "ub_2", "lb_diff", "ub_diff", "lb_combined", "ub_combined",
-#       "t", "df_t", "p_l", "p", "p_u", "level"
-#     ),
-#
-#     add_cmd(
-#       "prtest", "prt",
-#       "N", "N1", "N2",
-#       "P", "P1", "P2", "P_diff",
-#       "se", "se1", "se2", "se_diff", "se_diff0",
-#       "lb", "ub", "lb1", "ub1", "lb2", "ub2", "lb_diff", "ub_diff",
-#       "z", "p_l", "p", "p_u", "level",
-#       "K", "M", "rho", "CV_cluster"
-#     ),
-#
-#     add_cmd(
-#       "sdtest", "sdt",
-#       "N", "p_l", "p_u", "p", "F",
-#       "sd", "sd_1", "sd_2",
-#       "df", "df_1", "df_2", "chi2"
-#     ),
-#
-#     add_cmd(
-#       "ranksum", "ra",
-#       "N", "N_1", "N_2", "z", "Var_a",
-#       "group1", "sum_obs", "sum_exp",
-#       "p", "p_l", "p_u", "p_exact"
-#     ),
-#
-#     add_cmd(
-#       "signrank", "signr",
-#       "N", "N_pos", "N_neg", "N_tie", "z", "Var_a",
-#       "sum_pos", "sum_neg",
-#       "p", "p_l", "p_u", "p_exact", "p_l_exact", "p_u_exact"
-#     ),
-#
-#     add_cmd(
-#       "signtest", "signt",
-#       "N", "N_pos", "N_neg", "N_tie", "p", "p_l", "p_u"
-#     ),
-#
-#     add_cmd(
-#       "kwallis", "kwa",
-#       "df", "chi2", "chi2_adj"
-#     ),
-#
-#     add_cmd(
-#       "tab1", "tab1",
-#       "N", "r", "collection"
-#     ),
-#
-#     add_cmd(
-#       "tab2", "tab2",
-#       "N", "r", "c", "chi2", "p", "p_exact", "p1_exact",
-#       "chi2_lr", "p_lr", "CramersV", "gamma", "ase_gam", "taub", "ase_taub",
-#       "collection"
-#     ),
-#
-#     add_cmd(
-#       "tabi", "tabi",
-#       "N", "r", "c", "chi2", "p", "p_exact", "p1_exact",
-#       "chi2_lr", "p_lr", "CramersV", "gamma", "ase_gam", "taub", "ase_taub",
-#       "collection"
-#     )
-#   )
-#
-#   library(dplyr)
-#
-#   stata_r_cmds_df = dplyr::bind_rows(li) %>%
-#     tidyr::unnest(cmd) %>%
-#     tidyr::unnest(r_var) %>%
-#     dplyr::distinct()
-#
-#   stata_r_cmds_df
-# }
-```
-# END OF FILE: drf_deps.R
-
------------------------------------------------------------
-
-
-# FILE: drf_filter_code.R
-```
-# Code to filter the data set according to an if or in condition
-# in a regression command
-
-# At some point we may want to generalize it to non regression commands
-
-# FILE: repboxDRF/R/drf_filter_code.R
-
-drf_get_filter_code = function(runid, drf, parcels=drf$parcels) {
-  restore.point("drf_get_filter_code")
-
-  parcels = repboxDB::repdb_load_parcels(drf$project_dir, "reg_cmdpart", parcels=drf$parcels)
-  cmdpart = parcels$reg_cmdpart
-
-  cp = cmdpart[cmdpart$runid == runid, ]
-  if (NROW(cp) == 0) {
-    cat("\nNot any existing cmdpart stored for runid=", runid, ". Cannot get if and in conditions.")
-    return(character(0))
-  }
-  if_str = cp$content[cp$part == "if_str"]
-  in_str = cp$content[cp$part == "in_str"]
-
-  filter_code = character(0)
-
-  if (length(if_str) > 0 && nzchar(if_str[1])) {
-    # Get the context to accurately translate the if expression natively via stata2r
-    path_df = drf$path_df
-    pid = first(path_df$pid[path_df$runid == runid])
-    if (is.na(pid)) pid = runid
-
-    path_df_full = path_df[path_df$pid == pid & path_df$runid <= runid,]
-    stata_code = drf$run_df$cmdline[match(path_df_full$runid, drf$run_df$runid)]
-
-    # Protect newlines to avoid row index shifting
-    stata_code = gsub("\n", " ", stata_code, fixed = TRUE)
-
-    cmd_df = stata2r::do_parse(stata_code)
-    cmd_df = stata2r::mark_data_manip_cmd(cmd_df)
-
-    line_num = NROW(cmd_df)
-
-    # STRIP 'if' KEYWORD
-    # The 'if_str' from cmdpart includes the 'if' keyword, e.g. "if u_sample == 1".
-    # Strip it before passing to translation.
-    if_expr = sub("^\\s*if\\s+", "", if_str[1], ignore.case = TRUE)
-
-    r_if_cond = stata2r::translate_stata_expression_with_r_values(
-      if_expr, line_num, cmd_df, list(is_by_group = FALSE)
-    )
-
-    if (!is.na(r_if_cond)) {
-      r_if_cond_quoted = encodeString(r_if_cond, quote = '"')
-      filter_code = c(filter_code, paste0("data = stata2r::scmd_keep(data, r_if_cond = ", r_if_cond_quoted, ")"))
-    } else {
-      repboxUtils::repbox_problem(
-        msg = paste0("Failed to translate if condition for runid ", runid),
-        type = "filter_translation_error",
-        project_dir = drf$project_dir,
-        fail_action = "warn"
-      )
-    }
-  }
-
-  if (length(in_str) > 0 && nzchar(in_str[1])) {
-    # STRIP 'in' KEYWORD
-    # The 'in_str' includes 'in', e.g. "in 1/100". Strip it!
-    in_expr = sub("^\\s*in\\s+", "", in_str[1], ignore.case = TRUE)
-
-    r_in_range = stata2r::s2r_in_str_to_r_range_str(in_expr)
-    if (!is.na(r_in_range)) {
-      r_in_range_quoted = encodeString(r_in_range, quote = '"')
-      in_code = paste0("data = stata2r::scmd_keep(data, r_in_range = ", r_in_range_quoted, ")")
-      filter_code = c(filter_code, in_code)
-    }
-  }
-
-  return(filter_code)
-}
-```
-# END OF FILE: drf_filter_code.R
-
------------------------------------------------------------
-
-
-# FILE: drf_mcache.R
-```
-example = function() {
-  drf_mcache_info()
-}
-
-drf_mcache_info = function() {
-  cache = getOption("repboxDRF.mcache")
-  if (is.null(cache)) {
-    cat("\nNo drf_cache stored.\n")
-    return(invisible())
-  }
-  cat("\nCache for ", cache$project_dir)
-
-  cat("\ndata_for_runid:\n")
-  print(names(cache$data_for_runid))
-
-  cat("\ndata_for_file:\n")
-  print(names(cache$data_for_file))
-
-  cat("\nfile_mcache_cand:\n")
-  cat(paste0(cache$file_mcache_cand$file, collapse=", "))
-  cat("\n")
-
-  cat("\nrunid_mcache_cand:\n runids:")
-  cat(paste0(cache$runid_mcache_cand$runid, collapse=", "))
-  cat("\n")
-
-  invisible()
-}
-
-drf_mcache_object = function(project_dir) {
-  getOption("repboxDRF.mcache")
-}
-
-drf_has_mcache = function(runid=NULL,file=NULL, project_dir = NULL) {
-  drf_has_mcache(runid,file, project_dir)
-}
-
-
-
-drf_init_mcache = function(project_dir,file_mcache_cand = NULL, runid_mcache_cand=NULL,  clear=FALSE) {
-  restore.point("drf_init_mcache")
-  cache = getOption("repboxDRF.mcache")
-
-  if (!clear & isTRUE(cache$project_dir == project_dir)) return(cache)
-  cache = new.env(parent=emptyenv())
-
-  cache$project_dir = project_dir
-  cache$data_for_runid = new.env(hash=TRUE, parent=emptyenv())
-  cache$data_for_file = new.env(hash=TRUE, parent=emptyenv())
-  cache$file_mcache_cand = file_mcache_cand
-  cache$runid_mcache_cand = runid_mcache_cand
-  options(repboxDRF.mcache = cache)
-  invisible(cache)
-}
-
-drf_clear_mcache = function() {
-  options(repboxDRF.mcache = NULL)
-}
-
-drf_enable_mcache = function(drf, clear = FALSE, use_file_cache = TRUE, use_runid_cache = TRUE) {
-  restore.point("drf_enable_mcache")
-
-
-  if (!has_col(drf$path_df, "found_path")) {
-    drf$path_df = drf_add_path_df_cols_for_cache(drf=drf)
-  }
-
-  #drf_require(has_col(path_df, "found_path"), "path_df has not column 'found_path' make sure drf_add_path_df_cols_for_cache was called.", drf)
-
-  project_dir = drf$project_dir
-  drf_init_mcache(project_dir = project_dir, clear = clear)
-
-  if (use_file_cache) {
-    file_mcache_cand = drf_find_file_mcache_cand(drf = drf)
-    drf_set_file_mcache_cand(file_mcache_cand, project_dir = project_dir)
-  }
-
-  if (use_runid_cache) {
-    runid_mcache_cand = drf_find_runid_mcache_cand(drf = drf)
-    drf_set_runid_mcache_cand(runid_mcache_cand, project_dir = project_dir)
-  }
-
-  invisible(drf)
-}
-
-
-drf_set_file_mcache_cand = function(cache_cand,project_dir=NULL, field="file_mcache_cand") {
-  restore.point("drf_set_file_mcache_cand")
-  cache = getOption("repboxDRF.mcache")
-  new_cache = FALSE
-  if (is.null(cache))  {
-    new_cache = TRUE
-  } else if (!is.null(project_dir)) {
-    if (!isTRUE(cache$project_dir == project_dir))
-      new_cache = TRUE
-  }
-  if (new_cache) {
-    cache = drf_init_mcache(project_dir=project_dir)
-  }
-  cache[[field]] = cache_cand
-  invisible(cache)
-}
-
-drf_set_runid_mcache_cand = function(cache_cand,project_dir=NULL, field="runid_mcache_cand") {
-  drf_set_file_mcache_cand(cache_cand,project_dir, field)
-}
-
-
-drf_store_if_mcache_cand = function(data, runid=NULL, file=NULL, project_dir=NULL, overwrite=FALSE) {
-  restore.point("drf_save_if_mcache_cand")
-  if (!overwrite) {
-    if (drf_has_mcache(runid, file, project_dir)) return(FALSE)
-  }
-  cache = getOption("repboxDRF.mcache")
-  if (!is.null(runid)) {
-    do_store = runid %in% cache$runid_mcache_cand$runid
-  } else if (!is.null(file)) {
-    do_store = file %in% cache$file_mcache_cand$file
-  }
-  if (!do_store) return(FALSE)
-  drf_store_mcache(data, runid=runid, file=file, project_dir=project_dir)
-}
-
-
-drf_has_mcache = function(runid=NULL, file=NULL, project_dir = NULL) {
-  cache = getOption("repboxDRF.mcache")
-  if (is.null(cache)) return(FALSE)
-  if (!is.null(project_dir)) {
-    if (!isTRUE(cache$project_dir == project_dir))
-      return(FALSE)
-  }
-  if (!is.null(runid)) {
-    exists(paste0("r", runid), cache$data_for_runid)
-  } else if (!is.null(file)) {
-    exists(paste0(file), cache$data_for_file)
-  } else {
-    stop("provide runid or file")
-  }
-}
-
-
-drf_get_best_runid_mcache = function(drf, path_df) {
-  restore.point("drf_get_best_runid_cache")
-  runids = drf_available_runid_mcaches(drf, path_df)
-  drf_find_save_cache(path_df, runids, drf=drf)
-}
-
-drf_available_runid_mcaches = function(drf, path_df=NULL) {
-  restore.point("drf_available_runid_mcaches")
-  cache = getOption("repboxDRF.mcache")
-  if (is.null(cache)) return(NULL)
-  if (!isTRUE(cache$project_dir == drf$project_dir)) return(NULL)
-  names = ls(cache$data_for_runid)
-  if (length(names)==0) return(NULL)
-  runids = as.integer(stringi::stri_sub(names,2))
-  if (!is.null(path_df)) {
-    intersect(runids, path_df$runid)
-  }
-  runids
-}
-
-drf_get_mcache_data = function(runid=NULL,file=NULL, project_dir = NULL) {
-  restore.point("drf_get_mcache_data")
-  cache = getOption("repboxDRF.mcache")
-  if (is.null(cache)) return(NULL)
-  if (!is.null(project_dir)) {
-    if (!isTRUE(cache$project_dir == project_dir)) return(NULL)
-  }
-  if (!is.null(runid)) {
-    cname = paste0("r", runid)
-    if (!exists(cname, cache$data_for_runid)) return(NULL)
-    get(cname, envir=cache$data_for_runid)
-  } else if (!is.null(file)) {
-    cache$data_for_file[[file]]
-  } else {
-    stop("provide runid or file")
-  }
-}
-
-drf_store_mcache = function(data, runid=NULL, file=NULL, project_dir=NULL) {
-  cache = drf_init_mcache(project_dir, clear=FALSE)
-  if (!is.null(runid)) {
-    cache$data_for_runid[[paste0("r", runid)]] = data
-  } else if (!is.null(file)) {
-    cache$data_for_file[[file]] = data
-  } else {
-    stop("provide runid or file")
-  }
-  invisible(cache)
-}
-
-drf_find_file_mcache_cand = function(path_df=drf$path_df, run_df = drf$run_df, drf=NULL) {
-  restore.point("drf_find_file_mcache_cand")
-  names(path_df)
-  drf_require(has_col(path_df, "found_path"), "path_df has not column 'found_path' make sure drf_add_path_df_cols_for_cache was called.", drf)
-
-  runids = unique(path_df$runid)
-  path_df %>%
-    filter(runid %in% runids, found_path != "") %>%
-    group_by(found_path) %>%
-    summarize(num_pid = n_distinct(pid)) %>%
-    unique() %>%
-    rename(file=found_path)
-}
-
-
-# Maximum cache:
-# whenever the result of a runid can be used twice and is not dominated
-# cache the result
-#
-# The result of a runid can be used twice if at least two pid use the same runid
-# It is not dominated if there is no other larger runid that uses exactly the
-# same pid. We then rather want to cache the result from the larger runid
-# Not that execution sequence will never violate the order of runids
-drf_find_runid_mcache_cand = function(path_df=drf$path_df,ignore_load=TRUE, drf=NULL) {
-  restore.point("drf_find_max_cache_runids")
-
-
-
-  df = path_df %>%
-    # only use runid that
-    filter(is_load_mod)
-  if (ignore_load) {
-    df = df %>% filter(cmd_type != "load")
-  }
-
-  df %>%
-    group_by(runid) %>%
-    summarize(
-      is_pid = any(pid==runid),
-      num_pid = n(),
-      pid_str = paste0(sort(pid), collapse=",")
-    ) %>%
-    # there at least two pathes with the same runid
-    filter(num_pid >= 2 | is_pid) %>%
-    # get for every unique path combination
-    # the largest runid
-    group_by(pid_str) %>%
-    filter(runid == suppressWarnings(max(runid)))
-}
-
-
-
-drf_path_df_to_split_df = function(path_df) {
-  split_df  = path_df %>%
-    group_by(runid) %>%
-    mutate(
-      earliest_pid = min(pid)
-    ) %>%
-    group_by(pid, earliest_pid) %>%
-    slice(n())
-}
-
-
-```
-# END OF FILE: drf_mcache.R
-
------------------------------------------------------------
-
-
-# FILE: drf_paths.R
-```
-# part of DAP function
-#
-# Here we make the first part: extraction of data paths
-# Notation is a bit old and not the same as in dap.R
-#
-# step: refers to a row in run_df
-# node: refers to an analysis step (astep)
-
-
-drf_make_paths = function(drf) {
-  restore.point("drf_make_paths")
-  run_df = drf$run_df; project_dir = drf$project_dir
-  pid = drf$pid
-  if (is.null(drf$pid)) {
-    stop("Please specify drf$pid, the analyis runid of run_df.")
-  }
-
-  type_vec = drf_stata_cmd_types_vec()
-
-  run_df = run_df %>%
-    mutate(
-      cmd_type = type_vec[cmd]
-    )
-
-  dep_df = drf$dep_df
-
-  run_df = run_df %>%
-  mutate(
-    is_mod =  cmd %in% stata2r::stata_data_manip_cmds |
-      runid %in% dep_df$source_runid |
-      cmd_type %in% c("mod","load")
-  )
-  run_df$is_mod[run_df$cmd=="scalar"] = FALSE
-
-  # Split run_df by root_file_path and compute path_df
-  # Then merge path_df again for all run_df
-  srun_li = split(run_df,run_df$root_file_path)
-  path_li = lapply(srun_li, find_one_root_data_paths, pid=pid)
-  path_df = bind_rows(path_li)
-
-  if (NROW(path_df)==0) {
-    cat("\nNo regression command found.")
-    return(NULL)
-  }
-  return(path_df)
-}
-
-
-find_one_root_data_paths = function(srun_df, pid) {
-  restore.point("find_one_root_data_paths")
-
-  srun_df$.ROW = seq_len(NROW(srun_df))
-  srun_df = add_load_blocks_to_run_df(srun_df)
-
-  # --- OPTIMIZATION: Compute data modification flags globally ONCE ---
-  # We check the entire run block to resolve dependencies accurately and quickly
-  # rather than doing this inside the loop for every path
-
-
-  #stata_code = gsub("\n", " ", srun_df$cmdline, fixed = TRUE)
-  #cmd_df = stata2r::s2r_check_mod(stata_code)
-  #srun_df$is_mod = cmd_df$is_mod
-  # -------------------------------------------------------------------
-
-  spid_rows = match(pid, srun_df$runid)
-  spid_rows = spid_rows[!is.na(spid_rows)]
-
-  path_df = bind_rows(lapply(spid_rows, find_data_run_path, srun_df = srun_df, pid=pid))
-
-  if (NROW(path_df)==0) return(NULL)
-  path_df
-}
-
-
-extract_run_tree_from_path_df = function(root, path_df) {
-  restore.point("extract_tree_from_path_df")
-  tree_df = path_df %>%
-    group_by(node) %>%
-    mutate(
-      step_ind = 1:n(),
-      root_ind = match(root, dstep),
-      del = is.na(root_ind) | step_ind < root_ind
-    ) %>%
-    ungroup() %>%
-    filter(!del) %>%
-    select(-step_ind, root_ind, del)
-}
-
-
-
-# FILE: repboxDRF/R/drf_paths.R
-# Replace the existing find_data_run_path function:
-
-find_data_run_path = function(pid_row, srun_df, pid=NULL) {
-  restore.point("find_data_run_path")
-
-  # All runid in same load block until pid
-  path = which(srun_df$load_block == srun_df$load_block[pid_row] & srun_df$.ROW <= pid_row)
-
-  # If we start with a restore command then jump to previous preserve
-  # and then add all rows with the same load_block
-  while (TRUE) {
-    if (srun_df$cmd[path[1]] == "restore") {
-      pr_row = srun_df$preserve_row[path[1]]
-      new_path = which(srun_df$load_block == srun_df$load_block[pr_row] & srun_df$.ROW < pr_row)
-      path = c(new_path, path[-1])
-      next
-    }
-    break
-  }
-
-  # Adapt path: Utilize the globally computed is_mod flag from srun_df
-  cmd_types = drf_stata_cmd_types()
-  allow = c(cmd_types$scalar, cmd_types$xtset)
-
-  keep = seq_along(path) %in% c(1, length(path)) |
-    srun_df$is_mod[path] |
-    srun_df$cmd[path] %in% allow |
-    srun_df$runid[path] %in% pid
-
-  path = path[keep]
-
-  return( tibble(pid=srun_df$runid[pid_row], runid=srun_df$runid[path]))
-}
-
-
-# Only works for run_df that have a single rootdonum
-add_load_blocks_to_run_df = function(run_df) {
-  restore.point("add_load_blocks_to_run_df")
-  cmd_types = drf_stata_cmd_types()
-  load_cmds = cmd_types$load
-
-  run_df$load_block = cumsum(run_df$cmd %in% c(load_cmds,"restore"))
-
-  # Deal with preserve / restore
-  run_df$preserve_row = NA
-  pr_rows = which(run_df$cmd %in% c(cmd_types$preserve, cmd_types$restore))
-  cur_preserve = NA
-  for (r in pr_rows) {
-    if (run_df$cmd[r]== "preserve") {
-      cur_preserve = r
-    } else if (!is.na(cur_preserve)) {
-      run_df$preserve_row[r] = cur_preserve
-      #rows = which(run_df$load_block == run_df$load_block[r])
-      #run_df$load_block[rows] = run_df$load_block[cur_preserve]
-    } else {
-      wpidning("Restore command without previous preserve command is encountered!")
-    }
-  }
-  run_df
-}
-
-#
-# plot_path_df = function(path_df) {
-#
-#   blues_col = c("#EFF3FF", "#BDD7E7", "#6BAED6", "#3182BD", "#08519C")
-#   reds_col = c("#FFFFB2", "#FECC5C", "#FD8D3C", "#F03B20", "#BD0026")
-#   greens_col = c("#C7E9C0", "#A1D99B", "#74C476", "#41AB5D", "#238B45")
-#
-#   if (!"cache" %in% colnames(path_df)) {
-#     path_df$cache = FALSE
-#   }
-#
-#   pid = path_df %>%
-#     group_by(dstep) %>%
-#     summarize(
-#       cache = first(cache),
-#       time = first(time),
-#       step_type = first(step_type),
-#       time = first(time),
-#       time_int = 1 + (time>1) + (time > 10) + (time > 100) + (time > 1000),
-#       steplab = first(steplab)
-#     ) %>%
-#     mutate(
-#       id = 1:n(),
-#       shape = ifelse(step_type=="load","dot","box"),
-#       color = case_when(
-#         #step_type == "load" ~ blues_col[time_int],
-#         cache ~ blues_col[time_int],
-#         step_type == "node" ~ greens_col[time_int],
-#         TRUE ~ reds_col[time_int]
-#       ),
-#       label = paste0(shorten.str(steplab,30),"\n",signif(time,2)," sec."),
-#       title = paste0(shorten.str(gsub("\n","<br>",steplab, fixed=TRUE),100),"<br>",signif(time,3)," sec.","<br>dstep = ",dstep)
-#     )
-#
-#   edges = path_df %>%
-#     left_join(select(pid, dstep, id), by="dstep") %>%
-#     group_by(node) %>%
-#     transmute(
-#       from = id,
-#       to = lead(id)
-#     ) %>%
-#     ungroup() %>%
-#     filter(!is.na(to)) %>%
-#     select(from, to) %>%
-#     distinct() %>%
-#     mutate(pidrows = "to")
-#
-#   title = paste0("Data-Regression Network")
-#   librpidy(visNetwork)
-#   vis = visNetwork(pid, edges,
-#                    main = list(text=title,style="font-family: Helvetia, sans-serif;font-weight:bold;font-size:20px; text-align: center;")
-#   )
-#   vis
-#
-#
-# }
-```
-# END OF FILE: drf_paths.R
-
------------------------------------------------------------
-
-
-# FILE: drf.R
-```
-example = function() {
-  # Should point to this project dir
-  project_dir = "~/repbox/projects/aejapp_11_2_10"
-
-  if (FALSE)
-    rstudioapi::filesPaneNavigate(project_dir)
-
-  drf = drf_load(project_dir)
-
-}
-
-
-# To do: variant that is faster for selected paths
-drf_load = function(project_dir, parcels=list()) {
-  restore.point("drf_load")
-  project_dir = normalizePath(project_dir)
-  drf = list(project_dir = project_dir, drf_dir = file.path(project_dir, "drf"), parcels = parcels)
-  drf$parcels = repboxDB::repdb_load_parcels(project_dir, c("stata_run_cmd", "r_trans"), parcels=parcels)
-  drf$run_df = drf_make_run_df(drf=drf,add_rcode = TRUE)
-
-  drf$dep_df = read_rds_or_null(file.path(project_dir, "drf/dep_df.Rds"))
-  drf$scalar_map = read_rds_or_null(file.path(project_dir, "drf/scalar_map.Rds"))
-  drf = drf_scalar_map_to_scalar_code(drf)
-
-  drf$path_df = drf_load_path_df(drf=drf)
-  drf$path_df = drf_add_path_df_cols_for_cache(drf=drf)
-  drf$runids = drf_runids(drf)
-  drf$pids= drf_pids(drf)
-
-  drf
-}
-
-drf_pids = function(drf, path_df=drf$path_df) {
-  if (!is.null(drf[["runids"]])) drf$pids
-  unique(drf$path_df$pid)
-}
-
-drf_runids = function(drf, path_df=drf$path_df) {
-  if (!is.null(drf[["runids"]])) drf$runids
-  unique(drf$path_df$runid)
-}
-
-
-drf_make_run_df = function(project_dir = drf$project_dir, parcels=drf$parcels, drf = list(parcels=list()), add_rcode = TRUE) {
-  restore.point("drf_make_run_df")
-  parcels = repboxDB::repdb_load_parcels(project_dir, "stata_run_cmd", parcels=parcels)
-  run_df = parcels$stata_run_cmd
-
-  start_time = run_df$start_time[1]
-  run_df$ok = !is.true(run_df$errcode != 0) & !is.true(run_df$missing_data)
-  run_df$start_sec = sec_since_start(run_df$start_time, start_time)
-  run_df$end_sec = sec_since_start(run_df$end_time, start_time)
-  run_df$dur_sec =run_df$end_sec - run_df$start_sec
-
-  cmd_types = drf_stata_cmd_types_vec()
-  run_df$cmd_type = cmd_types[run_df$cmd]
-
-  # I think stata2r deals with xi automatically
-  # so probably no need anymore to store such cols in run_df
-  if (FALSE) {
-    rows = run_df$cmd_type == "reg"
-    inds = which(has.substr(run_df$cmdline[rows]," _I"))
-    run_df$is_I_reg = FALSE
-    run_df$is_I_reg[rows[inds]] = TRUE
-
-    rows = run_df$cmd_type %in% c("reg","mod")
-    inds = which(stri_detect_regex(run_df$cmdline[rows],"(^|[ \\:])[ ]*xi[ \\:]"))
-    run_df$is_xi = FALSE
-    run_df$is_xi[inds] = TRUE
-  }
-
-  # Resolve explicit intermediate tracking before generating scripts / caches
-  run_df = drf_run_df_add_data_paths(run_df, drf_dir = file.path(project_dir, "drf"), drf = drf)
-
-  if (add_rcode) {
-    parcels = repboxDB::repdb_load_parcels(project_dir, "r_trans", parcels=parcels)
-    rt_df = parcels$r_trans
-    if (is.null(rt_df)) {
-      stop("\nNo r_trans parcel exists generate it.")
-    }
-    if (!is.null(rt_df)) {
-      run_df = remove_cols(run_df, "rcode")
-      run_df = left_join(run_df, rt_df, by="runid") %>%
-        mutate(rcode = na.val(rcode, ""))
-    }
-  }
-
-  run_df
-}
-
-# Needs to be refined. We do not yet know how to handle regressions
-# that modify the data set.
-# We probably need a special data modification translation
-drf_add_path_df_cols_for_cache = function(path_df = drf$path_df, run_df=drf$run_df, drf=NULL, overwrite=FALSE) {
-  restore.point("drf_mark_path_df_is_load_mod")
-  if (!overwrite) {
-    if (has_col(path_df, "is_load_mod")) return(path_df)
-  }
-  cols = setdiff(names(path_df), c("cmd_type","found_path", "is_xi", "is_I_reg","is_load_mod"))
-  path_df = path_df[,cols]
-  path_df %>%
-    #left_join(run_df %>% select(runid, cmd_type,  found_path, is_xi, is_I_reg), by="runid") %>%
-    left_join(run_df %>% select(runid, cmd_type,  found_path), by="runid") %>%
-    mutate(is_load_mod = cmd_type %in% c("load","mod","merge"))
-
-}
-
-drf_require = function(cond, msg, drf) {
-  if (!isTRUE(all(cond))) {
-    stop(msg)
-  }
-}
-
-```
-# END OF FILE: drf.R
-
------------------------------------------------------------
-
-
-# FILE: drf_r_code.R
-```
-example = function() {
-  # Should point to this project dir
-  project_dir = "~/repbox/projects/aejapp_11_2_10"
-  project_dir = "~/repbox/projects/test"
-
-  if (FALSE)
-    rstudioapi::filesPaneNavigate(project_dir)
-
-  drf = drf_load(project_dir)
-  drf$sc_df = drf_stata_code_df(drf, path_merge = "load_natural")
-}
-
-
-drf_make_r_trans_parcel = function(drf) {
-  restore.point("drf_make_r_trans_parcel")
-  run_df = drf_run_df_create_rcode(drf=drf)
-  rt_df = run_df %>%
-    filter(rcode != "") %>%
-    select(runid, rcode)
-
-  drf$parcels[["r_trans"]] = rt_df
-  repdb_save_parcels(drf$parcels["r_trans"],file.path(drf$project_dir, "repdb"),check=TRUE)
-  drf
-
-}
-
-# Writes stata code skeleton for direct replication of one or
-# multiple regression commands
-# The regression commands themselves will be palceholder of form
-# {{runid-3562}}
-
-# TO DO: omit unneccesary previous reg steps.
-# They are currently always included in path since
-# later regressions may need them if r() or something is used from it.
-
-
-
-drf_run_df_create_rcode = function(run_df=drf$run_df, runids=drf_runids(drf), scalar_code = drf$scalar_code, drf=NULL) {
-  restore.point("drf_run_df_create_rcode")
-
-  if (!has_col(run_df, "rcode")) {
-    run_df$rcode = rep("", NROW(run_df))
-  }
-  if (!is.null(runids)) {
-    rows = match(runids, run_df$runid)
-  } else {
-    rows = seq_len(NROW(run_df))
-  }
-  rows = sort(unique(rows[!is.na(rows)]))
-
-  update_rows = rows
-
-  if (length(update_rows)==0) return(run_df)
-
-  stata_code = run_df$cmdline[update_rows]
-
-  stata_code = gsub("\n", " ", stata_code, fixed = TRUE)
-
-  r_df = stata2r::do_to_r(stata_code, return_df = TRUE)
-
-  translated_code = r_df$r_code
-  run_df$rcode[update_rows] = ifelse(is.na(translated_code), "", translated_code)
-
-
-  # Overwrite 'load' commands with repbox's own data loading logic
-  inds = update_rows[run_df$cmd_type[update_rows] %in% c("load")]
-
-  # Also overwrite the VERY FIRST execution row if we truncated the path at a file cache
-  if (!is.null(runids) && length(runids) > 0) {
-    first_runid = min(runids)
-    first_row = match(first_runid, run_df$runid)
-    if (!is.na(first_row) && isTRUE(run_df$has_file_cache[first_row])) {
-      inds = unique(c(inds, first_row))
-    }
-  }
-
-  if (length(inds)>0) {
-    for (idx in inds) {
-      if (isTRUE(run_df$has_file_cache[idx]) && idx == match(min(runids), run_df$runid)) {
-        drf_rel_path = paste0("cached_dta/", basename(run_df$drf_cache_file[idx]))
-      } else {
-        drf_rel_path = ifelse(run_df$is_intermediate[idx],
-                              paste0("im_data/", sub("^.*?im_data/", "", run_df$org_data_path[idx])),
-                              paste0("org_data/", run_df$found_path[idx]))
-      }
-
-      code = paste0(
-        'data = drf_load_data(project_dir, "', drf_rel_path ,'")\n',
-        'data$stata2r_original_order_idx = seq_len(nrow(data))\n',
-        'assign("has_original_order_idx", TRUE, envir = stata2r::stata2r_env)'
-      )
-      run_df$rcode[idx] = code
-    }
-  }
-  run_df$rcode = na.val(run_df$rcode, "")
-  if (NROW(scalar_code)>0) {
-    run_df = run_df %>%
-      left_join(scalar_code %>% select(runid, scalar_r_code), by="runid") %>%
-      mutate(scalar_r_code = na.val(scalar_r_code, "")) %>%
-      mutate(rcode = ifelse(rcode=="", rcode, paste0(scalar_r_code, rcode))) %>%
-      select(-scalar_r_code)
-  }
-
-
-  run_df
-}
-
-
-#
-# drf_rcode_df = function(drf,runids=NULL, path_merge = c("none", "load", "natural", "load_natural")[4], update_rcode = FALSE) {
-#   restore.point("drf_rcode_df")
-#
-#   # perform path merge like as for stata code
-#   sc_df = drf_stata_code_df(drf, runids=runids, path_merge=path_merge)
-#   runids = unique(rc_df$runid)
-#
-#   run_df = drf$run_df
-#   if (update_rcode) {
-#     run_df = drf_run_df_create_rcode(run_df, runids=runids)
-#   }
-#
-#   run_df = drf$run_df %>%
-#     filter(runid %in% runids)
-#
-#   rc_df = rc_df %>%
-#     left_join(run_df %>% select(runid, cmdline,rcode), by="runid") %>%
-#     mutate(code = rcode, pre = "", post="")
-#   rc_df
-# }
-#
-#
-#
-```
-# END OF FILE: drf_r_code.R
-
------------------------------------------------------------
-
-
-# FILE: drf_r_data.R
-```
-# Data loading and cache for R metareg analysis
-
-# Main aspect is caching
-
-# We can have two types of caches:
-# cache in memory mcache
-# cache files fcache
-
-
-# For debugging purposes helpful but may destroy some
-# Stata pipeline so don't add by default
-drf_set_add_org_row = function(add_org_row=TRUE) {
-  options(repbox_data_add_org_row=add_org_row)
-  return(add_org_row)
-}
-
-drf_load_data = function(project_dir, rel_path, ..., add_org_row=isTRUE(getOption("repbox_data_add_org_row"))) {
-  restore.point("repbox_load_data")
-  data = drf_get_mcache_data(file=rel_path, project_dir=project_dir)
-  if (!is.null(data)) return(data)
-
-  file = file.path(project_dir, "drf", rel_path)
-  if (!file.exists(file)) {
-    file = file.path(project_dir, "drf/org_data", rel_path)
-  }
-
-  if (!file.exists(file)) {
-    stop(paste0("The original data set ", rel_path, " is not yet stored in the DRF folder ", dirname(file)))
-  }
-
-  ext = tolower(tools::file_ext(file))
-  if (ext=="dta") {
-    data = haven::read_dta(file)
-  } else if (ext=="rds") {
-    data = readRDS(file)
-  } else {
-    data = rio::import(file)
-  }
-
-  if (isTRUE(add_org_row)) {
-    data = bind_cols(tibble(.ORG.ROW = seq_len(NROW(data))), data)
-  }
-
-  drf_store_if_mcache_cand(data, file=rel_path, project_dir=project_dir)
-
-  data
-}
-```
-# END OF FILE: drf_r_data.R
-
------------------------------------------------------------
-
-
-# FILE: drf_run_r.R
-```
-example = function() {
-  # Should point to this project dir
-  project_dir = "~/repbox/projects/aejapp_11_2_10"
-  drf = drf_load(project_dir)
-  drf$pids
-  drf$path_df %>%
-    group_by(pid) %>%
-    summarize(ncmd = n())
-  pid = 188
-
-  # test caches
-  file_mcache_cand = drf_find_file_mcache_cand(drf=drf)
-  runid_mcache_cand = drf_find_runid_mcache_cand(drf=drf)
-  drf_set_file_mcache_cand(file_mcache_cand, project_dir)
-  drf_set_runid_mcache_cand(runid_mcache_cand, project_dir)
-
-  class(drf_mcache_object())
-  names(drf_mcache_object())
-
-  drf_mcache_info()
-
-  data = drf_get_data(pid, drf=drf,update_rcode = TRUE)
-
-
-
-
-}
-
-#' The main function for metareg regressions
-#' get the data set for a particular regression specified with runid
-
-#' @param runid The runid of the command (usually regression) for which the data set shall be obtained
-#' @param drf The drf object loaded with drf_load(project_dir)
-#' @param update_rcode Set TRUE if the repbox code for R translation has been updated and the old R code is no longer up-to-date. Mostly relevant during development of the repbox package.
-#' @param exec_env in which environment shall the R code that loads and modifies the data be evaluated, default a new env.
-#' @param pid Alias for runid in this command (pid stands for path ID which is the runid of the final command in a path from path_df)
-drf_get_data = function(runid=pid, drf, update_rcode=FALSE, exec_env = new.env(parent = globalenv()), filtered=TRUE, pid=NULL, use_mcache=TRUE) {
-  restore.point("drf_get_data")
-  project_dir = drf$project_dir
-  if (is.null(runid)) {
-    stop("Specify a runid (or pid as synonym).")
-  }
-  runids = drf_runids(drf)
-  if (!runid %in% runids) {
-    stop("runid is not part of any DRF path. We only build paths that lead to a successfully run regression.")
-  }
-
-  # check if we have a direct cache for the runid
-  path_df = drf$path_df
-  pid = first(path_df$pid[path_df$runid == runid])
-
-  # is final regression data set: we may get memory cache
-  if (runid==pid & filtered) {
-
-    if (use_mcache) {
-      data = drf_get_mcache_data(runid = runid, project_dir = drf$project_dir)
-      if (!is.null(data)) {
-        return(data)
-      }
-    }
-    if (drf_has_cache_file(project_dir, runid)) {
-      data = drf_load_cache_file(project_dir, runid)
-      if (use_mcache) {
-        drf_store_if_mcache_cand(data, runid = runid, project_dir = drf$project_dir)
-      }
-      return(data)
-    }
-  }
-
-
-  path_df_full = path_df[path_df$pid == pid,]
-  path_df_sub = path_df_full[path_df_full$runid < runid,]
-
-  mcache_runid = NULL
-  if (use_mcache) {
-    mcache_runid = drf_get_best_runid_mcache(drf, path_df_sub)
-  }
-  if (!is.null(mcache_runid)) {
-    path_df_sub = path_df_sub[path_df_sub$runid > mcache_runid,]
-    exec_env$data = drf_get_mcache_data(runid=mcache_runid, project_dir = drf$project_dir)
-  }
-
-  exec_runids = path_df_sub$runid
-  run_df = drf$run_df
-  if (!has_col(run_df, "rcode") | update_rcode) {
-    # Ensure full context is passed to rcode generation, including the target `pid`
-    run_df = drf_run_df_create_rcode(run_df, runids=path_df_full$runid)
-  }
-  rows = match(exec_runids, run_df$runid)
-  # don't remove those rows might be used for cache
-  #rows = rows[run_df$rcode[rows] != ""]
-
-  run_df = run_df[rows,]
-
-  rcode = run_df$rcode
-
-  if (length(rcode)==0) {
-    stop("No R code found for getting data. That looks like a bug.")
-  }
-
-  # INJECT CACHE LOAD CODE IF APPLICABLE ---
-  if (NROW(run_df) > 0 & is.null(mcache_runid)) {
-    first_runid = run_df$runid[1]
-    if (isTRUE(run_df$has_file_cache[1])) {
-      drf_rel_path = paste0("cached_dta/", basename(run_df$drf_cache_file[1]))
-      cache_load_code = paste0(
-        'data = drf_load_data(project_dir, "', drf_rel_path ,'")\n',
-        'data$stata2r_original_order_idx = seq_len(nrow(data))\n',
-        'assign("has_original_order_idx", TRUE, envir = stata2r::stata2r_env)'
-      )
-      rcode[1] = cache_load_code
-    }
-  }
-
-  if (filtered) {
-    filter_code = drf_get_filter_code(pid, drf)
-
-    # Add possible scalar definitions needed for filter
-    scalar_code = NULL
-    if (pid %in% drf$scalar_code$runid) {
-      rows = which(drf$scalar_code$runid == pid)
-      scalar_code = drf$scalar_code$scalar_r_code[rows]
-    }
-    rcode = c(rcode, scalar_code, filter_code)
-  }
-
-
-  # Simple execution of R code
-  if (FALSE) {
-    data = drf_eval_r_code_stepwise(project_dir, rcode, exec_env)
-  }
-
-  rcode_call = parse(text = paste0(rcode, collapse="\n"))
-  exec_env$project_dir = drf$project_dir
-  eval(rcode_call, envir = exec_env)
-  data = exec_env$data
-
-  if (use_mcache & filtered) {
-    drf_store_if_mcache_cand(data, runid = runid, project_dir = drf$project_dir)
-  }
-
-  data
-}
-
-# eval r code stepwise with try catch: return error info
-drf_eval_r_code_stepwise = function(project_dir, rcode, env) {
-  restore.point("drf_eval_r_code_stepwise")
-  env$project_dir = drf$project_dir
-  for (i in seq_along(rcode)) {
-    code = rcode[i]
-    if (trimws(code)=="") next
-    rcode_call = parse(text = paste0(rcode, collapse="\n"))
-    eval(rcode_call, envir = env)
-  }
-  if (FALSE) {
-    li = as.list(env)
-  }
-  env$data
-
-  s2r_eval_if_in
-}
-```
-# END OF FILE: drf_run_r.R
-
------------------------------------------------------------
-
-
-# FILE: drf_stata_code.R
-```
-example = function() {
-  # Should point to this project dir
-  project_dir = "~/repbox/projects/aejapp_11_2_10"
-  project_dir = "~/repbox/projects_test/test"
-
-  if (FALSE)
-    rstudioapi::filesPaneNavigate(project_dir)
-
-  drf = drf_load(project_dir)
-  drf$sc_df = sc_df = drf_stata_code_df(drf, path_merge = "load_natural")
-
-
-}
-
-
-drf_stata_code_to_keep_if_in = function(code) {
-  #code = c("reg y x if x>5", "reg y x if y<2", "reg a z in 1/100")
-  restore.point("drf_stata_code_to_keep_if_in")
-
-  if (NROW(code)==0) return(code)
-  in_str = if_str = keep_str = rep("", length(code))
-
-  # Extract `in` condition
-  in_match = stringi::stri_match_last_regex(code, "\\b(?:in)\\s+(.*)$")
-  rows = !is.na(in_match[,1])
-  in_str[rows]  = paste0(" in ",stringi::stri_trim_both(in_match[rows,2]))
-
-  # Extract `if` condition
-  if_match = stringi::stri_match_last_regex(code, "\\b(?:if)\\s+(.*)$")
-  rows = !is.na(if_match[,1])
-  if_str[rows] = paste0(" if ",stringi::stri_trim_both(if_match[rows,2]))
-
-  rows = nzchar(if_str) | nzchar(in_str)
-  keep_str[rows] = paste0("keep", if_str[rows], in_str[rows])
-  keep_str
-}
-
-
-# Writes stata code skeleton for direct replication of one or
-# multiple regression commands
-# The regression commands themselves will be palceholder of form
-# {{runid-3562}}
-
-# TO DO: omit unneccesary previous reg steps.
-# They are currently always included in path since
-# later regressions may need them if r() or something is used from it.
-
-drf_remove_non_mod_reg_from_path_df = function(path_df, drf) {
-  restore.point("drf_remove_non_mod_reg_from_path")
-  if (!has_col(path_df, "cmd_type")) {
-    run_df = drf$run_df
-    rows = match(path_df$runid, run_df$runid)
-    cmd_types = run_df$cmd_type[rows]
-  } else {
-    cmd_types = path_df$cmd_type
-  }
-
-  keep = (!(cmd_types %in% c("reg","quasi_reg"))) | path_df$runid == path_df$pid | path_df$runid %in% drf$dep_df$source_runid
-  path_df = path_df[keep,]
-  path_df
-}
-
-drf_stata_code_df = function(drf,runids=NULL, path_merge = c("none", "load", "natural", "load_natural")[4], cache_after_runids = drf$cache_after_runids, cache_after_cmd=drf$cache_after_cmd) {
-  restore.point("drf_stata_code_skel")
-  project_dir = drf$project_dir
-  pids = runids
-  path_df = drf$path_df
-  if (!is.null(pids)) {
-    path_df = path_df %>%
-      filter(pid %in% pids)
-  }
-  pids = unique(path_df$pid)
-  if (length(pids)<=1) path_merge = "none"
-
-  restore_code = function(data_path) {
-    paste0("* Restore previously loaded data set", basename(data_path), "\nframe copy cache_frame default, replace")
-  }
-  preserve_code = function() {
-    "\nframe copy default cache_frame, replace"
-  }
-  update_rdf_cache_code = function(rdf) {
-    rdf$pre = rep("", NROW(rdf))
-    if (isTRUE(rdf$has_file_cache[1]) & NROW(rdf) > 1) {
-         rdf$code[1] = paste0('use "', rdf$drf_cache_file[1], '", clear')
-    } else if (isTRUE(rdf$has_file_cache[1])) {
-      # load file cache and keep code that runs regression
-      rdf$pre[1] = paste0('use "', rdf$drf_cache_file[1], '", clear\n\n')
-      #rdf$code[1] = paste0('use "', rdf$drf_cache_file[1], '", clear\ncapture noisily ', rdf$code[1])
-    }
-    rdf
-  }
-
-
-  run_df = drf$run_df
-  run_df = run_df %>% semi_join(path_df, by="runid")
-
-  if (!has_col(run_df, "aux_cmd_type")) {
-    run_df$aux_cmd_type = rep("", NROW(run_df))
-  }
-
-  run_df$code = run_df$cmdline
-
-  run_df = drf_replace_run_df_code_data_path(run_df = run_df, drf=drf)
-
-  # Only relevant for 1st element in paths
-  run_df$data_path = ifelse(is.na(run_df$drf_cache_file) | run_df$drf_cache_file=="", run_df$org_data_path, run_df$drf_cache_file)
-
-
-  run_df = drf_code_stata_add_save_cache(project_dir = project_dir, run_df=run_df,cache_after_runids = cache_after_runids, cache_after_cmd = cache_after_cmd)
-
-  path_li = split(path_df, path_df$pid)
-  code_li = NULL
-  pid = pids[1]
-  if (path_merge == "none") {
-    code_li = lapply(pids, function(pid) {
-      pdf = path_li[[as.character(pid)]]
-      pdf = drf_remove_non_mod_reg_from_path_df(pdf, drf)
-
-      rdf = run_df[run_df$runid %in% pdf$runid, ]
-      rdf = update_rdf_cache_code(rdf)
-      rdf %>%
-        transmute(pid=pid,runid=runid, code=code, pre=pre, post="", cmd_type=cmd_type, cmd=cmd, is_target = runid==pid, aux_cmd_type=na.val(aux_cmd_type,""))
-    })
-    sc_df = bind_rows(code_li)
-    # we now add scalar definitions from scalar map
-    sc_df = sc_df %>%
-      left_join(drf$scalar_code, by="runid") %>%
-      mutate(
-        scalar_stata_code = na.val(scalar_stata_code,""),
-        scalar_r_code = na.val(scalar_r_code,"")
-      )
-
-    return(sc_df)
-  }
-  ps_df = path_df %>%
-    group_by(pid) %>%
-    summarize(
-      first_runid = min(runid),
-      last_runid = max(runid),
-    ) %>%
-    left_join(run_df %>% select(first_runid=runid, data_path), by="first_runid")
-
-  data_df = ps_df %>%
-    group_by(data_path) %>%
-    summarize(
-      data_runid = min(first_runid),
-      data_num_paths = n()
-    ) %>%
-    arrange(data_runid)
-
-  ps_df = ps_df %>%
-    left_join(data_df, by="data_path")
-
-  merge_load = path_merge %in% c("load", "load_natural")
-  merge_natural = path_merge %in% c("natural", "load_natural")
-
-  if (merge_load) {
-    ps_df = ps_df %>%
-      ungroup() %>%
-      arrange(data_runid, first_runid, last_runid) %>%
-      mutate(
-        restore_data = is.true(lag(data_runid)==data_runid),
-        preserve_data = !restore_data & data_num_paths > 1
-      )
-
-  } else {
-    ps_df = ps_df %>%
-      arrange(first_runid, last_runid) %>%
-      mutate(restore_data = FALSE, preserve_data=FALSE)
-  }
-
-  pids = ps_df$pid
-  if (!merge_natural) {
-    code_li = lapply(pids, function(pid) {
-      pdf = path_li[[as.character(pid)]]
-      pdf = drf_remove_non_mod_reg_from_path_df(pdf, drf)
-      rdf = run_df[run_df$runid %in% pdf$runid, ]
-      rdf = update_rdf_cache_code(rdf)
-
-      rdf = rdf %>%
-        transmute(pid=pid,runid=runid, code=code, pre=pre, post="", cmd_type=cmd_type, cmd=cmd, is_target = runid==pid, aux_cmd_type="", clear=FALSE)
-
-
-      ps = ps_df[ps_df$pid==pid,]
-      if (ps$preserve_data) {
-        rdf$code[1] = paste0(rdf$code[1],preserve_code())
-        rdf$aux_cmd_type[1] = paste0("load_preserve")
-      } else if (ps$restore_data) {
-        rdf$code[1] = restore_code(ps$data_path)
-        rdf$aux_cmd_type[1] = paste0("restore")
-      }
-      rdf
-    })
-    sc_df = bind_rows(code_li)
-    # we now add scalar definitions from scalar map
-    sc_df = sc_df %>%
-      left_join(drf$scalar_code, by="runid") %>%
-      mutate(
-        scalar_stata_code = na.val(scalar_stata_code,""),
-        scalar_r_code = na.val(scalar_r_code,"")
-      )
-
-    return(sc_df)
-  }
-
-  code_li = vector("list", length(pids))
-  opdf = NULL
-  counter = 0
-
-  while (counter < length(pids)) {
-    counter = counter+1
-    pid = pids[counter]
-    pdf = path_li[[as.character(pid)]]
-    if (is.null(opdf) | NROW(opdf)>=NROW(pdf)) {
-      restart = TRUE
-    } else {
-      restart = !all(opdf$runid == pdf$runid[1:NROW(opdf)])
-    }
-
-    if (restart) {
-      rdf = run_df[run_df$runid %in% pdf$runid, ]
-      rdf = update_rdf_cache_code(rdf)
-
-      rdf = rdf %>%
-        transmute(pid=pid,runid=runid, code=code, pre=pre, post="", cmd_type=cmd_type, cmd=cmd, is_target = runid==pid, aux_cmd_type="", clear=FALSE)
-
-      ps = ps_df[ps_df$pid==pid,]
-
-      if (ps$preserve_data) {
-        rdf$code[1] = paste0(rdf$code[1],preserve_code())
-        rdf$aux_cmd_type[1] = paste0("load_preserve")
-      } else if (ps$restore_data) {
-        rdf$code[1] = restore_code(ps$data_path)
-        rdf$aux_cmd_type[1] = paste0("restore")
-      }
-      opdf = pdf
-
-    } else if (!restart) {
-      npdf = pdf %>% filter(runid > max(opdf$runid))
-      opdf = pdf
-      pdf = npdf
-
-      rdf = run_df[run_df$runid %in% pdf$runid, ]
-      rdf = update_rdf_cache_code(rdf)
-
-      rdf = rdf %>%
-        transmute(pid=pid,runid=runid, code=code, pre=pre, post="", cmd_type=cmd_type, cmd=cmd, is_target = runid==pid, aux_cmd_type="", clear=FALSE)
-    }
-    code_li[[counter]] = rdf
-  }
-  sc_df = bind_rows(code_li)
-
-  # we now add scalar definitions from scalar map
-  sc_df = sc_df %>%
-    left_join(drf$scalar_code, by="runid") %>%
-    mutate(
-      scalar_stata_code = na.val(scalar_stata_code,""),
-      scalar_r_code = na.val(scalar_r_code,"")
-    )
-  sc_df
-}
-
-
-# Add to Stata code command that save data set caches as dta after some command
-drf_add_code_store_cache = function(runids, sc_df=drf$sc_df,drf_dir = drf$drf_dir, drf = NULL) {
-  restore.point("drf_add_code_store_cache")
-  require_drf_dir(drf_dir)
-
-  cache_dir = file.path(drf_dir, "cached_dta")
-  if (!dir.exists(cache_dir)) dir.create(cache_dir)
-
-  cache_files = file.path(cache_dir, paste0(runids, "_cache.dta"))
-
-  # Will only match first time runid appears in sc_df
-  # but that is what we want: caching multiple times makes no sense
-  rows = match(runids, sc_df$runid)
-
-  txt = paste0(txt,'\nsave "', cache_files,'", replace\n')
-  sc_df$post[rows] = paste0(txt, sc_df$post[rows])
-  sc_df
-}
-
-drf_add_code_store_if_rows = function(runids, sc_df=drf$sc_df,drf_dir=drf$drf_dir, only_fun_if_rows = TRUE, drf = NULL, outdir = file.path(drf_dir, "if_rows")) {
-  restore.point("drf_add_code_store_if_rows")
-
-  rows = match(runids, sc_df$runid)
-  cmdline = sc_df$cmdline[rows]
-
-  has_if = stringi::stri_detect_regex(cmdline, "\\bif\\b")
-  rows = rows[has_if]
-  if (length(rows)==0) return(sc_df)
-  cmdline = sc_df$cmdline[rows]
-
-  tab = repboxStata::repbox.re.cmdlines.to.tab(cmdline)
-  if_str = tab$if_arg
-
-  # We don't want to save simple if conditions that don't call a
-  # Stata function because we could translate them ourselves
-  if (only_fun_if_rows) {
-    use = has.substr(if_str, "(")
-    rows = rows[use]
-    if (length(rows)==0) return(sc_df)
-    if_str = use
-  }
-  runids = sc_df$runid[rows]
-
-  if (!dir.exists(outdir))
-    dir.create(dir, recursive = TRUE)
-
-
-  # TO CHECK restore / preserve or deletion of created row
-  file = paste0(outdir, "/ifrows_", runids, ".dta")
-  sc_df$pre[rows]  = paste0("\n
-// Store row number from if condition
-preserve
-gen r0W_ox_zA___2G__nUm__ = _n
-capture noisily keep if ",if_str, "
-keep r0W_ox_zA___2G__nUm__
-capture noisily save \"",file, "\", replace
-restore\n",
-    sc_df$pre[rows])
-  sc_df
-}
-
-drf_code_stata_add_save_cache = function(project_dir, run_df, cache_after_runids=NULL, cache_after_cmd=NULL) {
-  restore.point("drf_code_stata_add_save_cache")
-
-
-
-  runids = cache_after_runids
-  if (!is.null(cache_after_cmd)) {
-    runids = union(runids, run_df$runid[run_df$cmd %in% cache_after_cmd])
-  }
-  if (length(runids)==0) return(run_df)
-  cache_dir = file.path(project_dir, "drf","cached_dta")
-  if (!dir.exists(cache_dir)) dir.create(cache_dir)
-  cache_files = paste0(cache_dir, "/", runids,"_cache.dta")
-
-  # don't store if cache already exists
-  has = file.exists(cache_files)
-  runids = runids[!has]
-  cache_files = cache_files[!has]
-  if (length(runids)==0) return(run_df)
-  # since no replace option does not overwrite
-  # error is ignored because of capture
-  save_code = paste0('\ncapture save "', cache_files,'"\n')
-  rows = match(runids, run_df$runid)
-  run_df$code[rows] = paste0(run_df$code[rows], save_code)
-  run_df
-
-}
-
-drf_code_stata_path_header = function(sc_df, header_tpl = "\n***** Path for runid={{pid}} ****\n\n", to_col="pre", append_mode = c("overwrite", "left", "right")[2]) {
-  drf_code_adapt(sc_df, function(code_df, ...) {
-    stringi::stri_replace_all_fixed(header_tpl,"{{pid}}", code_df$pid)
-  },to_col=to_col, append_mode=append_mode, just_path_pos="start")
-
-}
-```
-# END OF FILE: drf_stata_code.R
-
------------------------------------------------------------
-
-
-# FILE: drf_stata_data.R
-```
-# Functions related to data set
-# already needed when generating Stata code
-# Functions related to data set
-# already needed when generating Stata code
-drf_run_df_add_data_paths = function(run_df = drf$run_df, drf_dir = drf$drf_dir, drf = NULL) {
-  restore.point("drf_run_df_add_data_paths")
-  project_dir = drf$project_dir
-
-  im_file = file.path(project_dir, "repbox", "stata", "intermediate_data.Rds")
-  if (file.exists(im_file)) {
-    im_df = readRDS(im_file)
-  } else {
-    im_df = NULL
-  }
-
-  run_df$is_intermediate = FALSE
-  run_df$im_source_path = NA_character_
-  run_df$org_data_path = NA_character_
-
-  for (i in seq_len(NROW(run_df))) {
-    fp = run_df$found_path[i]
-    if (!nzchar(fp) || is.na(fp)) next
-
-    is_im = FALSE
-    if (!is.null(im_df) && NROW(im_df) > 0 && run_df$cmd_type[i] %in% c("load", "merge")) {
-      # Find latest save of this file before current runid
-      past_saves = im_df[im_df$file_path == fp & im_df$runid < run_df$runid[i], , drop = FALSE]
-      if (NROW(past_saves) > 0) {
-        latest_save = past_saves[which.max(past_saves$runid), , drop = FALSE]
-        is_im = TRUE
-
-        copy_path = latest_save$copy_path[[1]]
-        if (length(copy_path) == 0 || is.na(copy_path) || !nzchar(copy_path)) {
-          copy_path = fp
-        }
-
-        if (isTRUE(latest_save$has_copy[[1]])) {
-          source_physical = file.path(project_dir, "repbox", "stata", "intermediate_data", copy_path)
-        } else {
-          source_physical = file.path(project_dir, "mod", latest_save$file_path[[1]])
-        }
-
-        run_df$is_intermediate[i] = TRUE
-        run_df$im_source_path[i] = source_physical
-        run_df$org_data_path[i] = file.path(drf_dir, "im_data", copy_path)
-      }
-    }
-
-    if (!is_im) {
-      run_df$org_data_path[i] = file.path(drf_dir, "org_data", fp)
-    }
-  }
-
-  run_df$has_org_data = FALSE
-  for (i in seq_len(NROW(run_df))) {
-    dest = run_df$org_data_path[i]
-    if (is.na(dest) || !nzchar(dest)) next
-
-    # The DRF destination is authoritative once it exists. This is crucial
-    # when move_from_mod=TRUE has already moved the source file.
-    if (file.exists(dest)) {
-      run_df$has_org_data[i] = TRUE
-      next
-    }
-
-    if (isTRUE(run_df$is_intermediate[i])) {
-      src = run_df$im_source_path[i]
-      run_df$has_org_data[i] = !is.na(src) && nzchar(src) && file.exists(src)
-    } else {
-      fp = run_df$found_path[i]
-      run_df$has_org_data[i] =
-        (!is.na(fp) && nzchar(fp) && file.exists(file.path(project_dir, "mod", fp))) ||
-        (!is.na(fp) && nzchar(fp) && file.exists(file.path(project_dir, "org", fp)))
-    }
-  }
-
-  drf_cache_file = file.path(drf_dir, "cached_dta", paste0(run_df$runid, "_cache.dta"))
-  has_file_cache = file.exists(drf_cache_file)
-  run_df$drf_cache_file = ifelse(has_file_cache, drf_cache_file, NA_character_)
-  run_df$has_file_cache = has_file_cache
-  run_df
-}
-
-
-
-drf_data_load_needs_clear = function(run_df=NULL, cmd=run_cmd$cmd, cmd_type=run_df$cmd_type) {
-  cmd_type %in% c("load")
-}
-
-# This function just replaces the data path
-drf_replace_run_df_code_data_path = function(run_df =drf$run_df, drf_dir = drf$drf_dir, drf = NULL, cmd_types = c("load","merge"), rows=NULL, prefer_cache = FALSE) {
-  restore.point("drf_replace_run_df_org_data_path")
-
-  if (!has_col(run_df, "org_data_path")) {
-    run_df = drf_run_df_add_data_paths(run_df, drf_dir=drf_dir, drf=drf)
-  }
-
-  if (!has_col(run_df,"code")) {
-    stop("You need the column run_df$code.")
-  }
-
-  if (is.null(rows) & !is.null(cmd_types)) {
-    rows = which(run_df$cmd_type %in% cmd_types)
-  } else if (is.null(rows)) {
-    rows = seq_len(NROW(run_df))
-  }
-
-  if (length(rows)==0) return(run_df)
-
-
-  # Replace original code that load original data set
-  temp = run_df[rows,]
-  org_rows = rows[run_df$has_org_data[rows]]
-  add_clear = drf_data_load_needs_clear(run_df[org_rows,])
-  run_df$code[org_rows] = replace_stata_cmdline_path(run_df$code[org_rows], paste0('"',run_df$org_data_path[org_rows],'"'),add_clear=add_clear)
-
-  # TO DO: cache replace:
-  # If we load a cache, we load the cache file with a complete new load command
-  # e.g. use "cachefile.dta", clear
-
-  # ...
-  run_df
-}
-
-drf_copy_org_data = function(project_dir=drf$project_dir, run_df=drf$run_df, runids=drf_runids(drf),  move_from_mod=TRUE, drf=NULL, overwrite=FALSE) {
-  restore.point("drf_copy_org_data")
-
-  require_project_dir(project_dir)
-  if (!dir.exists(project_dir)) stop()
-
-  load_df = run_df %>%
-    filter(runid %in% runids, cmd_type %in% c("load","merge")) %>%
-    filter(nzchar(found_path) & !is.na(found_path)) %>%
-    select(found_path, org_data_path, is_intermediate, im_source_path) %>%
-    distinct()
-
-  if (NROW(load_df) == 0) return(invisible(NULL))
-
-  # 1. Copy intermediate data
-  im_df = load_df %>% filter(is_intermediate)
-  if (NROW(im_df) > 0) {
-    for (i in seq_len(NROW(im_df))) {
-      src = im_df$im_source_path[i]
-      dest = im_df$org_data_path[i]
-      if (!overwrite && file.exists(dest)) next
-      if (!file.exists(src)) {
-        cat("\nIntermediate data source not found: ", src)
-        next
-      }
-      dir.create(dirname(dest), recursive = TRUE, showWarnings = FALSE)
-      if (move_from_mod && startsWith(src, file.path(project_dir, "mod"))) {
-        file.rename(src, dest)
-      } else {
-        file.copy(src, dest, overwrite = overwrite)
-      }
-    }
-  }
-
-  # 2. Copy original data
-  org_df = load_df %>% filter(!is_intermediate)
-  if (NROW(org_df) > 0) {
-    dest_files = org_df$org_data_path
-    data_files = org_df$found_path
-
-    if (!overwrite) {
-      has = file.exists(dest_files)
-      dest_files = dest_files[!has]
-      data_files = data_files[!has]
-    }
-
-    if (length(dest_files) > 0) {
-      dirs = unique(dirname(dest_files))
-      for (d in dirs) {
-        dir.create(d, recursive=TRUE, showWarnings = FALSE)
-      }
-
-      mod_files = file.path(project_dir, "mod", data_files)
-      has = file.exists(mod_files)
-      if (any(has)) {
-        if (move_from_mod) {
-          file.rename(mod_files[has], dest_files[has])
-        } else {
-          file.copy(mod_files[has], dest_files[has], overwrite=overwrite)
-        }
-      }
-
-      still_missing = !file.exists(dest_files)
-      if (any(still_missing)) {
-        org_files = file.path(project_dir, "org", data_files[still_missing])
-        has = file.exists(org_files)
-        if (any(has)) {
-          file.copy(org_files[has], dest_files[still_missing][has], overwrite=overwrite)
-        }
-      }
-
-      final_missing = !file.exists(dest_files)
-      if (any(final_missing)) {
-        cat("\nThe data set(s) ", paste0(data_files[final_missing], collapse=", "),
-            " were not found in mod or org folder and could not be copied to drf/org_data.")
-      }
-    }
-  }
-
-  return(invisible(NULL))
-}
-
-```
-# END OF FILE: drf_stata_data.R
-
------------------------------------------------------------
-
-
-# FILE: drf_tools.R
-```
-
-drf_code_adapt = function(code_df, fun, ..., to_col="code", append_mode = c("overwrite", "left", "right")[1], vectorized=FALSE, just_cmd_types=NULL,just_runids=NULL, just_path_pos = c("start","end")[2], once_per_runid=TRUE){
-  restore.point("drf_adapt_code")
-
-  rows = NULL
-  if (!is.null(just_runids)) {
-    runids = just_runids
-  } else if (!is.null(just_cmd_types)) {
-    runids = unique(code_df$runid[code_df$cmd_type %in% cmd_types])
-  } else if (just_path_pos=="end") {
-    rows = which(code_df$pid==code_df$runid)
-    runids = code_df$runid[rows]
-    once_per_runid = TRUE
-  } else if (just_path_pos=="start") {
-    code_df = code_df %>%
-      group_by(pid) %>%
-      mutate(path_pos = 1:n()) %>%
-      ungroup()
-    rows = which(code_df$path_pos==1)
-    runids = code_df$runid[rows]
-  } else if (is.null(runid)) {
-    stop("Please provide just_runids, just_cmd_types or just_path_pos")
-  }
-
-  if (is.null(rows))
-    rows = match(runids, code_df$runid)
-
-  if (vectorized) {
-    new_code = do.call(fun, args=list(code_df = code_df[rows,], ...))
-  } else {
-    new_code = sapply(rows, function(row) {
-      do.call(fun, args=list(code_df = code_df[row,], ...))
-    })
-  }
-
-  restore.point("inbetweenlksjds")
-
-  if (!once_per_runid) {
-    ind = match(code_df$runid, runids)
-    to_rows = which(!is.na(ind))
-    new_code = new_code[ind[to_rows]]
-  } else {
-    to_rows = rows
-  }
-  if (append_mode=="overwrite") {
-    code_df[[to_col]][to_rows] = new_code
-  } else if (append_mode == "left") {
-    code_df[[to_col]][to_rows] = paste0(new_code,code_df[[to_col]][to_rows])
-  } else if (append_mode == "right") {
-    code_df[[to_col]][to_rows] = paste0(code_df[[to_col]][to_rows], new_code)
-  } else {
-    stop(paste0("unknown append_mode = ", appen_mode))
-  }
-  code_df
-
-}
-
-
-
-
-
-
-#' Replace file paths in cleaned Stata command lines
-#'
-#' @param cmdline Character vector of cleaned Stata commands (one per line)
-#' @param replacement String to insert in place of the file path
-#' @return Character vector of commands with paths replaced
-replace_stata_cmdline_path = function(cmdline, replacement = '"`r(my_custom_path)\'"', add_clear=TRUE) {
-  restore.point("replace_stata_cmdline_paths")
-
-  if (length(replacement)>1 & length(replacement)!= length(cmdline)) {
-    stop("cmdline and replacement must have same length.")
-  }
-
-  # 1. Parse already-cleaned lines directly into a 'tab' object
-  tab = repboxStata::repbox.re.cmdlines.to.tab(cmdline)
-
-  # Because repbox.re.cmdline.to.tab resolves quotes back into the 'tab'
-  # dataframe directly, we just provide an empty placeholder dataframe.
-  empty_ph = data.frame(ph = character(0), content = character(0))
-
-  # 2. Extract paths into a new placeholder object
-  res_paths = repboxStata::replace.files.and.paths.with.ph(tab, empty_ph)
-
-  # 3. If no file paths were found, return the original commands
-  if (nrow(res_paths$ph) == 0) {
-    return(cmdline)
-  }
-
-  # 4. Modify the extracted paths
-  fph = res_paths$ph
-  fph$content = replacement
-
-  # 5. Re-inject the new paths back into the text
-  final_cmds = replace.ph.keep.lines(res_paths$txt, fph)
-
-  add_clear = rep(add_clear, length.out=NROW(final_cmds))
-  has_clear = "clear" %in% tolower(tab$opts)
-  add_clear = add_clear & !has_clear
-
-  add_str = case_when(
-    add_clear & !is_empty_str(trimws(tab$opts)) ~ " clear",
-    add_clear ~ ", clear",
-    TRUE ~ ""
-  )
-  final_cmds = paste0(final_cmds, add_str)
-
-
-  return(final_cmds)
-}
-
-
-
-```
-# END OF FILE: drf_tools.R
-
------------------------------------------------------------
-
-
-# FILE: io.R
-```
-
-
-drf_make_path_index = function(path_df) {
-  path_df$.ROW = 1:NROW(path_df)
-  index_df = path_df %>%
-    group_by(pid) %>%
-    summarize(
-      start_row = .ROW[1]
-    ) %>%
-    bind_rows(tibble(pid=Inf, start_row = NROW(path_df+1)))
-
-
-
-}
-drf_load_path_index = function(project_dir) {
-  index_df = read_rds_or_null(file.path(project_dir, "drf/path_index.Rds"))
-  index_df
-}
-
-drf_load_path = function(project_dir, pid, index_df = drf_load_path_index(pid))  {
-
-  row = which(index_df$pid==row)
-  from = index_df$start_row[row]
-  to= index_df$start_row[row+1]-1
-  file = file.path(project_dir, "drf/path_df.fst")
-
-  fst::read.fst(file,from = from,to=to)
-
-}
-
-drf_load_path_df = function(project_dir=drf$project_dir, drf=NULL)  {
-  file = file.path(project_dir, "drf/path_df.fst")
-  if (!file.exists(file)) return(NULL)
-  fst::read.fst(file)
-}
-
-drf_save_path_df = function(project_dir=drf$project_dir, path_df=drf$path_df, drf)  {
-  restore.point("drf_save_path_df")
-  index_df = drf_make_path_index(path_df)
-  dir = file.path(project_dir, "drf")
-  if (!dir.exists(dir)) dir.create(dir)
-  saveRDS(index_df, file.path(dir, "path_index.Rds"))
-
-  file = file.path(project_dir, "drf/path_df.fst")
-  fst::write.fst(path_df, file)
-  return(index_df)
-
-}
-```
-# END OF FILE: io.R
-
------------------------------------------------------------
-
-
-# FILE: tools.R
-```
-sec_since_start = function(time_str, start_time_str) {
-  restore.point("sec_since_start")
-  if (length(start_time_str) != 1L) stop("start_time_str must be length 1.")
-
-  ppidse_hms_sec = function(x) {
-    # Fast fixed-position ppidse of "HH:MM:SS"
-    h = as.integer(stringi::stri_sub(x, 1L, 2L))
-    m = as.integer(stringi::stri_sub(x, 4L, 5L))
-    s = as.integer(stringi::stri_sub(x, 7L, 8L))
-    3600L * h + 60L * m + s
-  }
-
-  t_sec = ppidse_hms_sec(time_str)
-  start_sec = ppidse_hms_sec(start_time_str)
-
-  dt = t_sec - start_sec
-  dt = dt + 86400L * (dt < 0L)
-  dt
-}
-```
-# END OF FILE: tools.R
-
------------------------------------------------------------
-
-
-# here are my test scripts
-
-
-# FILE: deps.do
-```
-scalar cutoff = 10.5
-
-use ../data/data.dta, clear
-
-xi i.x1
-scalar sc1=100
-
-* 1. Test summarize and extraction of r() macros
-sum x1, detail
-gen byte is_above_median = (x1 > r(p50))
-gen mean_x1 = r(mean)
-
-* 2. Test defining scalars and using them in data modifications
-
-scalar sc1 = 1.1
-gen x1_capped = cond(x1 > cutoff, cutoff, x1)*sc1
-
-reg y x1 _Ix1_2 if year > cutoff+1995
-reg y x1 _Ix1_2 in 1/50
-* 3. Test filtering using a scalar directly in a regression command
-scalar min_year = 1995
-reg y x1 if x1 > mean_x1*sc1
-
-* 4. Test filtering using the previously generated macro-based dummy
-reghdfe y x1_capped if e(sample), absorb(i1) vce(cluster i)
-```
-# END OF FILE: deps.do
-
------------------------------------------------------------
-
-
-# here is the log file from the run repbox_ variation of the do file
-
-
-# FILE: repbox_deps.log
-```
-
-  ___  ____  ____  ____  ____ ®
- /__    /   ____/   /   ____/      17.0
-___/   /   /___/   /   /___/       SE—Standard Edition
-
- Statistics and Data Science       Copyright 1985-2021 StataCorp LLC
-                                   StataCorp
-                                   4905 Lakeway Drive
-                                   College Station, Texas 77845 USA
-                                   800-STATA-PC        https://www.stata.com
-                                   979-696-4600        stata@stata.com
-
-Stata license: Single-user  perpetual
-Serial number: 401706320773
-  Licensed to: Sebastian Kranz
-               Ulm University
-
-Notes:
-      1. Stata is running in batch mode.
-      2. Unicode is supported; see help unicode_advice.
-      3. Maximum number of variables is set to 5,000; see help set_maxvar.
-
-. do "repbox_deps.do", nostop 
-
-. 
-. file open repbox_timer_file using "~/repbox/projects_test/test/repbox/stata/t
-> imer/start.txt", write append
-(file ~/repbox/projects_test/test/repbox/stata/timer/start.txt not found)
-
-. file write repbox_timer_file "1;`c(current_time)';`c(current_date)'"
-
-. file write repbox_timer_file _n
-
-. file close repbox_timer_file
-
-. 
-. if "$repbox_cmd_count" == "" {
-.   set_defaults _all
--> set maxvar 5000
--> set matsize 400
--> set niceness 5
--> set min_memory 0
--> set max_memory .
--> set segmentsize 32m
--> set adosize 1000
--> set more on
--> set rmsg off
--> set dp period
--> (linesize left at current value)
--> (pagesize left at current value)
--> set level 95
--> set clevel 95
--> set showbaselevels
--> set showemptycells
--> set showomitted
--> set fvlabel on
--> set fvwrap 1
--> set fvwrapon word
--> set lstretch
--> set cformat
--> set pformat
--> set sformat
--> set coeftabresults on
--> set logtype smcl
--> set collect_style default
--> set collect_label default
--> set table_style table
--> set etable_style etable
--> set collect_warn on
--> set linegap 1
--> set scrollbufsize 200000
--> set reventries 5000
--> set maxdb 50
--> set graphics off
--> set scheme s2color
--> set printcolor automatic
--> set copycolor automatic
--> set checksum off
--> set timeout1 30
--> set timeout2 180
--> set netdebug off
--> set httpproxy off
--> set httpproxyhost ""
--> set httpproxyport 8080
--> set httpproxyauth off
--> set httpproxyuser ""
--> set httpproxypw ""
--> set trace off
--> set tracedepth 32000
--> set traceexpand on
--> set tracesep on
--> set traceindent on
--> set tracenumber off
--> set tracehilite ""
--> set matastrict off
--> set matalnum off
--> set mataoptimize on
--> set matafavor space
--> set matacache 2000
--> set matalibs ""
--> set matamofirst off
--> set locale_ui default
--> set locale_functions default
--> set type float
--> set maxiter default
--> set searchdefault all
--> (seed left at current value)
--> set varabbrev on
-(preferences reset)
-.   set more off
-.   global repbox_cmd_count = 0
-.   global repbox_root_donum = 1
-.   log using "/home/rstudio/repbox/projects_test/test/repbox/stata/logs/log_1.
-> log", replace name(repbox_log_1)
-(file /home/rstudio/repbox/projects_test/test/repbox/stata/logs/log_1.log not
-    found)
--------------------------------------------------------------------------------
-      name:  repbox_log_1
-       log:  /home/rstudio/repbox/projects_test/test/repbox/stata/logs/log_1.lo
-> g
-  log type:  text
- opened on:  29 Apr 2026, 05:38:48
-.   adopath + "~/ado/plus"
-  [1]  (BASE)      "/usr/local/stata/ado/base/"
-  [2]  (SITE)      "/usr/local/ado/"
-  [3]              "."
-  [4]  (PERSONAL)  "~/ado/personal/"
-  [5]  (PLUS)      "~/ado/plus/"
-  [6]  (OLDPLACE)  "~/ado/"
-  [7]              "~/ado/plus"
-. }
-
-. else {
-.   log using "/home/rstudio/repbox/projects_test/test/repbox/stata/logs/includ
-> e_1.log", replace name(repbox_log_1)
-. }
-
-. 
-. 
-. * PRECOMAND INJECTION START LINE 1
-. 
-. global repbox_cmd_count = $repbox_cmd_count +1
-
-. local repbox_local_cmd_count = $repbox_cmd_count
-
-. local repbox_cmdline = `"scalar cutoff = 10.5"'
-
-. 
-. file open repbox_cmdlines using "~/repbox/projects_test/test//repbox/stata/cm
-> d/precmd_1.csv", write append
-(file ~/repbox/projects_test/test//repbox/stata/cmd/precmd_1.csv not found)
-
-. file write repbox_cmdlines `"1;1;`repbox_local_cmd_count';$repbox_root_donum;
-> $S_TIME;;;`repbox_cmdline'"'
-
-. file write repbox_cmdlines _n
-
-. file close repbox_cmdlines
-
-. 
-. * PRECOMMAND INJECTION END
-. display "#~# INJECT RUNCMD 1 1 `repbox_local_cmd_count'
-#~# INJECT RUNCMD 1 1 1
-
-. capture:  noisily: scalar cutoff = 10.5
-
-. 
-. display "#~# END INJECT RUNCMD 1 1 `repbox_local_cmd_count'
-#~# END INJECT RUNCMD 1 1 1
-
-. 
-. 
-. 
-. qui {
-
-. 
-. capture qui {
-
-. 
-. 
-. * PRECOMAND INJECTION START LINE 2
-. 
-. global repbox_cmd_count = $repbox_cmd_count +1
-
-. local repbox_local_cmd_count = $repbox_cmd_count
-
-. local repbox_cmdline = `"use ../data/data.dta, clear"'
-
-. 
-. 
-. local repbox_source_path = subinstr("../data/data.dta","\","/",.)
-
-. 
-. repbox_correct_path "file_exists" "`repbox_source_path'" "dta" "/home/rstudio
-> /repbox/projects_test/test/mod" "/home/rstudio/repbox/projects_test/test/mod/
-> code"
-  /home/rstudio/repbox/projects_test/test/mod/data/data.dta
-
-. capture noisily local repbox_corrected_path = "`r(repbox_corrected_path)'"
-
-. file open repbox_cmdlines using "~/repbox/projects_test/test//repbox/stata/cm
-> d/precmd_1.csv", write append
-
-. file write repbox_cmdlines `"1;2;`repbox_local_cmd_count';$repbox_root_donum;
-> $S_TIME;`c(pwd)';`r(repbox_corrected_path)';`repbox_cmdline'"'
-
-. file write repbox_cmdlines _n
-
-. file close repbox_cmdlines
-
-. 
-. * PRECOMMAND INJECTION END
-. display "#~# INJECT RUNCMD 1 2 `repbox_local_cmd_count'
-#~# INJECT RUNCMD 1 2 2
-
-. capture:  noisily: use "`r(repbox_corrected_path)'", clear
-
-. 
-. display "#~# END INJECT RUNCMD 1 2 `repbox_local_cmd_count'
-#~# END INJECT RUNCMD 1 2 2
-
-. 
-. * USE INJECTION START
-. 
-. 
-. qui {
-
-. * INJECTION END
-. 
-. 
-. * PRECOMAND INJECTION START LINE 3
-. 
-. global repbox_cmd_count = $repbox_cmd_count +1
-
-. local repbox_local_cmd_count = $repbox_cmd_count
-
-. local repbox_cmdline = `"xi i.x1"'
-
-. 
-. file open repbox_cmdlines using "~/repbox/projects_test/test//repbox/stata/cm
-> d/precmd_1.csv", write append
-
-. file write repbox_cmdlines `"1;3;`repbox_local_cmd_count';$repbox_root_donum;
-> $S_TIME;;;`repbox_cmdline'"'
-
-. file write repbox_cmdlines _n
-
-. file close repbox_cmdlines
-
-. 
-. * PRECOMMAND INJECTION END
-. display "#~# INJECT RUNCMD 1 3 `repbox_local_cmd_count'
-#~# INJECT RUNCMD 1 3 3
-
-. capture:  noisily: xi i.x1
-i.x1              _Ix1_1-100          (_Ix1_1 for x1==-2.170334566621448 omitte
-> d)
-
-. 
-. display "#~# END INJECT RUNCMD 1 3 `repbox_local_cmd_count'
-#~# END INJECT RUNCMD 1 3 3
-
-. 
-. 
-. 
-. qui {
-
-. 
-. 
-. * PRECOMAND INJECTION START LINE 4
-. 
-. global repbox_cmd_count = $repbox_cmd_count +1
-
-. local repbox_local_cmd_count = $repbox_cmd_count
-
-. local repbox_cmdline = `"scalar sc1=100"'
-
-. 
-. file open repbox_cmdlines using "~/repbox/projects_test/test//repbox/stata/cm
-> d/precmd_1.csv", write append
-
-. file write repbox_cmdlines `"1;4;`repbox_local_cmd_count';$repbox_root_donum;
-> $S_TIME;;;`repbox_cmdline'"'
-
-. file write repbox_cmdlines _n
-
-. file close repbox_cmdlines
-
-. 
-. * PRECOMMAND INJECTION END
-. display "#~# INJECT RUNCMD 1 4 `repbox_local_cmd_count'
-#~# INJECT RUNCMD 1 4 4
-
-. capture:  noisily: scalar sc1=100
-
-. 
-. display "#~# END INJECT RUNCMD 1 4 `repbox_local_cmd_count'
-#~# END INJECT RUNCMD 1 4 4
-
-. 
-. 
-. 
-. qui {
-
-. 
-. capture qui {
-
-. 
-. 
-. * PRECOMAND INJECTION START LINE 5
-. 
-. global repbox_cmd_count = $repbox_cmd_count +1
-
-. local repbox_local_cmd_count = $repbox_cmd_count
-
-. local repbox_cmdline = `"sum x1, detail"'
-
-. 
-. file open repbox_cmdlines using "~/repbox/projects_test/test//repbox/stata/cm
-> d/precmd_1.csv", write append
-
-. file write repbox_cmdlines `"1;5;`repbox_local_cmd_count';$repbox_root_donum;
-> $S_TIME;;;`repbox_cmdline'"'
-
-. file write repbox_cmdlines _n
-
-. file close repbox_cmdlines
-
-. 
-. * PRECOMMAND INJECTION END
-. display "#~# INJECT RUNCMD 1 5 `repbox_local_cmd_count'
-#~# INJECT RUNCMD 1 5 5
-
-. capture:  noisily: sum x1, detail
-
-                             x1
--------------------------------------------------------------
-      Percentiles      Smallest
- 1%    -2.022183      -2.170335
- 5%    -1.328035      -1.874032
-10%    -1.034923      -1.655908       Obs                 100
-25%    -.5617792      -1.551282       Sum of wgt.         100
-
-50%     .0521832                      Mean           .1188678
-                        Largest       Std. dev.      .9566162
-75%     .7490284       2.073557
-90%     1.256915       2.186661       Variance       .9151145
-95%     1.904925       2.469012       Skewness       .2745881
-99%     2.641389       2.813767       Kurtosis       3.051801
-
-. 
-. display "#~# END INJECT RUNCMD 1 5 `repbox_local_cmd_count'
-#~# END INJECT RUNCMD 1 5 5
-
-. 
-. 
-. 
-. qui {
-
-. 
-. 
-. * PRECOMAND INJECTION START LINE 6
-. 
-. global repbox_cmd_count = $repbox_cmd_count +1
-
-. local repbox_local_cmd_count = $repbox_cmd_count
-
-. local repbox_cmdline = `"gen byte is_above_median = (x1 > r(p50))"'
-
-. 
-. file open repbox_cmdlines using "~/repbox/projects_test/test//repbox/stata/cm
-> d/precmd_1.csv", write append
-
-. file write repbox_cmdlines `"1;6;`repbox_local_cmd_count';$repbox_root_donum;
-> $S_TIME;;;`repbox_cmdline'"'
-
-. file write repbox_cmdlines _n
-
-. file close repbox_cmdlines
-
-. 
-. * PRECOMMAND INJECTION END
-. display "#~# INJECT RUNCMD 1 6 `repbox_local_cmd_count'
-#~# INJECT RUNCMD 1 6 6
-
-. capture:  noisily: gen byte is_above_median = (x1 > r(p50))
-
-. 
-. display "#~# END INJECT RUNCMD 1 6 `repbox_local_cmd_count'
-#~# END INJECT RUNCMD 1 6 6
-
-. 
-. 
-. 
-. qui {
-
-. 
-. 
-. * PRECOMAND INJECTION START LINE 7
-. 
-. global repbox_cmd_count = $repbox_cmd_count +1
-
-. local repbox_local_cmd_count = $repbox_cmd_count
-
-. local repbox_cmdline = `"gen mean_x1 = r(mean)"'
-
-. 
-. file open repbox_cmdlines using "~/repbox/projects_test/test//repbox/stata/cm
-> d/precmd_1.csv", write append
-
-. file write repbox_cmdlines `"1;7;`repbox_local_cmd_count';$repbox_root_donum;
-> $S_TIME;;;`repbox_cmdline'"'
-
-. file write repbox_cmdlines _n
-
-. file close repbox_cmdlines
-
-. 
-. * PRECOMMAND INJECTION END
-. display "#~# INJECT RUNCMD 1 7 `repbox_local_cmd_count'
-#~# INJECT RUNCMD 1 7 7
-
-. capture:  noisily: gen mean_x1 = r(mean)
-
-. 
-. display "#~# END INJECT RUNCMD 1 7 `repbox_local_cmd_count'
-#~# END INJECT RUNCMD 1 7 7
-
-. 
-. 
-. 
-. qui {
-
-. 
-. 
-. * PRECOMAND INJECTION START LINE 8
-. 
-. global repbox_cmd_count = $repbox_cmd_count +1
-
-. local repbox_local_cmd_count = $repbox_cmd_count
-
-. local repbox_cmdline = `"scalar sc1 = 1.1"'
-
-. 
-. file open repbox_cmdlines using "~/repbox/projects_test/test//repbox/stata/cm
-> d/precmd_1.csv", write append
-
-. file write repbox_cmdlines `"1;8;`repbox_local_cmd_count';$repbox_root_donum;
-> $S_TIME;;;`repbox_cmdline'"'
-
-. file write repbox_cmdlines _n
-
-. file close repbox_cmdlines
-
-. 
-. * PRECOMMAND INJECTION END
-. display "#~# INJECT RUNCMD 1 8 `repbox_local_cmd_count'
-#~# INJECT RUNCMD 1 8 8
-
-. capture:  noisily: scalar sc1 = 1.1
-
-. 
-. display "#~# END INJECT RUNCMD 1 8 `repbox_local_cmd_count'
-#~# END INJECT RUNCMD 1 8 8
-
-. 
-. 
-. 
-. qui {
-
-. 
-. capture qui {
-
-. 
-. 
-. * PRECOMAND INJECTION START LINE 9
-. 
-. global repbox_cmd_count = $repbox_cmd_count +1
-
-. local repbox_local_cmd_count = $repbox_cmd_count
-
-. local repbox_cmdline = `"gen x1_capped = cond(x1 > cutoff, cutoff, x1)*sc1"'
-
-. 
-. file open repbox_cmdlines using "~/repbox/projects_test/test//repbox/stata/cm
-> d/precmd_1.csv", write append
-
-. file write repbox_cmdlines `"1;9;`repbox_local_cmd_count';$repbox_root_donum;
-> $S_TIME;;;`repbox_cmdline'"'
-
-. file write repbox_cmdlines _n
-
-. file close repbox_cmdlines
-
-. 
-. * PRECOMMAND INJECTION END
-. display "#~# INJECT RUNCMD 1 9 `repbox_local_cmd_count'
-#~# INJECT RUNCMD 1 9 9
-
-. capture:  noisily: gen x1_capped = cond(x1 > cutoff, cutoff, x1)*sc1
-
-. 
-. display "#~# END INJECT RUNCMD 1 9 `repbox_local_cmd_count'
-#~# END INJECT RUNCMD 1 9 9
-
-. 
-. 
-. 
-. qui {
-
-. 
-. 
-. * PRECOMAND INJECTION START LINE 10
-. 
-. global repbox_cmd_count = $repbox_cmd_count +1
-
-. local repbox_local_cmd_count = $repbox_cmd_count
-
-. local repbox_cmdline = `"reg y x1 _Ix1_2 if year > cutoff+1995"'
-
-. 
-. file open repbox_cmdlines using "~/repbox/projects_test/test//repbox/stata/cm
-> d/precmd_1.csv", write append
-
-. file write repbox_cmdlines `"1;10;`repbox_local_cmd_count';$repbox_root_donum
-> ;$S_TIME;;;`repbox_cmdline'"'
-
-. file write repbox_cmdlines _n
-
-. file close repbox_cmdlines
-
-. 
-. * PRECOMMAND INJECTION END
-. display "#~# INJECT RUNCMD 1 10 `repbox_local_cmd_count'
-#~# INJECT RUNCMD 1 10 10
-
-. capture:  noisily: reg y x1 _Ix1_2 if year > cutoff+1995
-
-      Source |       SS           df       MS      Number of obs   =        75
--------------+----------------------------------   F(2, 72)        =      1.15
-       Model |  2.86971847         2  1.43485923   Prob > F        =    0.3223
-    Residual |  89.8149756        72  1.24743022   R-squared       =    0.0310
--------------+----------------------------------   Adj R-squared   =    0.0040
-       Total |  92.6846941        74  1.25249587   Root MSE        =    1.1169
-
-------------------------------------------------------------------------------
-           y | Coefficient  Std. err.      t    P>|t|     [95% conf. interval]
--------------+----------------------------------------------------------------
-          x1 |  -.0033796   .1484341    -0.02   0.982    -.2992775    .2925183
-      _Ix1_2 |   1.698651   1.161044     1.46   0.148    -.6158475     4.01315
-       _cons |  -.1257057   .1303174    -0.96   0.338    -.3854887    .1340773
-------------------------------------------------------------------------------
-
-. local repbox_reg_rc = _rc
-
-. 
-. display "#~# END INJECT RUNCMD 1 10 `repbox_local_cmd_count'
-#~# END INJECT RUNCMD 1 10 10
-
-. 
-. * REGRESSION INJECTION START
-. if (`repbox_reg_rc' == 0) {
-.   parmest, label saving("~/repbox/projects_test/test/repbox/stata/tsv/1_10_`r
-> epbox_local_cmd_count'.dta", replace)
-(file /home/rstudio/repbox/projects_test/test/repbox/stata/tsv/1_10_10.dta
-    not found)
-file ~/repbox/projects_test/test/repbox/stata/tsv/1_10_10.dta saved
-. 
-. 
-. 
-. qui {
-.   display "#~# INJECT REG_ERETURN 1 10 `repbox_local_cmd_count'"
-#~# INJECT REG_ERETURN 1 10 10
-.   ereturn list
-
-scalars:
-                  e(N) =  75
-               e(df_m) =  2
-               e(df_r) =  72
-                  e(F) =  1.150252105570495
-                 e(r2) =  .0309621615030177
-               e(rmse) =  1.11688415556251
-                e(mss) =  2.869718467190125
-                e(rss) =  89.81497562015376
-               e(r2_a) =  .0040444437669903
-                 e(ll) =  -113.1802755243242
-               e(ll_0) =  -114.3597112307219
-               e(rank) =  3
-
-macros:
-            e(cmdline) : "regress y x1 _Ix1_2 if year > cutoff+1995"
-              e(title) : "Linear regression"
-          e(marginsok) : "XB default"
-                e(vce) : "ols"
-             e(depvar) : "y"
-                e(cmd) : "regress"
-         e(properties) : "b V"
-            e(predict) : "regres_p"
-              e(model) : "ols"
-          e(estat_cmd) : "regress_estat"
-
-matrices:
-                  e(b) :  1 x 3
-                  e(V) :  3 x 3
-
-functions:
-             e(sample)   
-.   display "#~# END INJECT REG_ERETURN 1 10 `repbox_local_cmd_count'"
-#~# END INJECT REG_ERETURN 1 10 10
-. }
-
-. else {
-.   display "#~# REGRESSION COMMAND FAILED 1 10 `repbox_local_cmd_count' rc=`re
-> pbox_reg_rc'"
-. }
-
-. 
-. * REGRESSION INJECTION END
-. 
-. 
-. * PRECOMAND INJECTION START LINE 11
-. 
-. global repbox_cmd_count = $repbox_cmd_count +1
-
-. local repbox_local_cmd_count = $repbox_cmd_count
-
-. local repbox_cmdline = `"reg y x1 _Ix1_2 in 1/50"'
-
-. 
-. file open repbox_cmdlines using "~/repbox/projects_test/test//repbox/stata/cm
-> d/precmd_1.csv", write append
-
-. file write repbox_cmdlines `"1;11;`repbox_local_cmd_count';$repbox_root_donum
-> ;$S_TIME;;;`repbox_cmdline'"'
-
-. file write repbox_cmdlines _n
-
-. file close repbox_cmdlines
-
-. 
-. * PRECOMMAND INJECTION END
-. display "#~# INJECT RUNCMD 1 11 `repbox_local_cmd_count'
-#~# INJECT RUNCMD 1 11 11
-
-. capture:  noisily: reg y x1 _Ix1_2 in 1/50
-
-      Source |       SS           df       MS      Number of obs   =        50
--------------+----------------------------------   F(2, 47)        =      2.12
-       Model |  4.61450187         2  2.30725094   Prob > F        =    0.1309
-    Residual |  51.0602967        47  1.08638929   R-squared       =    0.0829
--------------+----------------------------------   Adj R-squared   =    0.0439
-       Total |  55.6747985        49  1.13622038   Root MSE        =    1.0423
-
-------------------------------------------------------------------------------
-           y | Coefficient  Std. err.      t    P>|t|     [95% conf. interval]
--------------+----------------------------------------------------------------
-          x1 |  -.1705163    .147268    -1.16   0.253    -.4667813    .1257487
-      _Ix1_2 |   1.446012   1.095205     1.32   0.193    -.7572559    3.649279
-       _cons |  -.1862856   .1510732    -1.23   0.224    -.4902057    .1176346
-------------------------------------------------------------------------------
-
-. local repbox_reg_rc = _rc
-
-. 
-. display "#~# END INJECT RUNCMD 1 11 `repbox_local_cmd_count'
-#~# END INJECT RUNCMD 1 11 11
-
-. 
-. * REGRESSION INJECTION START
-. if (`repbox_reg_rc' == 0) {
-.   parmest, label saving("~/repbox/projects_test/test/repbox/stata/tsv/1_11_`r
-> epbox_local_cmd_count'.dta", replace)
-(file /home/rstudio/repbox/projects_test/test/repbox/stata/tsv/1_11_11.dta
-    not found)
-file ~/repbox/projects_test/test/repbox/stata/tsv/1_11_11.dta saved
-. 
-. 
-. 
-. qui {
-.   display "#~# INJECT REG_ERETURN 1 11 `repbox_local_cmd_count'"
-#~# INJECT REG_ERETURN 1 11 11
-.   ereturn list
-
-scalars:
-                  e(N) =  50
-               e(df_m) =  2
-               e(df_r) =  47
-                  e(F) =  2.123779159550645
-                 e(r2) =  .0828831354784393
-               e(rmse) =  1.042300000469337
-                e(mss) =  4.614501870677771
-                e(rss) =  51.06029667598386
-               e(r2_a) =  .0438568859243303
-                 e(ll) =  -71.47153207795292
-               e(ll_0) =  -73.63454139343779
-               e(rank) =  3
-
-macros:
-            e(cmdline) : "regress y x1 _Ix1_2 in 1/50"
-              e(title) : "Linear regression"
-          e(marginsok) : "XB default"
-                e(vce) : "ols"
-             e(depvar) : "y"
-                e(cmd) : "regress"
-         e(properties) : "b V"
-            e(predict) : "regres_p"
-              e(model) : "ols"
-          e(estat_cmd) : "regress_estat"
-
-matrices:
-                  e(b) :  1 x 3
-                  e(V) :  3 x 3
-
-functions:
-             e(sample)   
-.   display "#~# END INJECT REG_ERETURN 1 11 `repbox_local_cmd_count'"
-#~# END INJECT REG_ERETURN 1 11 11
-. }
-
-. else {
-.   display "#~# REGRESSION COMMAND FAILED 1 11 `repbox_local_cmd_count' rc=`re
-> pbox_reg_rc'"
-. }
-
-. 
-. * REGRESSION INJECTION END
-. 
-. 
-. * PRECOMAND INJECTION START LINE 12
-. 
-. global repbox_cmd_count = $repbox_cmd_count +1
-
-. local repbox_local_cmd_count = $repbox_cmd_count
-
-. local repbox_cmdline = `"scalar min_year = 1995"'
-
-. 
-. file open repbox_cmdlines using "~/repbox/projects_test/test//repbox/stata/cm
-> d/precmd_1.csv", write append
-
-. file write repbox_cmdlines `"1;12;`repbox_local_cmd_count';$repbox_root_donum
-> ;$S_TIME;;;`repbox_cmdline'"'
-
-. file write repbox_cmdlines _n
-
-. file close repbox_cmdlines
-
-. 
-. * PRECOMMAND INJECTION END
-. display "#~# INJECT RUNCMD 1 12 `repbox_local_cmd_count'
-#~# INJECT RUNCMD 1 12 12
-
-. capture:  noisily: scalar min_year = 1995
-
-. 
-. display "#~# END INJECT RUNCMD 1 12 `repbox_local_cmd_count'
-#~# END INJECT RUNCMD 1 12 12
-
-. 
-. 
-. 
-. qui {
-
-. 
-. capture qui {
-
-. 
-. 
-. * PRECOMAND INJECTION START LINE 13
-. 
-. global repbox_cmd_count = $repbox_cmd_count +1
-
-. local repbox_local_cmd_count = $repbox_cmd_count
-
-. local repbox_cmdline = `"reg y x1 if x1 > mean_x1*sc1"'
-
-. 
-. file open repbox_cmdlines using "~/repbox/projects_test/test//repbox/stata/cm
-> d/precmd_1.csv", write append
-
-. file write repbox_cmdlines `"1;13;`repbox_local_cmd_count';$repbox_root_donum
-> ;$S_TIME;;;`repbox_cmdline'"'
-
-. file write repbox_cmdlines _n
-
-. file close repbox_cmdlines
-
-. 
-. * PRECOMMAND INJECTION END
-. display "#~# INJECT RUNCMD 1 13 `repbox_local_cmd_count'
-#~# INJECT RUNCMD 1 13 13
-
-. capture:  noisily: reg y x1 if x1 > mean_x1*sc1
-
-      Source |       SS           df       MS      Number of obs   =        48
--------------+----------------------------------   F(1, 46)        =      0.00
-       Model |  .001400722         1  .001400722   Prob > F        =    0.9680
-    Residual |   39.488487        46   .85844537   R-squared       =    0.0000
--------------+----------------------------------   Adj R-squared   =   -0.0217
-       Total |  39.4898877        47  .840210377   Root MSE        =    .92652
-
-------------------------------------------------------------------------------
-           y | Coefficient  Std. err.      t    P>|t|     [95% conf. interval]
--------------+----------------------------------------------------------------
-          x1 |     .00884   .2188425     0.04   0.968    -.4316671     .449347
-       _cons |  -.1759627   .2413859    -0.73   0.470    -.6618472    .3099218
-------------------------------------------------------------------------------
-
-. local repbox_reg_rc = _rc
-
-. 
-. display "#~# END INJECT RUNCMD 1 13 `repbox_local_cmd_count'
-#~# END INJECT RUNCMD 1 13 13
-
-. 
-. * REGRESSION INJECTION START
-. if (`repbox_reg_rc' == 0) {
-.   parmest, label saving("~/repbox/projects_test/test/repbox/stata/tsv/1_13_`r
-> epbox_local_cmd_count'.dta", replace)
-(file /home/rstudio/repbox/projects_test/test/repbox/stata/tsv/1_13_13.dta
-    not found)
-file ~/repbox/projects_test/test/repbox/stata/tsv/1_13_13.dta saved
-. 
-. 
-. 
-. qui {
-.   display "#~# INJECT REG_ERETURN 1 13 `repbox_local_cmd_count'"
-#~# INJECT REG_ERETURN 1 13 13
-.   ereturn list
-
-scalars:
-                  e(N) =  48
-               e(df_m) =  1
-               e(df_r) =  46
-                  e(F) =  .0016316963420371
-                 e(r2) =  .0000354704014155
-               e(rmse) =  .9265232698687718
-                e(mss) =  .0014007221694285
-                e(rss) =  39.48848700198276
-               e(r2_a) =  -.0217028889376842
-                 e(ll) =  -63.42444519885971
-               e(ll_0) =  -63.42529650359184
-               e(rank) =  2
-
-macros:
-            e(cmdline) : "regress y x1 if x1 > mean_x1*sc1"
-              e(title) : "Linear regression"
-          e(marginsok) : "XB default"
-                e(vce) : "ols"
-             e(depvar) : "y"
-                e(cmd) : "regress"
-         e(properties) : "b V"
-            e(predict) : "regres_p"
-              e(model) : "ols"
-          e(estat_cmd) : "regress_estat"
-
-matrices:
-                  e(b) :  1 x 2
-                  e(V) :  2 x 2
-
-functions:
-             e(sample)   
-.   display "#~# END INJECT REG_ERETURN 1 13 `repbox_local_cmd_count'"
-#~# END INJECT REG_ERETURN 1 13 13
-. }
-
-. else {
-.   display "#~# REGRESSION COMMAND FAILED 1 13 `repbox_local_cmd_count' rc=`re
-> pbox_reg_rc'"
-. }
-
-. 
-. * REGRESSION INJECTION END
-. 
-. 
-. * PRECOMAND INJECTION START LINE 14
-. 
-. global repbox_cmd_count = $repbox_cmd_count +1
-
-. local repbox_local_cmd_count = $repbox_cmd_count
-
-. local repbox_cmdline = `"reghdfe y x1_capped if e(sample), absorb(i1) vce(clu
-> ster i)"'
-
-. 
-. file open repbox_cmdlines using "~/repbox/projects_test/test//repbox/stata/cm
-> d/precmd_1.csv", write append
-
-. file write repbox_cmdlines `"1;14;`repbox_local_cmd_count';$repbox_root_donum
-> ;$S_TIME;;;`repbox_cmdline'"'
-
-. file write repbox_cmdlines _n
-
-. file close repbox_cmdlines
-
-. 
-. * PRECOMMAND INJECTION END
-. display "#~# INJECT RUNCMD 1 14 `repbox_local_cmd_count'
-#~# INJECT RUNCMD 1 14 14
-
-. capture:  noisily: reghdfe y x1_capped if e(sample), absorb(i1) vce(cluster i
-> )
-(MWFE estimator converged in 1 iterations)
-
-HDFE Linear regression                            Number of obs   =         48
-Absorbing 1 HDFE group                            F(   1,      4) =       0.54
-Statistics robust to heteroskedasticity           Prob > F        =     0.5028
-                                                  R-squared       =     0.0465
-                                                  Adj R-squared   =    -0.0422
-                                                  Within R-sq.    =     0.0035
-Number of clusters (i)       =          5         Root MSE        =     0.9358
-
-                                      (Std. err. adjusted for 5 clusters in i)
-------------------------------------------------------------------------------
-             |               Robust
-           y | Coefficient  std. err.      t    P>|t|     [95% conf. interval]
--------------+----------------------------------------------------------------
-   x1_capped |   .0826412   .1123472     0.74   0.503    -.2292845    .3945669
-       _cons |  -.2513202    .161485    -1.56   0.195    -.6996746    .1970341
-------------------------------------------------------------------------------
-
-Absorbed degrees of freedom:
------------------------------------------------------+
- Absorbed FE | Categories  - Redundant  = Num. Coefs |
--------------+---------------------------------------|
-          i1 |         4           0           4     |
------------------------------------------------------+
-
-. local repbox_reg_rc = _rc
-
-. 
-. display "#~# END INJECT RUNCMD 1 14 `repbox_local_cmd_count'
-#~# END INJECT RUNCMD 1 14 14
-
-. 
-. * REGRESSION INJECTION START
-. if (`repbox_reg_rc' == 0) {
-.   parmest, label saving("~/repbox/projects_test/test/repbox/stata/tsv/1_14_`r
-> epbox_local_cmd_count'.dta", replace)
-(file /home/rstudio/repbox/projects_test/test/repbox/stata/tsv/1_14_14.dta
-    not found)
-file ~/repbox/projects_test/test/repbox/stata/tsv/1_14_14.dta saved
-. 
-. 
-. 
-. qui {
-.   display "#~# INJECT REG_ERETURN 1 14 `repbox_local_cmd_count'"
-#~# INJECT REG_ERETURN 1 14 14
-.   ereturn list
-
-scalars:
-                  e(N) =  48
-               e(rank) =  1
-               e(df_r) =  4
-               e(df_m) =  1
-                e(tss) =  39.48988772415219
-         e(tss_within) =  37.78755721631826
-                e(rss) =  37.65411932521923
-                e(mss) =  1.835768398932956
-               e(rmse) =  .9357762518945165
-                  e(F) =  .5410894239805677
-                 e(ll) =  -62.28284195497935
-               e(ll_0) =  -62.36774231437948
-                 e(r2) =  .0464870503496061
-          e(r2_within) =  .0035312653404702
-               e(r2_a) =  -.0422118286876398
-        e(r2_a_within) =  -.0196424261632397
-         e(sumweights) =  48
-                 e(ic) =  1
-          e(converged) =  1
-    e(report_constant) =  1
-             e(N_full) =  48
-     e(num_singletons) =  0
-    e(drop_singletons) =  1
-        e(df_a_nested) =  0
-     e(df_a_redundant) =  0
-       e(df_a_initial) =  4
-               e(df_a) =  4
-    e(N_hdfe_extended) =  1
-             e(N_hdfe) =  1
-           e(N_clust1) =  5
-      e(N_clustervars) =  1
-            e(N_clust) =  5
-
-macros:
-   e(extended_absvars) : "i1"
-            e(absvars) : "i1"
-             e(title2) : "Absorbing 1 HDFE group"
-          e(dofmethod) : "pairwise clusters continuous"
-                e(vce) : "cluster"
-            e(vcetype) : "Robust"
-              e(title) : "HDFE Linear regression"
-          e(indepvars) : "x1_capped _cons"
-             e(depvar) : "y"
-       e(marginsnotok) : "Residuals SCore"
-           e(footnote) : "reghdfe_footnote"
-          e(estat_cmd) : "reghdfe_estat"
-            e(predict) : "reghdfe_p"
-              e(model) : "ols"
-            e(cmdline) : "reghdfe y x1_capped if e(sample), absorb(i1) vce(.."
-                e(cmd) : "reghdfe"
-           e(clustvar) : "i"
-             e(title3) : "Statistics robust to heteroskedasticity"
-          e(clustvar1) : "i"
-         e(properties) : "b V"
-
-matrices:
-                  e(b) :  1 x 2
-                  e(V) :  2 x 2
-          e(dof_table) :  1 x 5
-
-functions:
-             e(sample)   
-.   display "#~# END INJECT REG_ERETURN 1 14 `repbox_local_cmd_count'"
-#~# END INJECT REG_ERETURN 1 14 14
-. }
-
-. else {
-.   display "#~# REGRESSION COMMAND FAILED 1 14 `repbox_local_cmd_count' rc=`re
-> pbox_reg_rc'"
-. }
-
-. 
-. * REGRESSION INJECTION END
-. 
-. 
-. display "#~# FINISHED DO",
-#~# FINISHED DO 
-
-. capture log close repbox_log_1
-
-. 
-. file open repbox_timer_file using "~/repbox/projects_test/test/repbox/stata/t
-> imer/end.txt", write append
-(file ~/repbox/projects_test/test/repbox/stata/timer/end.txt not found)
-
-. file write repbox_timer_file "1;`c(current_time)';`c(current_date)'"
-
-. file write repbox_timer_file _n
-
-. file close repbox_timer_file
-
-. 
-. 
-end of do-file
-```
-# END OF FILE: repbox_deps.log
-
------------------------------------------------------------
-
-
-# here is the mrb_test test test report
-
-
-
-
-## Format of proposed changes to code  files
+## Format of proposed changes to code or text files
 
 When you suggest changes to code or text files or completely new files, you MUST use the following format for each modification. Each change must be enclosed in a `!MODIFICATION` block.
 
@@ -9846,13 +6197,27 @@ Each modification block has three parts:
 !END_MODIFICATION {{what}}
 ```
 
-We have two possible scopes for modification:
-  - file (replaces complete file) or
-  - function (replaces an R function).
+### Modification Scope
+
+Each modification is of one of the following two scopes:
+
+* `file` (re-)writes a complete file
+
+* `function` (re-)writes a complete function (including comments above).
+
+
+
+If more than two functions or more than two line edits will be performed in the same file, better rewrite the whole file using a `file` scope. For extremely long files also more smaller edits are ok.
+
+Function scope only works for R code files, but in R files it is preferred if one or two functions in a larger file are changed.
+
+The metadata block **MUST** contain a `scope` field, which can be `"file"`, `"function"`, or `"lines"`.
+
+---
 
 ### **Scope 1: `file`**
 
-Use this format to create a new file or to completely rewrite an existing one.
+Use this to create a new file or to completely rewrite an existing one.
 
 **Required Fields:**
 *   `scope = "file"`
@@ -9876,7 +6241,7 @@ say_hello = function(name) {
 
 ### **Scope 2: `function`**
 
-Use this fomrat to replace an existing function or to insert a new function. The new code payload should contain the complete function, including any preceding comments.
+Use this to replace an existing function or to insert a new function. The new code payload should contain the complete function, including any preceding comments.
 
 #### **Fields for replacing an existing function:**
 *   `scope = "function"`
@@ -9940,83 +6305,38 @@ is_negative = function(n) {
   n < 0
 }
 ```
+!END_MODIFICATION is_negative in R/utils.R
 
-Important: Whenever you know absolute paths, use them in the file argument of the modification header!
+
+# General coding instructions
+
+- For string operations try to use `stringi` functions.
+
+- Try to avoid loops, vectorize if possible.
+
+- Use `=` instead of `<-` as assignment operator.
+
+- Very Important: Do not warp code into `try` statements to generally catch errors.
+  I want that the code fails if there are errors we have not yet understood dealt with.
+  General try catch wrappers will dillude this goal. Existing wrappers are probably
+  ok, but don't add new ones, unless there is really a strong reason to believe that
+  this cleanly solves the underlying problem and does not hide other possible problems.
+
+
+
 
 ##################################
 # Your Task
 ##################################
 
-The test report says regcheck notes differences for runid=14 but then the rpeort says also no differences found. Below are the parcels. Any idea what is the problem in the code and how to fix it?
+I have added this field to regcheck parcel spec:
 
 
-All parcel contents for runid=14
+  sb_so_coef_max_dev:
+    type: num
+    descr: maximum relative deviation between coefficients of sb and so run
+    
+Can you adapt the function that creates regcheck parcel if that field is not yet (correctly) implemented?
 
-Parcel regcoef:
-
-# A tibble: 2 × 12
-  runid variant cterm       shown_term label      eq       coef    se      t     p ci_low
-  <int> <chr>   <chr>       <chr>      <chr>      <chr>   <dbl> <dbl>  <dbl> <dbl>  <dbl>
-1    14 sb      x1_capped   x1_capped  ""         ""     0.0826 0.112  0.736 0.503 -0.229
-2    14 sb      (Intercept) _cons      "Constant" ""    -0.251  0.161 -1.56  0.195 -0.700
-  ci_up
-  <dbl>
-1 0.395
-2 0.197
-
-Parcel regcoef_so:
-
-# A tibble: 2 × 12
-  runid variant cterm       shown_term label      eq       coef    se      t     p ci_low
-  <int> <chr>   <chr>       <chr>      <chr>      <chr>   <dbl> <dbl>  <dbl> <dbl>  <dbl>
-1    14 so      x1_capped   x1_capped  ""         ""     0.0826 0.112  0.736 0.503 -0.229
-2    14 so      (Intercept) _cons      "Constant" ""    -0.251  0.161 -1.56  0.195 -0.700
-  ci_up
-  <dbl>
-1 0.395
-2 0.197
-
-Parcel regcoef_rb:
-
-# A tibble: 1 × 12
-  runid variant cterm     shown_term label eq      coef    se     t     p ci_low ci_up
-  <int> <chr>   <chr>     <chr>      <chr> <chr>  <dbl> <dbl> <dbl> <dbl>  <dbl> <dbl>
-1    14 rb      x1_capped x1_capped  ""    ""    0.0826 0.112 0.736 0.503 -0.229 0.395
-
-Parcel regvar:
-
-# A tibble: 4 × 17
-  runid variant cterm     ia_cterm  basevar   role    var_org_type var_reg_type ia_reg_type
-  <int> <chr>   <chr>     <chr>     <chr>     <chr>   <chr>        <chr>        <chr>      
-1    14 sb      i1        i1        i1        exo     integer      factor       factor     
-2    14 sb      y         y         y         dep     numeric      numeric      numeric    
-3    14 sb      x1_capped x1_capped x1_capped exo     numeric      numeric      numeric    
-4    14 sb      i         i         i         cluster integer      factor       factor     
-  absorbed_fe main_pos ia_pos ia_num ia_source_expr var_source_expr transform transform_par
-  <lgl>          <int>  <int>  <int> <chr>          <chr>           <chr>     <chr>        
-1 TRUE               3      1      1 i1             i1              ""        ""           
-2 FALSE              1      1      1 y              y               ""        ""           
-3 FALSE              2      1      1 x1_capped      x1_capped       ""        ""           
-4 FALSE              4      1      1 i              i               ""        ""           
-
-Parcel regxvar:
-
-# A tibble: 1 × 6
-  runid ia_cterm  cterm     role  in_regcoef org_coef
-  <int> <chr>     <chr>     <chr> <lgl>         <dbl>
-1    14 x1_capped x1_capped exo   TRUE         0.0826
-
-Parcel regcheck:
-
-# A tibble: 1 × 15
-  runid reg_ok so_raw_did_run sb_raw_did_run so_did_run sb_did_run rb_did_run
-  <int> <lgl>  <lgl>          <lgl>          <lgl>      <lgl>      <lgl>     
-1    14 FALSE  TRUE           TRUE           TRUE       TRUE       TRUE      
-  sb_so_identical rb_sb_coef_same rb_sb_coef_max_dev rb_sb_se_same rb_sb_se_max_dev
-  <lgl>           <lgl>                        <dbl> <lgl>                    <dbl>
-1 TRUE            FALSE                 0.0000000657 FALSE             0.0000000207
-  repair_code problem                                              comment
-  <chr>       <chr>                                                <chr>  
-1 c           R and Stata base coefficients differ by > tolerance. ""     
 
 

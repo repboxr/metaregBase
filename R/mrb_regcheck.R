@@ -33,6 +33,8 @@ mrb_make_regcheck_parcel = function(
     pids = intersect(pids, just_pids)
   }
 
+  pid = pids[1]
+
   res_li = lapply(pids, function(pid) {
     so_did_run = !is.null(parcels$regcoef_so) && pid %in% parcels$regcoef_so$runid
     sb_did_run = !is.null(parcels$reg) && pid %in% parcels$reg$runid
@@ -86,8 +88,12 @@ mrb_make_regcheck_parcel = function(
 
       sb_so_identical = ev_so$all_same
       sb_so_coef_same = ev_so$coef_same
-      sb_so_coef_max_dev = ev_so$coef_max_dev
+
+      # The regcheck parcel spec defines sb_so_coef_max_dev as the
+      # maximum relative coefficient deviation between sb and so.
+      sb_so_coef_max_dev = ev_so$coef_max_rel
       sb_so_coef_max_rel = ev_so$coef_max_rel
+
       sb_so_se_same = ev_so$se_same
       sb_so_se_max_dev = ev_so$se_max_dev
       sb_so_se_max_rel = ev_so$se_max_rel
