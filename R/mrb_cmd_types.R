@@ -3,7 +3,7 @@ stata_cmds_with_margin = function() {
   #cat(paste0('"',sort(cmds),'"', collapse=", "))
 
 
-  c("asclogit", "asmprobit", "asroprobit", "binreg", "biprobit", "blogit", "bprobit", "clogit",  "etregress", "exlogistic", "glogit", "gprobit", "heckman", "heckoprobit", "heckprobit", "hetprobit", "ivpoisson", "ivprobit", "ivtobit", "logistic", "logit", "mlogit", "mprobit", "nlogit", "obprobit", "ologit", "probit", "rologit", "scobit", "slogit",
+  c("asclogit", "asmprobit", "asroprobit", "binreg", "biprobit", "blogit", "bprobit", "clogit",  "etregress", "exlogistic", "glogit", "gprobit", "heckman", "heckoprobit", "heckprobit", "hetprobit", "ivpoisson", "ivprobit", "ivtobit", "logistic", "logit", "mlogit", "mprobit", "nlogit", "oprobit", "ologit", "probit", "rologit", "scobit", "slogit",
     #"tobit","dprobit"
     "xtlogit", "xtprobit")
 }

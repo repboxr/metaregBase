@@ -37,7 +37,7 @@ mrb_test_opts = function(
 }
 
 
-mrb_run_as_test = function(project_dir, run_script, navigate = TRUE, opts = mrb_test_opts()) {
+mrb_run_as_test = function(project_dir, run_script, navigate = FALSE, opts = mrb_test_opts()) {
   restore.point("mrb_run_as_test")
 
   try(library(repboxRun), silent = TRUE)
