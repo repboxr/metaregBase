@@ -58,19 +58,31 @@ mrb_run_r_base_step = function(mrb, pid, with_try = isTRUE(mrb$with_try)) {
   # 3. Load Data & Expand Syntax
   dat = repboxDRF::drf_get_data(pid, drf = mrb$drf)
   org_dat = dat
-  cmdpart = cmdpart_expand_vars(cmdpart, colnames(dat)) # From previous refactor
+  cmdpart = cmdpart_expand_vars(cmdpart, colnames(dat))
 
   # 4. Extract Options, SE, and build initial regvar
   opts_df = cmdpart_to_opts_df(cmdpart)
   se_info = se_stata_to_repdb(cmd, opts_df)
   regvar = cmdpart_to_regvar(cmdpart, dat, opts_df, se_info)
 
+  # xtreg, fe absorbs the xtset panel variable. This variable is stored in
+  # xtvar/reg metadata, not in the command varlist. Add it to regvar as an
+  # absorbed fixed effect so regvar_to_formula_fixest() creates "| panelvar".
+  regvar = mrb_add_xtreg_fe_regvar(
+    regvar = regvar,
+    reg = run_obj,
+    opts_df = opts_df,
+    xtvar = xtvar,
+    dat = dat
+  )
+
   depvar = regvar$cterm[regvar$role == "dep"]
 
   # 5. Data Mutations & Stats
   ct_cterms = unique(c(depvar, regvar$var, regvar$cterm, regvar$ia_cterm)) %>% setdiff(c("(Intercept)",""))
 
-  # NEW: Keep the full expanded dataset so make_regxvar can access generated time-series columns!
+  # Keep the full expanded dataset so make_regxvar can access generated
+  # time-series columns.
   wide_dat_full = create_cterm_cols(dat, ct_cterms, timevar=xtvar$timevar, panelvar=xtvar$panelvar, tdelta=xtvar$tdelta)
   wide_dat = wide_dat_full[, ct_cterms, drop=FALSE]
 
@@ -89,8 +101,6 @@ mrb_run_r_base_step = function(mrb, pid, with_try = isTRUE(mrb$with_try)) {
 
   # A. REGCOEF (Parsed Stata Coefficients from metaregBase runs)
   if (!is.null(stata_ct) && nrow(stata_ct) > 0) {
-    # Split all coefficient variants into separate parcels.
-    # The only naming outlier is sb, which remains stored in regcoef.
     co_all = ct_to_regcoef(stata_ct, artid = mrb$artid)
     co_parcels = regcoef_split_variant_parcels(
       co_all,
@@ -126,7 +136,9 @@ mrb_run_r_base_step = function(mrb, pid, with_try = isTRUE(mrb$with_try)) {
   # B. REGVAR (Variables with prefixes and dropping info)
   dropped_cterms = if (nrow(regcoef_main) > 0) {
     regcoef_main %>% filter(is.na(coef)) %>% pull(cterm)
-  } else { character(0) }
+  } else {
+    character(0)
+  }
 
   step_parcels$regvar = regvar %>%
     mutate(
@@ -145,7 +157,9 @@ mrb_run_r_base_step = function(mrb, pid, with_try = isTRUE(mrb$with_try)) {
     )
 
   # C. REGXVAR
-  # Pass wide_dat_full instead of dat!
+  # Absorbed fixed effects, including xtreg panel FE, are excluded inside
+  # make_regxvar(). Explicit non-factor command variables are marked as
+  # in_regcoef unless Stata reports them as dropped.
   step_parcels$regxvar = make_regxvar(step_parcels$regvar, wide_dat_full, regcoef_main)
 
   # D. REGSCALAR & REGSTRING
@@ -171,15 +185,21 @@ mrb_run_r_base_step = function(mrb, pid, with_try = isTRUE(mrb$with_try)) {
   # E. COLSTAT
   step_parcels$colstat_numeric = if (nrow(colstats$colstat_numeric) > 0) {
     colstats$colstat_numeric %>% mutate(artid = mrb$artid, variant = "sb", runid = runid, cterm = col)
-  } else { tibble() }
+  } else {
+    tibble()
+  }
 
   step_parcels$colstat_dummy = if (nrow(colstats$colstat_dummy) > 0) {
     colstats$colstat_dummy %>% mutate(artid = mrb$artid, variant = "sb", runid = runid, cterm = col)
-  } else { tibble() }
+  } else {
+    tibble()
+  }
 
   step_parcels$colstat_factor = if (nrow(colstats$colstat_factor) > 0) {
     colstats$colstat_factor %>% mutate(artid = mrb$artid, variant = "sb", runid = runid, cterm = col)
-  } else { tibble() }
+  } else {
+    tibble()
+  }
 
   # F. REG & REGSOURCE
   nobs_val = if ("N" %in% names(stats_wide)) as.numeric(stats_wide$N) else NA_real_

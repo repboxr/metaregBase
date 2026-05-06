@@ -434,6 +434,145 @@ cmdpart_to_regvar = function(cmdpart, dat, opts_df, se_info) {
   return(vi)
 }
 
+#' Add the panel fixed effect implied by xtreg, fe to regvar
+#'
+#' Stata's xtreg, fe absorbs the panel variable declared by xtset.
+#' In metaregBase this variable should already be available in xtvar$panelvar
+#' or in the reg parcel. Legacy xtreg syntax may also specify it via i() or iis().
+#' We deliberately do not infer the panel variable from the cluster variable,
+#' because Stata does not do that.
+mrb_add_xtreg_fe_regvar = function(regvar, reg, opts_df, xtvar = NULL, dat = NULL) {
+  restore.point("mrb_add_xtreg_fe_regvar")
+
+  if (is.null(reg) || NROW(reg) == 0) {
+    return(regvar)
+  }
+
+  cmd = as.character(reg$cmd[1])
+  if (!identical(cmd, "xtreg")) {
+    return(regvar)
+  }
+
+  if (is.null(opts_df) || NROW(opts_df) == 0 || !any(opts_df$opt == "fe")) {
+    return(regvar)
+  }
+
+  nonempty_chr = function(x) {
+    x = as.character(x)
+    x = x[!is.na(x) & nzchar(trimws(x))]
+    x
+  }
+
+  panelvar = character(0)
+
+  if (!is.null(xtvar) && "panelvar" %in% names(xtvar)) {
+    panelvar = nonempty_chr(xtvar$panelvar)[1]
+  }
+
+  if (length(panelvar) == 0 || is.na(panelvar)) {
+    if ("panelvar" %in% names(reg)) {
+      panelvar = nonempty_chr(reg$panelvar)[1]
+    }
+  }
+
+  if (length(panelvar) == 0 || is.na(panelvar)) {
+    panel_rows = opts_df$opt %in% c("i", "iis")
+    if (any(panel_rows)) {
+      panelvar = nonempty_chr(opts_df$opt_arg[panel_rows])[1]
+    }
+  }
+
+  if (length(panelvar) == 0 || is.na(panelvar) || !nzchar(panelvar)) {
+    msg = paste0(
+      "xtreg, fe was found but no panel variable is available from xtvar, ",
+      "reg$panelvar, or legacy i()/iis() options. Cannot add the fixed effect."
+    )
+    repbox_problem(type = "xtreg_panelvar_missing", msg = msg, fail_action = "warn")
+    return(regvar)
+  }
+
+  panel_cterm = stata_expr_to_cterm(panelvar)
+
+  already_has_fe = any(
+    regvar$role == "exo" &
+      isTRUE_VEC(regvar$absorbed_fe) &
+      regvar$cterm == panel_cterm
+  )
+
+  if (isTRUE(already_has_fe)) {
+    return(regvar)
+  }
+
+  if (!is.null(dat) && panelvar %in% names(dat)) {
+    distinct_num = dplyr::n_distinct(dat[[panelvar]], na.rm = TRUE)
+    varclass = repbox_col_class(dat[[panelvar]], distinct_num = distinct_num)
+  } else {
+    distinct_num = NA_integer_
+    varclass = NA_character_
+  }
+
+  main_pos = suppressWarnings(max(regvar$main_pos, na.rm = TRUE))
+  if (!is.finite(main_pos)) {
+    main_pos = 0L
+  }
+
+  new_row = regvar[1, , drop = FALSE]
+
+  for (col in names(new_row)) {
+    if (is.logical(new_row[[col]])) {
+      new_row[[col]] = FALSE
+    } else if (is.integer(new_row[[col]])) {
+      new_row[[col]] = NA_integer_
+    } else if (is.numeric(new_row[[col]])) {
+      new_row[[col]] = NA_real_
+    } else if (is.list(new_row[[col]])) {
+      new_row[[col]] = list(NULL)
+    } else {
+      new_row[[col]] = NA_character_
+    }
+  }
+
+  vals = list(
+    ia_expr = panelvar,
+    var_expr = panelvar,
+    var = panelvar,
+    role = "exo",
+    prefix = "",
+    option = "xtreg_fe",
+    class = "fe",
+    fe_type = "xtreg_fe",
+    is_fe = TRUE,
+    distinct_num = as.integer(distinct_num),
+    ia_num = 1L,
+    ia_pos = 1L,
+    main_pos = as.integer(main_pos + 1L),
+    ia_cterm = panel_cterm,
+    cterm = panel_cterm,
+    basevar = panel_cterm,
+    is_ia = FALSE,
+    absorbed_fe = TRUE,
+    is_factor = TRUE,
+    add_main_effects = FALSE,
+    varclass = varclass,
+    ia_distinct_num = as.numeric(distinct_num),
+    ia_type = "fe",
+    var_org_type = ifelse(is.na(varclass), "factor", varclass),
+    var_reg_type = "factor",
+    ia_reg_type = "factor"
+  )
+
+  for (nm in intersect(names(vals), names(new_row))) {
+    new_row[[nm]] = vals[[nm]]
+  }
+
+  dplyr::bind_rows(regvar, new_row)
+}
+
+isTRUE_VEC = function(x) {
+  x[is.na(x)] = FALSE
+  as.logical(x)
+}
+
 
 
 vi_add_ia_type = function(vi) {
