@@ -47,7 +47,7 @@ mrb_run_as_test = function(project_dir, run_script, navigate = FALSE, opts = mrb
     stop(paste0("The script to run ", run_script, " does not exist."))
   }
 
-  test_dir = file.path(project_dir, "test_report")
+  test_dir = file.path(project_dir, "reports")
   if (!dir.exists(test_dir)) dir.create(test_dir)
 
   outfile = file.path(test_dir, "test_report.Rmd")

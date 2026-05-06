@@ -143,6 +143,7 @@ mrb_make_regcheck_parcel = function(
 
     dplyr::tibble(
       runid = as.integer(pid),
+      cmd = run_cmd,
       reg_ok = reg_ok,
       so_did_run = so_did_run,
       sb_did_run = sb_did_run,
