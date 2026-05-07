@@ -27,6 +27,7 @@ example = function() {
 mrb_run_r_base_step = function(mrb, pid, with_try = isTRUE(mrb$with_try)) {
   restore.point("mrb_run_r_base_step")
   if (with_try) {
+    restore.point("mrb_run_r_base_step_with_try")
     res = repboxUtils::try_catch_repbox_problems(mrb_run_r_base_step(mrb,pid, with_try=FALSE),project_dir = mrb$project_dir,runid = pid,msg_prefix = "mrb_run_r_base_step: ", err_val=NULL)
     return(res$value)
   }
@@ -366,15 +367,19 @@ mrb_make_r_base_parcels = function(mrb, save=TRUE, is_partial_run = isTRUE(mrb$i
   mrb$parcels = repdb_load_parcels(mrb$project_dir, c("stata_file", "stata_cmd"), parcels = mrb$parcels)
   run_df = mrb$drf$run_df
 
-  regsource = parcels$reg %>%
-    select(runid) %>%
-    left_join(run_df %>% select(runid, file_path, line), by="runid") %>%
-    left_join(mrb$parcels$stata_cmd %>% select(file_path, line, code_line_start=orgline_start, code_line_end = orgline_end), by = c("file_path", "line")) %>%
-    left_join(mrb$parcels$stata_file, by="file_path") %>%
-    rename(script_path = file_path, script_name = file_name,script_type = file_type) %>%
-    mutate(script_file = basename(script_path))
+  if (NCOL(parcels$reg)>0 & !is.null(parcels$reg)) {
+    regsource = parcels$reg %>%
+      select(runid) %>%
+      left_join(run_df %>% select(runid, file_path, line), by="runid") %>%
+      left_join(mrb$parcels$stata_cmd %>% select(file_path, line, code_line_start=orgline_start, code_line_end = orgline_end), by = c("file_path", "line")) %>%
+      left_join(mrb$parcels$stata_file, by="file_path") %>%
+      rename(script_path = file_path, script_name = file_name,script_type = file_type) %>%
+      mutate(script_file = basename(script_path))
 
-  parcels$regsource = regsource
+    parcels$regsource = regsource
+  } else {
+    parcels$regsource = tibble()
+  }
 
   if (save) {
     repdb_dir = file.path(mrb$project_dir, "repdb")

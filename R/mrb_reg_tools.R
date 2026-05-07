@@ -224,6 +224,7 @@ cmdpart_expand_vars = function(cmdpart, data_cols) {
   expanded_list = lapply(seq_len(nrow(v_df)), function(i) {
     row_data = v_df[i, ]
     expanded_content = expand_stata_var_patterns(row_data$content, data_cols, unlist=TRUE, uses_xi=uses_xi)
+    expanded_content = expanded_content[expanded_content!=""]
 
     # If the pattern expanded into multiple columns, replicate the row
     if (length(expanded_content) > 1) {
@@ -234,6 +235,7 @@ cmdpart_expand_vars = function(cmdpart, data_cols) {
       row_data$content = expanded_content
       return(row_data)
     } else {
+      repbox_problem(paste0("Variable expansion for Stata term ",  row_data$content, " had no match in data columns."), type="empty_term_expand",fail_action = "msg")
       return(row_data[0, ])
     }
   })
@@ -249,6 +251,8 @@ cmdpart_expand_vars = function(cmdpart, data_cols) {
   # Rebind and sort safely
   res = bind_rows(non_v_df, expanded_v_df) %>%
     arrange(runid, parent, part, counter)
+
+  # If some
 
   return(res)
 }

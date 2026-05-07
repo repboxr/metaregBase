@@ -279,7 +279,7 @@ create_cterm_col = function(dat, cterm, timevar=NA, panelvar=NA, tdelta=NA, chec
     # Unfortunately Stata also allows variable name abbreviations in formulas
     # E.g. regress gdp_ger infl_germany
     # would work if there is a column gdp_germany which will be used for gdp_ger
-    if (check.abbreviation) {
+    if (check.abbreviation && nzchar(cterm)) {
       abbr.ind = which(startsWith(colnames(dat), cterm))
       if (length(abbr.ind) > 0) {
         col = colnames(dat)[abbr.ind[1]]

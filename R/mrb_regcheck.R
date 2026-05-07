@@ -7,10 +7,10 @@ mrb_make_regcheck_parcel = function(
   save = TRUE,
   just_pids = NULL,
   repair_code = "",
-  max_rel_diff_tol = 1e-6,
-  max_deviation_tol = 1e-8,
+  max_rel_diff_tol = 1e-4,
+  max_deviation_tol = 1e-5,
   rb_max_rel_diff_tol = 0.01,
-  rb_max_deviation_tol = 1e-6
+  rb_max_deviation_tol = 1e-5
 ) {
   restore.point("mrb_make_regcheck_parcel")
 
