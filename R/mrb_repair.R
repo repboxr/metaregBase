@@ -56,10 +56,12 @@ mrb_get_to_repair_runids = function(mrb, parcels=mrb$parcels) {
     return(NULL)
   }
   reg = parcels$reg
-  if (!is.null(reg)) {
-    regcheck = left_join(regcheck, reg %>% select(cmd, runid), by="runid")
-  } else {
-    regcheck$cmd = NA
+  if (!has_col(regcheck, "cmd") & NROW(regcheck)>0) {
+    if (!is.null(reg)) {
+      regcheck = left_join(regcheck, reg %>% select(cmd, runid), by="runid")
+    } else {
+      regcheck$cmd = ""
+    }
   }
   regcheck$cmd = na.val(regcheck$cmd, "")
 
