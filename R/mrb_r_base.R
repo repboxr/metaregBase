@@ -235,7 +235,6 @@ mrb_run_r_base_step = function(mrb, pid, with_try = isTRUE(mrb$with_try)) {
   return(step_parcels)
 }
 
-
 #' Extract Stata metaregBase results and create corresponding metaregBase parcels
 mrb_run_r_base = function(mrb, just_pids=NULL, make_parcels=TRUE) {
   restore.point("mrb_run_r")
@@ -260,10 +259,6 @@ mrb_run_r_base = function(mrb, just_pids=NULL, make_parcels=TRUE) {
 
   mrb = mrb_agg_stata(mrb, skip_if_has = TRUE)
 
-  # Load original reproduction results (so variant) directly from DRF
-  regtab_file = file.path(mrb$project_dir, "repbox/stata/regtab.Rds")
-  mrb$regtab_so = tryCatch(readRDS(regtab_file), error = function(e) NULL)
-
   all_step_parcels = list()
 
   cat("\nmrb_r_base processing runids: ")
@@ -282,6 +277,7 @@ mrb_run_r_base = function(mrb, just_pids=NULL, make_parcels=TRUE) {
   mrb
 }
 
+# The step parcels are generated in mrb_r
 # The step parcels are generated in mrb_r
 mrb_make_r_base_parcels = function(mrb, save=TRUE, is_partial_run = isTRUE(mrb$is_partial_run)) {
   restore.point("mrb_make_r_base_parcels")
@@ -304,7 +300,7 @@ mrb_make_r_base_parcels = function(mrb, save=TRUE, is_partial_run = isTRUE(mrb$i
     mrb$parcels = repdb_load_parcels(
       mrb$project_dir,
       c(
-        "reg", "regcoef", "regcoef_so", "regvar", "regxvar",
+        "reg", "regcoef", "regvar", "regxvar",
         "colstat_numeric", "colstat_dummy", "colstat_factor",
         "colinfo", "regscalar", "regstring",
         extra_regcoef_fields
@@ -341,9 +337,9 @@ mrb_make_r_base_parcels = function(mrb, save=TRUE, is_partial_run = isTRUE(mrb$i
   # reg
   parcels$reg = combine_steps("reg")
 
-  # Coefs & Variables
+  # Coefs and variables. regcoef_so is intentionally not generated here.
+  # It is generated independently by mrb_make_so_parcels().
   parcels$regcoef = combine_steps("regcoef")
-  parcels$regcoef_so = combine_steps("regcoef_so")
 
   for (field in extra_regcoef_fields) {
     parcels[[field]] = combine_steps(field)
@@ -359,7 +355,7 @@ mrb_make_r_base_parcels = function(mrb, save=TRUE, is_partial_run = isTRUE(mrb$i
 
   parcels$colinfo = combine_steps("colinfo")
 
-  # Scalars & Macros
+  # Scalars and Macros
   parcels$regscalar = combine_steps("regscalar")
   parcels$regstring = combine_steps("regstring")
 

@@ -23,7 +23,9 @@ mrb_make_regcheck_parcel = function(
   pids = unique(c(
     if (!is.null(parcels$reg)) parcels$reg$runid else integer(),
     if (!is.null(parcels$reg_rb)) parcels$reg_rb$runid else integer(),
+    if (!is.null(parcels$regcoef)) parcels$regcoef$runid else integer(),
     if (!is.null(parcels$regcoef_so)) parcels$regcoef_so$runid else integer(),
+    if (!is.null(parcels$regcoef_rb)) parcels$regcoef_rb$runid else integer(),
     if (!is.null(mrb$drf$pids)) mrb$drf$pids else integer()
   ))
 
@@ -33,18 +35,46 @@ mrb_make_regcheck_parcel = function(
     pids = intersect(pids, just_pids)
   }
 
-  pid = pids[1]
+  run_df = mrb$drf$run_df
+
+  get_run_cmd = function(pid) {
+    cmd = ""
+
+    if (!is.null(parcels$reg) && "cmd" %in% names(parcels$reg) && pid %in% parcels$reg$runid) {
+      reg_row = parcels$reg[parcels$reg$runid == pid, , drop = FALSE][1, ]
+      cmd = as.character(reg_row$cmd[1])
+      if (!is.na(cmd) && nzchar(cmd)) {
+        return(cmd)
+      }
+    }
+
+    if (!is.null(parcels$reg_rb) && "cmd" %in% names(parcels$reg_rb) && pid %in% parcels$reg_rb$runid) {
+      reg_row = parcels$reg_rb[parcels$reg_rb$runid == pid, , drop = FALSE][1, ]
+      cmd = as.character(reg_row$cmd[1])
+      if (!is.na(cmd) && nzchar(cmd)) {
+        return(cmd)
+      }
+    }
+
+    if (!is.null(run_df) && "cmd" %in% names(run_df) && pid %in% run_df$runid) {
+      run_row = run_df[run_df$runid == pid, , drop = FALSE][1, ]
+      cmd = as.character(run_row$cmd[1])
+      if (!is.na(cmd) && nzchar(cmd)) {
+        return(cmd)
+      }
+    }
+
+    ""
+  }
 
   res_li = lapply(pids, function(pid) {
     so_did_run = !is.null(parcels$regcoef_so) && pid %in% parcels$regcoef_so$runid
-    sb_did_run = !is.null(parcels$reg) && pid %in% parcels$reg$runid
 
-    run_cmd = ""
-    if (!is.null(parcels$reg) && "cmd" %in% names(parcels$reg) && pid %in% parcels$reg$runid) {
-      reg_row = parcels$reg[parcels$reg$runid == pid, , drop = FALSE][1, ]
-      run_cmd = as.character(reg_row$cmd[1])
-      if (is.na(run_cmd)) run_cmd = ""
-    }
+    has_sb_coef = !is.null(parcels$regcoef) && pid %in% parcels$regcoef$runid
+    has_sb_reg = !is.null(parcels$reg) && pid %in% parcels$reg$runid
+    sb_did_run = has_sb_coef || has_sb_reg
+
+    run_cmd = get_run_cmd(pid)
 
     rb_did_run = FALSE
     error_msg = ""
@@ -56,6 +86,8 @@ mrb_make_regcheck_parcel = function(
         error_msg = as.character(rb_row$error_msg[1])
       }
     }
+
+    has_rb_coef = !is.null(parcels$regcoef_rb) && pid %in% parcels$regcoef_rb$runid
 
     sb_so_identical = NA
     sb_so_coef_same = NA
@@ -75,7 +107,7 @@ mrb_make_regcheck_parcel = function(
     problem = ""
     comment = ""
 
-    if (sb_did_run && so_did_run) {
+    if (has_sb_coef && so_did_run) {
       co_sb = parcels$regcoef[parcels$regcoef$runid == pid, , drop = FALSE]
       co_so = parcels$regcoef_so[parcels$regcoef_so$runid == pid, , drop = FALSE]
 
@@ -99,7 +131,7 @@ mrb_make_regcheck_parcel = function(
       sb_so_se_max_rel = ev_so$se_max_rel
     }
 
-    if (sb_did_run && rb_did_run) {
+    if (has_sb_coef && rb_did_run && has_rb_coef) {
       co_sb = parcels$regcoef[parcels$regcoef$runid == pid, , drop = FALSE]
       co_rb = parcels$regcoef_rb[parcels$regcoef_rb$runid == pid, , drop = FALSE]
 
@@ -120,6 +152,8 @@ mrb_make_regcheck_parcel = function(
 
     if (!rb_did_run & !sb_did_run & !so_did_run) {
       problem = "All reproductions failed: so, sb and rb"
+    } else if (so_did_run & !sb_did_run & !rb_did_run) {
+      problem = "Original Stata reproduction succeeded, but metaregBase reproductions failed: sb and rb"
     } else if (!sb_did_run & !rb_did_run) {
       problem = "metaregBase reproductions failed: sb and rb"
     } else if (!rb_did_run) {
@@ -128,6 +162,10 @@ mrb_make_regcheck_parcel = function(
       problem = "Stata base sb replication failed, but rb did run."
     } else if (!so_did_run) {
       problem = "Original Stata reproduction results missing."
+    } else if (sb_did_run & !has_sb_coef) {
+      problem = "Stata base sb metadata exists, but sb coefficients are missing."
+    } else if (rb_did_run & !has_rb_coef) {
+      problem = "R replication rb metadata exists, but rb coefficients are missing."
     } else if (isTRUE(!rb_sb_coef_same)) {
       problem = "R and Stata base coefficients differ by > tolerance."
     } else if (isTRUE(!sb_so_identical)) {
@@ -137,6 +175,8 @@ mrb_make_regcheck_parcel = function(
     reg_ok = isTRUE(so_did_run) &&
       isTRUE(sb_did_run) &&
       isTRUE(rb_did_run) &&
+      isTRUE(has_sb_coef) &&
+      isTRUE(has_rb_coef) &&
       isTRUE(sb_so_identical) &&
       isTRUE(rb_sb_coef_same) &&
       isTRUE(rb_sb_se_same)

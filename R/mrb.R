@@ -13,17 +13,29 @@ example = function() {
 
 mrb_run_all = function(project_dir, drf=repboxDRF::drf_load(project_dir), repair_failed=FALSE) {
   restore.point("mrb_run_all")
+
   mrb = mrb_init(project_dir, drf=drf)
+
+  # Original Stata reproduction coefficients are independent input evidence.
+  # Generate them before the metaregBase sb/rb pipeline, so they survive even
+  # if mrb_run_r_base_step fails for some runids.
+  mrb = mrb_make_so_parcels(mrb)
+
   mrb = mrb_full_stata_script(mrb)
+
   # removes previous mrb regression output files
   mrb_clear_stata_reg_out(project_dir)
+
   mrb = mrb_run_stata_script(mrb)
   mrb = mrb_agg_stata(mrb)
   mrb = mrb_run_r_base(mrb)
   mrb = mrb_run_r_reg(mrb)
   mrb = mrb_make_regcheck_parcel(mrb)
-  if (repair_failed)
-    mrb = mrb_repair_failed_runs(mrb)
+
+  if (repair_failed) {
+    mrb = mrb_repair_failed_runs(mrb=mrb)
+  }
+
   mrb
 }
 
