@@ -33,6 +33,8 @@ mrb_run_r_base_step = function(mrb, pid, with_try = isTRUE(mrb$with_try)) {
   }
 
 
+
+
   project_dir = mrb$project_dir
   runid = pid
 
@@ -41,6 +43,12 @@ mrb_run_r_base_step = function(mrb, pid, with_try = isTRUE(mrb$with_try)) {
   if (NROW(xtvar)==0) {
     xtvar = list(timevar=NA, panelvar=NA, tdelta=NA_integer_)
   }
+
+  # 0. Load Data & Expand Syntax
+  dat = repboxDRF::drf_get_data(pid, drf = mrb$drf)
+
+  # NULL means problem in data loading
+  if (is.null(dat)) return(list())
 
 
   # 1. Base Components
@@ -56,8 +64,7 @@ mrb_run_r_base_step = function(mrb, pid, with_try = isTRUE(mrb$with_try)) {
   stata_scalars = if (!is.null(mrb$stata_scalars)) mrb$stata_scalars %>% filter(runid == pid) else NULL
   stata_macros = if (!is.null(mrb$stata_macros)) mrb$stata_macros %>% filter(runid == pid) else NULL
 
-  # 3. Load Data & Expand Syntax
-  dat = repboxDRF::drf_get_data(pid, drf = mrb$drf)
+
   org_dat = dat
   cmdpart = cmdpart_expand_vars(cmdpart, colnames(dat))
 

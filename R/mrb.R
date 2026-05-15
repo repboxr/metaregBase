@@ -11,7 +11,7 @@ example = function() {
   drf = drf_load(project_dir)
 }
 
-mrb_run_all = function(project_dir, drf=repboxDRF::drf_load(project_dir), repair_failed=FALSE) {
+mrb_run_all = function(project_dir, drf=repboxDRF::drf_load(project_dir,apply_caches = FALSE), repair_failed=FALSE) {
   restore.point("mrb_run_all")
 
   mrb = mrb_init(project_dir, drf=drf)
@@ -23,10 +23,15 @@ mrb_run_all = function(project_dir, drf=repboxDRF::drf_load(project_dir), repair
 
   mrb = mrb_full_stata_script(mrb)
 
+
   # removes previous mrb regression output files
   mrb_clear_stata_reg_out(project_dir)
 
   mrb = mrb_run_stata_script(mrb)
+  # The Stata script can create new DRF cache files, e.g. after xi commands.
+  mrb$drf = repboxDRF:::drf_apply_caches(mrb$drf)
+
+
   mrb = mrb_agg_stata(mrb)
   mrb = mrb_run_r_base(mrb)
   mrb = mrb_run_r_reg(mrb)
