@@ -23,6 +23,7 @@ mrb_run_stata_script = function(mrb, do_file = mrb$stata_do_file) {
   }
   library(repboxStata)
   run_stata_do(do_file, nostop = FALSE)
+  #run_stata_do(do_file, nostop = TRUE)
   mrb
 }
 

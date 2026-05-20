@@ -14,6 +14,7 @@ R/mrb_regxvar.R
 R/mrb_repair.R
 R/mrb_r_reg.R
 R/mrb_se.R
+R/mrb_so.R
 R/mrb_stata.R
 R/mrb_test_code_path.R
 R/mrb_test_coef.R
