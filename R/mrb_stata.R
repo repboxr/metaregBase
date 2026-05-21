@@ -16,13 +16,13 @@ example = function() {
 }
 
 
-mrb_run_stata_script = function(mrb, do_file = mrb$stata_do_file) {
+mrb_run_stata_script = function(mrb, do_file = mrb$stata_do_file, nostop=TRUE) {
   restore.point("mrb_run_stata_script")
   if (is.null(do_file) | !file.exists(do_file)) {
     stop("No existing do file specified.")
   }
   library(repboxStata)
-  run_stata_do(do_file, nostop = FALSE)
+  run_stata_do(do_file, nostop = nostop)
   #run_stata_do(do_file, nostop = TRUE)
   mrb
 }

@@ -14,7 +14,7 @@ example = function() {
 #' regression quietly, keeps exactly the estimation sample `e(sample)`, and saves it.
 #' It then forces the R reproduction to load this exact cache, sidestepping R
 #' data translation bugs.
-mrb_repair_failed_runs = function(project_dir = mrb$project_dir, mrb=NULL) {
+mrb_repair_failed_runs = function(project_dir = mrb$project_dir, mrb=NULL, max_reg=10) {
   restore.point("mrb_repair_failed_runs")
 
   if (is.null(mrb)) {
@@ -24,6 +24,9 @@ mrb_repair_failed_runs = function(project_dir = mrb$project_dir, mrb=NULL) {
   drf_clear_mcache()
 
   failed_pids = mrb_get_to_repair_runids(mrb=mrb)
+  if (!is.null(max_reg)) {
+    failed_pids = head(failed_pids, max_reg)
+  }
   if (length(failed_pids) == 0) {
     cat("\nNo failed runs to repair.\n")
     return(mrb)
@@ -71,7 +74,7 @@ mrb_get_to_repair_runids = function(mrb, parcels=mrb$parcels) {
     # repair if sb and rb coefs are different
     # suggests wrong data set, unless we have an R
     # command known to not match coefs
-    mutate(do_repair = do_repair | (!rb_sb_coef_same & !(has.substr(cmd,"logit")|has.substr(cmd, "probit")) )) %>%
+    mutate(do_repair = do_repair | is.true(!rb_sb_coef_same & !(has.substr(cmd,"logit")|has.substr(cmd, "probit")) )) %>%
     # only repair commands that have an r translation
     mutate(do_repair = do_repair & (stata_reg_cmd_has_r_trans(cmd) | cmd==""))
 
