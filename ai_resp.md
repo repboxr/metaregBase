@@ -1,638 +1,450 @@
-Below are the proposed changes for the architecture we discussed.
+An excellent analysis of the issues. There are two primary problems addressed here:
 
-Main effects:
+1. **Incorrect Factor Coercion for Continuous Interaction Variables (`runid=10`)**
+   In `cmdpart_to_regvar`, the presence of a `#` in an interaction expression triggered `has.substr(ia_expr, "#") ~ "#"`, which incorrectly coerced any variable (like `trend`) inside an interaction into a fixed-effect factor. This caused R to erroneously expand continuous interaction terms (like `goodid#trend`) into hundreds of discrete factor levels (`goodid=3#trend=1`, `...#trend=2`, etc.) which completely mismatched the regression specifications in Stata.
 
-1. New top-level `mrb_make_so_parcels()` creates `regcoef_so` directly from `repbox/stata/regtab.Rds`.
-2. `mrb_run_all()` calls it before the metaregBase Stata/R pipeline.
-3. `mrb_run_r_base()` no longer owns original `so` generation.
-4. `mrb_make_r_base_parcels()` no longer writes `regcoef_so`, so failed base steps cannot erase independently generated `so` results.
-5. `mrb_make_regcheck_parcel()` explicitly includes `so`-only runs and uses `drf$run_df` as a fallback for `cmd`.
+2. **Inaccurate and Slow Re-Calculation of `e(...)` Variables (`runid=16`)**
+   Stata commands translated to R tried fitting an implicit linear model `lm()` inside `stata2r` merely to compute variables like `e(rmse)`. This causes translations to fail or produce wildly mismatched values for models like `xtreg` or `ivregress`. By leveraging your suggested technique, we can completely remove the `lm()` approximation. Instead, we can inject Stata code to explicitly export `e()` and `r()` scalars for dependent commands, and dynamically load them into R's `stata2r_env` execution environment when running the data manipulation script. 
 
-!MODIFICATION new mrb_so.R
-scope = "file"
-file = "/home/rstudio/repbox/metaregBase/R/mrb_so.R"
-description = "Add top-level generation of original Stata so coefficient parcels independently of mrb_run_r_base_step."
------------------------------------------------------------------------------------------------------------------------
+Here are the required code modifications.
 
-```r
-# Original Stata reproduction parcels
-#
-# These parcels are generated from the original repbox Stata reproduction
-# results, not from the metaregBase sb/rb reconstruction pipeline.
-#
-# For now we only create regcoef_so. We deliberately do not create reg or
-# reg_so rows, because the reg parcel represents standardized metaregBase
-# regression metadata and much of that information may be unavailable when
-# only the original Stata coefficient table exists.
-
-mrb_make_so_parcels = function(
-  mrb,
-  save = TRUE,
-  just_pids = NULL,
-  regtab_file = file.path(mrb$project_dir, "repbox/stata/regtab.Rds"),
-  variant = "so"
-) {
-  restore.point("mrb_make_so_parcels")
-
-  if (is.null(mrb$artid)) {
-    mrb$artid = basename(mrb$project_dir)
-  }
-
-  if (!file.exists(regtab_file)) {
-    mrb$regtab_so = NULL
-    mrb$regcoef_so = tibble::tibble()
-
-    if (save) {
-      repboxDB::repdb_save_parcels(
-        list(regcoef_so = mrb$regcoef_so),
-        file.path(mrb$project_dir, "repdb"),
-        check = TRUE
-      )
-    }
-
-    mrb$parcels$regcoef_so = mrb$regcoef_so
-    return(mrb)
-  }
-
-  regtab_so = readRDS(regtab_file)
-
-  if (!is.null(just_pids) && NROW(regtab_so) > 0 && "runid" %in% names(regtab_so)) {
-    regtab_so = regtab_so[regtab_so$runid %in% just_pids, , drop = FALSE]
-  }
-
-  regcoef_so = mrb_regtab_so_to_regcoef_so(
-    regtab_so = regtab_so,
-    artid = mrb$artid,
-    variant = variant
-  )
-
-  if (!is.null(just_pids)) {
-    mrb$parcels = repboxDB::repdb_load_parcels(
-      mrb$project_dir,
-      "regcoef_so",
-      parcels = mrb$parcels
-    )
-
-    old_regcoef_so = mrb$parcels$regcoef_so
-    if (!is.null(old_regcoef_so) && NROW(old_regcoef_so) > 0) {
-      old_regcoef_so = old_regcoef_so[!old_regcoef_so$runid %in% just_pids, , drop = FALSE]
-      regcoef_so = dplyr::bind_rows(old_regcoef_so, regcoef_so)
-    }
-  }
-
-  if (NROW(regcoef_so) > 0) {
-    regcoef_so = regcoef_so %>%
-      dplyr::arrange(runid, variant, eq, cterm)
-  }
-
-  mrb$regtab_so = regtab_so
-  mrb$regcoef_so = regcoef_so
-  mrb$parcels$regcoef_so = regcoef_so
-
-  if (save) {
-    repboxDB::repdb_save_parcels(
-      list(regcoef_so = regcoef_so),
-      file.path(mrb$project_dir, "repdb"),
-      check = TRUE
-    )
-  }
-
-  mrb
-}
-
-
-mrb_regtab_so_to_regcoef_so = function(regtab_so, artid = NULL, variant = "so") {
-  restore.point("mrb_regtab_so_to_regcoef_so")
-
-  if (is.null(regtab_so) || NROW(regtab_so) == 0) {
-    return(tibble::tibble())
-  }
-
-  if (!"runid" %in% names(regtab_so)) {
-    stop("Cannot create regcoef_so because regtab_so has no runid column.")
-  }
-
-  if (!"ct" %in% names(regtab_so)) {
-    stop("Cannot create regcoef_so because regtab_so has no ct column.")
-  }
-
-  has_ct = !vapply(regtab_so$ct, is.null, logical(1))
-  if (!any(has_ct)) {
-    return(tibble::tibble())
-  }
-
-  rows = which(has_ct)
-
-  li = lapply(rows, function(row) {
-    ct = regtab_so$ct[[row]]
-
-    if (is.null(ct) || NROW(ct) == 0) {
-      return(tibble::tibble())
-    }
-
-    ct = tibble::as_tibble(ct)
-
-    if (!"var" %in% names(ct)) {
-      stop(paste0("Cannot create regcoef_so for runid ", regtab_so$runid[[row]], " because ct has no var column."))
-    }
-
-    if (!"label" %in% names(ct)) {
-      ct$label = ""
-    }
-
-    ct$runid = as.integer(regtab_so$runid[[row]])
-
-    res = ct_to_regcoef(
-      ct = ct,
-      lang = "stata",
-      variant = variant,
-      artid = artid
-    )
-
-    if (is.null(res)) {
-      return(tibble::tibble())
-    }
-
-    res
-  })
-
-  dplyr::bind_rows(li)
-}
-```
-
-!END_MODIFICATION new mrb_so.R
-
-!MODIFICATION mrb_run_all
+!MODIFICATION scmd_estimation_effects in stata2r/R/t_estimation_cmd.R
 scope = "function"
-file = "/home/rstudio/repbox/metaregBase/R/mrb.R"
-function_name = "mrb_run_all"
-description = "Call mrb_make_so_parcels before the metaregBase sb/rb pipeline so original Stata coefficients are available independently."
-------------------------------------------------------------------------------------------------------------------------------------------
-
+file = "stata2r/R/t_estimation_cmd.R"
+function_name = "scmd_estimation_effects"
+description = "Remove lm fitting because e() values will be loaded from actual Stata output."
+---
 ```r
-mrb_run_all = function(project_dir, drf=repboxDRF::drf_load(project_dir), repair_failed=FALSE) {
-  restore.point("mrb_run_all")
+scmd_estimation_effects = function(data, dep_var, model_vars, needed_e, r_if_cond = NA_character_, estimator = "regress", formula_terms = character(0)) {
+  restore.point("scmd_estimation_effects")
 
-  mrb = mrb_init(project_dir, drf=drf)
-
-  # Original Stata reproduction coefficients are independent input evidence.
-  # Generate them before the metaregBase sb/rb pipeline, so they survive even
-  # if mrb_run_r_base_step fails for some runids.
-  mrb = mrb_make_so_parcels(mrb)
-
-  mrb = mrb_full_stata_script(mrb)
-
-  # removes previous mrb regression output files
-  mrb_clear_stata_reg_out(project_dir)
-
-  mrb = mrb_run_stata_script(mrb)
-  mrb = mrb_agg_stata(mrb)
-  mrb = mrb_run_r_base(mrb)
-  mrb = mrb_run_r_reg(mrb)
-  mrb = mrb_make_regcheck_parcel(mrb)
-
-  if (repair_failed) {
-    mrb = mrb_repair_failed_runs(mrb=mrb)
+  mask = rep(TRUE, nrow(data))
+  if (!is.na(r_if_cond) && r_if_cond != "") {
+    mask = mask & s2r_eval_cond(data, r_if_cond, envir = parent.frame())
   }
 
-  mrb
-}
-```
-
-!END_MODIFICATION mrb_run_all
-
-!MODIFICATION mrb_run_r_base
-scope = "function"
-file = "/home/rstudio/repbox/metaregBase/R/mrb_r_base.R"
-function_name = "mrb_run_r_base"
-description = "Remove ownership of original so parcel generation from mrb_run_r_base."
---------------------------------------------------------------------------------------
-
-```r
-#' Extract Stata metaregBase results and create corresponding metaregBase parcels
-mrb_run_r_base = function(mrb, just_pids=NULL, make_parcels=TRUE) {
-  restore.point("mrb_run_r")
-
-  mrb$artid = basename(mrb$project_dir)
-  mrb$parcels = repboxDB::repdb_load_parcels(mrb$project_dir, c("reg_cmdpart", "xtvar"))
-
-  pids = mrb$drf$pids
-  if (length(pids) == 0) {
-    cat("\nNo pids to process.\n")
-    return(mrb)
-  }
-
-  all_pids = pids
-  if (!is.null(just_pids)) {
-    pids = just_pids
-    mrb$is_partial_run = TRUE
-    mrb$partial_pids = just_pids
+  dep_actual = expand_varlist(dep_var, names(data))
+  if (length(dep_actual) > 0) {
+    dep_actual = dep_actual[1]
   } else {
-    mrb$is_partial_run = FALSE
+    dep_actual = character(0)
   }
 
-  mrb = mrb_agg_stata(mrb, skip_if_has = TRUE)
-
-  all_step_parcels = list()
-
-  cat("\nmrb_r_base processing runids: ")
-  for (pid in pids) {
-    cat(paste0(pid," "))
-    step_parcels = mrb_run_r_base_step(mrb, pid)
-    all_step_parcels[[as.character(pid)]] = step_parcels
+  model_vars_actual = character(0)
+  if (length(model_vars) > 0) {
+    model_vars_actual = unlist(lapply(model_vars, function(v) {
+      expanded = expand_varlist(v, names(data))
+      if (length(expanded) > 0) {
+        expanded
+      } else {
+        character(0)
+      }
+    }))
   }
-  cat("\n")
+  model_vars_actual = unique(model_vars_actual)
 
-  mrb$all_step_parcels = all_step_parcels
-  if (make_parcels) {
-    mrb = mrb_make_r_base_parcels(mrb)
+  all_vars = unique(c(dep_actual, model_vars_actual))
+  if (length(all_vars) > 0) {
+    cc_mask = stats::complete.cases(data[, all_vars, drop = FALSE])
+  } else {
+    cc_mask = rep(TRUE, nrow(data))
   }
 
+  e_sample = as.integer(mask & cc_mask)
+  res = list(e_sample = e_sample)
+
+  if ("e(N)" %in% needed_e) {
+    res$e_N = sum(e_sample)
+  }
+
+  # Note: we no longer try to fit lm() here to compute e(rmse), e(r2), etc.
+  # The true e() values are extracted from Stata and loaded dynamically 
+  # via the drf_get_data R pipeline.
+  
+  return(res)
+}
+```
+!END_MODIFICATION scmd_estimation_effects in stata2r/R/t_estimation_cmd.R
+
+
+!MODIFICATION drf_code_stata_export_deps in repboxDRF/R/drf_stata_code.R
+scope = "function"
+file = "repboxDRF/R/drf_stata_code.R"
+insert_bottom = true
+description = "Add function to export Stata e() and r() dependencies."
+---
+```r
+drf_code_stata_export_deps = function(code_df, drf) {
+  restore.point("drf_code_stata_export_deps")
+  
+  if (is.null(drf$dep_df) || NROW(drf$dep_df) == 0) return(code_df)
+  
+  dep_df = drf$dep_df %>% dplyr::filter(dep_type %in% c("e", "r"))
+  if (NROW(dep_df) == 0) return(code_df)
+  
+  source_runids = unique(dep_df$source_runid)
+  
+  export_dir = file.path(drf$project_dir, "drf", "deps_out")
+  if (!dir.exists(export_dir)) dir.create(export_dir, recursive = TRUE)
+  
+  rows = match(source_runids, code_df$runid)
+  rows = rows[!is.na(rows)]
+  
+  for (row in rows) {
+    runid = code_df$runid[row]
+    scalar_file = file.path(export_dir, paste0("scalars_", runid, ".txt"))
+    macro_file = file.path(export_dir, paste0("macros_", runid, ".txt"))
+    
+    export_code = paste0(
+      '\ncapture noisily repbox_write_reg_scalars "', scalar_file, '"\n',
+      'capture noisily repbox_write_reg_macros "', macro_file, '"\n'
+    )
+    
+    code_df$post[row] = paste0(code_df$post[row], export_code)
+  }
+  
+  return(code_df)
+}
+```
+!END_MODIFICATION drf_code_stata_export_deps in repboxDRF/R/drf_stata_code.R
+
+
+!MODIFICATION mrb_full_stata_script in metaregBase/R/mrb_stata.R
+scope = "function"
+file = "metaregBase/R/mrb_stata.R"
+function_name = "mrb_full_stata_script"
+description = "Call drf_code_stata_export_deps in mrb_full_stata_script."
+---
+```r
+mrb_full_stata_script = function(mrb, capture=TRUE) {
+  restore.point("mrb_full_stata_script")
+  run_df = mrb$drf$run_df
+
+  path_merge = c("load_natural")
+  outdir = file.path(mrb$mrb_dir, "stata_reg_out")
+
+  if (dir.exists(outdir)) {
+    old_files = list.files(outdir, full.names = TRUE)
+    if (length(old_files) > 0) file.remove(old_files)
+  } else {
+    dir.create(outdir, recursive = TRUE)
+  }
+
+  # We want to inject caches after some commands that cannot be effectively translated
+  # to R.
+  # Currently that is xi as it is hard to find the same ordering of generated
+  # dummy variables as Stata
+  cache_cmds = "xi"
+
+  code_df = repboxDRF::drf_stata_code_df(drf=mrb$drf,cache_after_cmd = cache_cmds)
+  code_df = code_df %>%
+    repboxDRF::drf_code_stata_export_deps(drf = mrb$drf) %>%
+    repboxDRF::drf_code_adapt(mrb_code_reg_stata, just_path_pos="end", run_df=run_df, outdir=outdir, capture=capture) %>%
+    repboxDRF::drf_code_stata_path_header()
+
+  script_file = file.path(mrb$mrb_dir, "stata_code/mrb_stata.do")
+  repboxDRF::drf_code_write(code_df, script_file)
+  mrb$stata_code_df = code_df
+  mrb$stata_do_file = script_file
   mrb
 }
 ```
+!END_MODIFICATION mrb_full_stata_script in metaregBase/R/mrb_stata.R
 
-!END_MODIFICATION mrb_run_r_base
 
-!MODIFICATION mrb_make_r_base_parcels
+!MODIFICATION drf_run_df_create_rcode in repboxDRF/R/drf_r_code.R
 scope = "function"
-file = "/home/rstudio/repbox/metaregBase/R/mrb_r_base.R"
-function_name = "mrb_make_r_base_parcels"
-description = "Stop mrb_run_r_base from combining or saving regcoef_so; it is now generated independently by mrb_make_so_parcels."
-----------------------------------------------------------------------------------------------------------------------------------
-
+file = "repboxDRF/R/drf_r_code.R"
+function_name = "drf_run_df_create_rcode"
+description = "Inject dynamic loading of Stata dependency scalars in the R execution path."
+---
 ```r
-# The step parcels are generated in mrb_r
-mrb_make_r_base_parcels = function(mrb, save=TRUE, is_partial_run = isTRUE(mrb$is_partial_run)) {
-  restore.point("mrb_make_r_base_parcels")
+drf_run_df_create_rcode = function(run_df=drf$run_df, runids=drf_runids(drf), scalar_code = drf$scalar_code, drf=NULL) {
+  restore.point("drf_run_df_create_rcode")
 
-  all_step_parcels = mrb$all_step_parcels
-  if (is.null(all_step_parcels)) {
-    cat("\nmrb_save_step_parcels: mrb$all_step_parcels were not yet generated. Make sure mrb_run_r_base is called beforehand.\n")
-    return(mrb)
+  if (!has_col(run_df, "rcode")) {
+    run_df$rcode = rep("", NROW(run_df))
+  }
+  if (!is.null(runids)) {
+    rows = match(runids, run_df$runid)
+  } else {
+    rows = seq_len(NROW(run_df))
+  }
+  rows = sort(unique(rows[!is.na(rows)]))
+
+  update_rows = rows
+
+  if (length(update_rows)==0) return(run_df)
+
+  stata_code = run_df$cmdline[update_rows]
+
+  stata_code = gsub("\n", " ", stata_code, fixed = TRUE)
+
+  r_df = stata2r::do_to_r(stata_code, return_df = TRUE)
+
+  translated_code = r_df$r_code
+  run_df$rcode[update_rows] = ifelse(is.na(translated_code), "", translated_code)
+
+
+  # Dynamically load exported Stata e() and r() dependencies if they exist
+  if (!is.null(drf) && !is.null(drf$dep_df)) {
+    source_runids = unique(drf$dep_df$source_runid[drf$dep_df$dep_type %in% c("e", "r")])
+    for (idx in update_rows) {
+      runid = run_df$runid[idx]
+      if (runid %in% source_runids) {
+        lines = c(
+          paste0("local({"),
+          paste0("  scalar_file = file.path(project_dir, 'drf/deps_out/scalars_", runid, ".txt')"),
+          paste0("  if (file.exists(scalar_file)) {"),
+          paste0("    lines = readLines(scalar_file, warn=FALSE)"),
+          paste0("    for (l in lines) {"),
+          paste0("      parts = strsplit(l, '=', fixed=TRUE)[[1]]"),
+          paste0("      if (length(parts) == 2) {"),
+          paste0("        vname = trimws(parts[1]); val = suppressWarnings(as.numeric(trimws(parts[2])))"),
+          paste0("        if (!is.na(val)) {"),
+          paste0("          assign(paste0('stata_e_', vname), val, envir = stata2r::stata2r_env)"),
+          paste0("          assign(paste0('stata_r_', vname), val, envir = stata2r::stata2r_env)"),
+          paste0("        }"),
+          paste0("      }"),
+          paste0("    }"),
+          paste0("  }"),
+          paste0("})")
+        )
+        run_df$rcode[idx] = paste0(run_df$rcode[idx], "\n", paste(lines, collapse="\n"))
+      }
+    }
   }
 
-  step_fields = unique(unlist(lapply(all_step_parcels, names), use.names = FALSE))
-  extra_regcoef_fields = grep("^regcoef_", step_fields, value = TRUE)
-  extra_regcoef_fields = setdiff(
-    extra_regcoef_fields,
-    c("regcoef_so", "regcoef_rb", "regcoef_diff")
-  )
-  extra_regcoef_fields = sort(extra_regcoef_fields)
 
-  if (is_partial_run) {
-    mrb$parcels = repdb_load_parcels(
-      mrb$project_dir,
-      c(
-        "reg", "regcoef", "regvar", "regxvar",
-        "colstat_numeric", "colstat_dummy", "colstat_factor",
-        "colinfo", "regscalar", "regstring",
-        extra_regcoef_fields
+  # Overwrite 'load' commands with repbox's own data loading logic
+  inds = update_rows[run_df$cmd_type[update_rows] %in% c("load")]
+
+  # Also overwrite the VERY FIRST execution row if we truncated the path at a file cache
+  if (!is.null(runids) && length(runids) > 0) {
+    first_runid = min(runids)
+    first_row = match(first_runid, run_df$runid)
+    if (!is.na(first_row) && isTRUE(run_df$has_file_cache[first_row])) {
+      inds = unique(c(inds, first_row))
+    }
+  }
+
+  if (length(inds)>0) {
+    for (idx in inds) {
+      if (isTRUE(run_df$has_file_cache[idx]) && idx == match(min(runids), run_df$runid)) {
+        drf_rel_path = paste0("cached_dta/", basename(run_df$drf_cache_file[idx]))
+      } else {
+        drf_rel_path = ifelse(run_df$is_intermediate[idx],
+                              paste0("im_data/", sub("^.*?im_data/", "", run_df$org_data_path[idx])),
+                              paste0("org_data/", run_df$found_path[idx]))
+      }
+
+      code = paste0(
+        'data = drf_load_data(project_dir, "', drf_rel_path ,'")\n',
+        'data$stata2r_original_order_idx = seq_len(nrow(data))\n',
+        'assign("has_original_order_idx", TRUE, envir = stata2r::stata2r_env)'
+      )
+      run_df$rcode[idx] = code
+    }
+  }
+  run_df$rcode = na.val(run_df$rcode, "")
+  if (NROW(scalar_code)>0) {
+    run_df = run_df %>%
+      dplyr::left_join(scalar_code %>% dplyr::select(runid, scalar_r_code), by="runid") %>%
+      dplyr::mutate(scalar_r_code = na.val(scalar_r_code, "")) %>%
+      dplyr::mutate(rcode = ifelse(rcode=="", rcode, paste0(scalar_r_code, rcode))) %>%
+      dplyr::select(-scalar_r_code)
+  }
+
+
+  run_df
+}
+```
+!END_MODIFICATION drf_run_df_create_rcode in repboxDRF/R/drf_r_code.R
+
+
+!MODIFICATION cmdpart_to_regvar in metaregBase/R/mrb_reg_tools.R
+scope = "function"
+file = "metaregBase/R/mrb_reg_tools.R"
+function_name = "cmdpart_to_regvar"
+description = "Fix fe_type logic to not coerce interacting variables to factors based on # presence."
+---
+```r
+cmdpart_to_regvar = function(cmdpart, dat, opts_df, se_info) {
+  restore.point("cmdpart_to_regvar")
+
+  # 1. Collect all terms mapped by role
+  term_list = list()
+
+  # Standard variables (dep, exo, endo, instr)
+  v_df = cmdpart %>% dplyr::filter(part == "v")
+  if (nrow(v_df) > 0) {
+    # Replace tag names with role names (depvar -> dep, others stay same)
+    v_df$role = ifelse(v_df$tag == "depvar", "dep", v_df$tag)
+    term_list[[1]] = dplyr::tibble(ia_expr = v_df$content, role = v_df$role, option = "")
+  }
+
+  # Weights
+  w_df = cmdpart %>% dplyr::filter(part == "weight_var")
+  if (nrow(w_df) > 0) {
+    term_list[[2]] = dplyr::tibble(ia_expr = w_df$content, role = "weight", option = "")
+  }
+
+  # Absorb (from reghdfe / areg)
+  absorb_opts = opts_df %>% dplyr::filter(opt %in% c("absorb", "a", "ab", "abs", "abso", "absor"))
+  if (nrow(absorb_opts) > 0) {
+    abs_vars = strsplit(shorten.spaces(paste0(absorb_opts$opt_arg, collapse = " ")), " ", fixed = TRUE)[[1]]
+    term_list[[3]] = dplyr::tibble(ia_expr = abs_vars, role = "exo", option = "absorb")
+  }
+
+  # FE (from xtreg)
+  if (any(opts_df$opt == "fe")) {
+    # xtreg assumes panelvar is already set via xtset, we'll append it later if needed,
+    # or rely on the drf run_obj panelvar injection.
+  }
+
+  # Cluster / SE
+  if (!is.null(se_info$se_args) && se_info$se_args != "") {
+    se_args_parsed = repdb_parse_se_args(se_info$se_args, as_df = TRUE)
+    cluster_vars = se_args_parsed$arg_val[startsWith(se_args_parsed$arg_name, "cluster")]
+    if (length(cluster_vars) > 0) {
+      term_list[[4]] = dplyr::tibble(ia_expr = cluster_vars, role = "cluster", option = "se")
+    }
+  }
+
+  vi = dplyr::bind_rows(term_list) %>% dplyr::mutate(main_pos = seq_len(dplyr::n()))
+
+  # 2. Process Interaction Effects and Prefixes
+  vi$is_ia = grepl("(\\|)|(#)|(\\*)", vi$ia_expr)
+  vi$var_expr = as.list(vi$ia_expr)
+
+  # Unnest interactions
+  rows = which(vi$is_ia)
+  vi$var_expr[rows] = strsplit(vi$ia_expr[rows], "(##)|(#)|(\\|)|(\\*)")
+
+  vi = vi %>%
+    tidyr::unnest(var_expr) %>%
+    dplyr::group_by(ia_expr) %>%
+    dplyr::mutate(ia_num = dplyr::n(), ia_pos = seq_len(dplyr::n())) %>%
+    dplyr::ungroup()
+
+  # Extract Prefix (L1., F., i., c., etc.) - split at LAST dot
+  prefix_start = stringi::stri_locate_last_fixed(vi$var_expr, ".")[, 1]
+  vi$prefix = ifelse(
+    is.na(prefix_start),
+    "",
+    stringi::stri_sub(vi$var_expr, 1, prefix_start - 1) %>% stringi::stri_replace_all_fixed(".", "")
+  )
+  vi$var = ifelse(is.na(prefix_start), vi$var_expr, stringi::stri_sub(vi$var_expr, prefix_start + 1))
+
+  # Normalize specific prefixes
+  vi = vi %>%
+    dplyr::mutate(prefix = dplyr::case_when(
+      startsWith(tolower(prefix), "ib") ~ paste0("b", substring(prefix, 3)),
+      TRUE ~ prefix
+    ))
+
+  # 3. Incorporate column stats info
+  cols_info = make_cols_small_info(dat)
+  vi = vi %>% dplyr::left_join(cols_info, by = c("var" = "col"))
+
+  # 4. Determine Types and Classes
+  vi = vi %>%
+    dplyr::mutate(
+      is_factor = class %in% c("character", "factor"),
+      fe_type = dplyr::case_when(
+        startsWith(tolower(prefix), "c") ~ "",
+        startsWith(tolower(prefix), "i") ~ "i",
+        startsWith(tolower(prefix), "b") ~ "b",
+        option %in% c("absorb", "fe") ~ option,
+        is_factor ~ class,
+        TRUE ~ ""
       ),
-      mrb$parcels
+      absorbed_fe = option %in% c("absorb", "fe"),
+      is_fe = fe_type != "",
+      varclass = class,
+      class = ifelse(is_fe & !is_factor, "fe", class),
+      add_main_effects = is_ia & (has.substr(ia_expr, "##") | has.substr(ia_expr, "*"))
     )
+
+  # 5. Build Canonical Terms
+  vi$ia_cterm = stata_expr_to_cterm(vi$ia_expr)
+  vi$cterm = stata_expr_to_cterm(vi$var_expr)
+  vi$basevar = stata_expr_to_cterm(vi$var)
+
+  # If a variable is xi-generated (_I...) and the cached data still carries the
+  # original Stata variable label, use that label to canonicalize the term.
+  # This keeps regvar/regxvar/R output aligned with Stata regcoef parcels.
+  var_labels = vapply(dat, function(v) {
+    lab = attr(v, "label")
+    if (is.null(lab) || length(lab) == 0 || is.na(lab[[1]])) {
+      return("")
+    }
+    as.character(lab[[1]])
+  }, character(1))
+
+  xi_rows = startsWith(vi$var, "_I")
+  if (any(xi_rows)) {
+    xi_labels = unname(var_labels[vi$var])
+    xi_has_label = xi_rows & !is.na(xi_labels) & stringi::stri_detect_fixed(xi_labels, "==")
+
+    if (any(xi_has_label)) {
+      vi$cterm[xi_has_label] = canonical.output.terms.stata.xi(
+        terms = vi$var[xi_has_label],
+        labels = xi_labels[xi_has_label]
+      )
+    }
   }
 
-  parcels = list()
-
-  combine_steps = function(field) {
-    res_list = lapply(all_step_parcels, function(x) x[[field]])
-    res_list = res_list[!sapply(res_list, is.null)]
-
-    if (length(res_list) == 0) {
-      new_data = tibble()
-    } else {
-      new_data = bind_rows(res_list)
-    }
-
-    if (isTRUE(is_partial_run) && !is.null(mrb$parcels[[field]])) {
-      old_data = mrb$parcels[[field]]
-      if (NROW(old_data) > 0 && NROW(new_data) > 0) {
-        old_kept = old_data[!old_data$runid %in% mrb$partial_pids, , drop = FALSE]
-        new_data = bind_rows(old_kept, new_data)
-      } else if (NROW(old_data) > 0 && NROW(new_data) == 0) {
-        new_data = old_data
+  # Rebuild ia_cterm from the updated component cterms so interactions with xi
+  # variables also become canonical.
+  vi = vi %>%
+    dplyr::group_by(main_pos) %>%
+    dplyr::mutate(
+      ia_cterm = {
+        if (dplyr::n() == 1) {
+          cterm
+        } else {
+          rep(
+            split_and_sort(
+              paste0(cterm, collapse = "#"),
+              split = "#",
+              k = dplyr::n()
+            )[[1]],
+            dplyr::n()
+          )
+        }
       }
-    }
+    ) %>%
+    dplyr::ungroup()
 
-    new_data
-  }
+  # basevar should refer to the underlying source variable, not the raw _I name
+  vi$basevar = stringi::stri_replace_first_regex(vi$cterm, "^.*@", "")
+  vi$basevar = stringi::stri_replace_first_regex(vi$basevar, "=.*$", "")
 
-  # reg
-  parcels$reg = combine_steps("reg")
+  vi$class = ifelse(has.substr(vi$cterm, "="), "dummy", vi$class)
 
-  # Coefs and variables. regcoef_so is intentionally not generated here.
-  # It is generated independently by mrb_make_so_parcels().
-  parcels$regcoef = combine_steps("regcoef")
+  # 6. Apply interaction types & Reg Types
+  vi = vi_add_ia_type(vi)
 
-  for (field in extra_regcoef_fields) {
-    parcels[[field]] = combine_steps(field)
-  }
-
-  parcels$regvar = combine_steps("regvar")
-  parcels$regxvar = combine_steps("regxvar")
-
-  # Column Stats
-  parcels$colstat_numeric = combine_steps("colstat_numeric")
-  parcels$colstat_dummy = combine_steps("colstat_dummy")
-  parcels$colstat_factor = combine_steps("colstat_factor")
-
-  parcels$colinfo = combine_steps("colinfo")
-
-  # Scalars and Macros
-  parcels$regscalar = combine_steps("regscalar")
-  parcels$regstring = combine_steps("regstring")
-
-  # regsource parcel is just a combination of existing parcels
-  mrb$parcels = repdb_load_parcels(mrb$project_dir, c("stata_file", "stata_cmd"), parcels = mrb$parcels)
-  run_df = mrb$drf$run_df
-
-  if (NCOL(parcels$reg)>0 & !is.null(parcels$reg)) {
-    regsource = parcels$reg %>%
-      select(runid) %>%
-      left_join(run_df %>% select(runid, file_path, line), by="runid") %>%
-      left_join(mrb$parcels$stata_cmd %>% select(file_path, line, code_line_start=orgline_start, code_line_end = orgline_end), by = c("file_path", "line")) %>%
-      left_join(mrb$parcels$stata_file, by="file_path") %>%
-      rename(script_path = file_path, script_name = file_name,script_type = file_type) %>%
-      mutate(script_file = basename(script_path))
-
-    parcels$regsource = regsource
-  } else {
-    parcels$regsource = tibble()
-  }
-
-  if (save) {
-    repdb_dir = file.path(mrb$project_dir, "repdb")
-
-    static_parcels = parcels[setdiff(names(parcels), extra_regcoef_fields)]
-    repboxDB::repdb_save_parcels(static_parcels, repdb_dir, check = TRUE)
-
-    # Dynamic variant parcels use the regcoef schema but have dynamic names,
-    # so they are saved without table-name based checking.
-    if (length(extra_regcoef_fields) > 0) {
-      extra_parcels = parcels[extra_regcoef_fields]
-      repboxDB::repdb_save_parcels(extra_parcels, repdb_dir, check = FALSE)
-    }
-  }
-
-  mrb$parcels[names(parcels)] = parcels
-  return(mrb)
-}
-```
-
-!END_MODIFICATION mrb_make_r_base_parcels
-
-!MODIFICATION mrb_make_regcheck_parcel
-scope = "function"
-file = "/home/rstudio/repbox/metaregBase/R/mrb_regcheck.R"
-function_name = "mrb_make_regcheck_parcel"
-description = "Include so-only regressions in regcheck and use drf run metadata as fallback when reg rows are missing."
------------------------------------------------------------------------------------------------------------------------
-
-```r
-#' Assemble the 'regcheck' parcel checking cross-language replication success
-#'
-#' Evaluates the success of regression outputs and maps any mismatches
-#' to a standardized `regcheck` parcel.
-mrb_make_regcheck_parcel = function(
-  mrb,
-  save = TRUE,
-  just_pids = NULL,
-  repair_code = "",
-  max_rel_diff_tol = 1e-4,
-  max_deviation_tol = 1e-5,
-  rb_max_rel_diff_tol = 0.01,
-  rb_max_deviation_tol = 1e-5
-) {
-  restore.point("mrb_make_regcheck_parcel")
-
-  mrb$parcels = parcels = repboxDB::repdb_load_parcels(
-    mrb$project_dir,
-    c("reg", "reg_rb", "regcoef", "regcoef_so", "regcoef_rb"),
-    mrb$parcels
+  vi = vi %>% dplyr::mutate(
+    var_org_type = varclass %>% change_val(c("fe", "character"), "factor"),
+    var_reg_type = class %>% change_val(c("fe", "character"), "factor") %>% change_val("logical", "dummy"),
+    ia_reg_type = ia_type %>%
+      change_val("fe", "factor") %>%
+      change_val("fe_numeric", "factor_numeric") %>%
+      change_val("fe_logical", "factor_dummy")
+  ) %>% dplyr::mutate(
+    var_reg_type = ifelse(role == "cluster", "factor", var_reg_type),
+    ia_reg_type = ifelse(role == "cluster", "factor", ia_reg_type)
   )
 
-  pids = unique(c(
-    if (!is.null(parcels$reg)) parcels$reg$runid else integer(),
-    if (!is.null(parcels$reg_rb)) parcels$reg_rb$runid else integer(),
-    if (!is.null(parcels$regcoef)) parcels$regcoef$runid else integer(),
-    if (!is.null(parcels$regcoef_so)) parcels$regcoef_so$runid else integer(),
-    if (!is.null(parcels$regcoef_rb)) parcels$regcoef_rb$runid else integer(),
-    if (!is.null(mrb$drf$pids)) mrb$drf$pids else integer()
-  ))
+  # Ensure column order is clean
+  vi = vi %>% dplyr::select(
+    ia_expr, var_expr, var, role, prefix, option, class, fe_type, is_fe,
+    distinct_num, ia_num, ia_pos, main_pos, ia_cterm, cterm, basevar, dplyr::everything()
+  )
 
-  if (length(pids) == 0) return(mrb)
-
-  if (!is.null(just_pids)) {
-    pids = intersect(pids, just_pids)
-  }
-
-  run_df = mrb$drf$run_df
-
-  get_run_cmd = function(pid) {
-    cmd = ""
-
-    if (!is.null(parcels$reg) && "cmd" %in% names(parcels$reg) && pid %in% parcels$reg$runid) {
-      reg_row = parcels$reg[parcels$reg$runid == pid, , drop = FALSE][1, ]
-      cmd = as.character(reg_row$cmd[1])
-      if (!is.na(cmd) && nzchar(cmd)) {
-        return(cmd)
-      }
-    }
-
-    if (!is.null(parcels$reg_rb) && "cmd" %in% names(parcels$reg_rb) && pid %in% parcels$reg_rb$runid) {
-      reg_row = parcels$reg_rb[parcels$reg_rb$runid == pid, , drop = FALSE][1, ]
-      cmd = as.character(reg_row$cmd[1])
-      if (!is.na(cmd) && nzchar(cmd)) {
-        return(cmd)
-      }
-    }
-
-    if (!is.null(run_df) && "cmd" %in% names(run_df) && pid %in% run_df$runid) {
-      run_row = run_df[run_df$runid == pid, , drop = FALSE][1, ]
-      cmd = as.character(run_row$cmd[1])
-      if (!is.na(cmd) && nzchar(cmd)) {
-        return(cmd)
-      }
-    }
-
-    ""
-  }
-
-  res_li = lapply(pids, function(pid) {
-    so_did_run = !is.null(parcels$regcoef_so) && pid %in% parcels$regcoef_so$runid
-
-    has_sb_coef = !is.null(parcels$regcoef) && pid %in% parcels$regcoef$runid
-    has_sb_reg = !is.null(parcels$reg) && pid %in% parcels$reg$runid
-    sb_did_run = has_sb_coef || has_sb_reg
-
-    run_cmd = get_run_cmd(pid)
-
-    rb_did_run = FALSE
-    error_msg = ""
-    if (!is.null(parcels$reg_rb) && pid %in% parcels$reg_rb$runid) {
-      rb_row = parcels$reg_rb[parcels$reg_rb$runid == pid, , drop = FALSE][1, ]
-      rb_did_run = !isTRUE(rb_row$error_in_r)
-
-      if ("error_msg" %in% names(rb_row) && !is.na(rb_row$error_msg[1])) {
-        error_msg = as.character(rb_row$error_msg[1])
-      }
-    }
-
-    has_rb_coef = !is.null(parcels$regcoef_rb) && pid %in% parcels$regcoef_rb$runid
-
-    sb_so_identical = NA
-    sb_so_coef_same = NA
-    sb_so_coef_max_dev = NA_real_
-    sb_so_coef_max_rel = NA_real_
-    sb_so_se_same = NA
-    sb_so_se_max_dev = NA_real_
-    sb_so_se_max_rel = NA_real_
-
-    rb_sb_coef_same = NA
-    rb_sb_coef_max_dev = NA_real_
-    rb_sb_coef_max_rel = NA_real_
-    rb_sb_se_same = NA
-    rb_sb_se_max_dev = NA_real_
-    rb_sb_se_max_rel = NA_real_
-
-    problem = ""
-    comment = ""
-
-    if (has_sb_coef && so_did_run) {
-      co_sb = parcels$regcoef[parcels$regcoef$runid == pid, , drop = FALSE]
-      co_so = parcels$regcoef_so[parcels$regcoef_so$runid == pid, , drop = FALSE]
-
-      diff_so = coef_diff_table(co_sb, co_so, cmd = run_cmd)
-      ev_so = mrb_regcheck_diff_eval(
-        diff_so,
-        max_rel_diff_tol = max_rel_diff_tol,
-        max_deviation_tol = max_deviation_tol
-      )
-
-      sb_so_identical = ev_so$all_same
-      sb_so_coef_same = ev_so$coef_same
-
-      # The regcheck parcel spec defines sb_so_coef_max_dev as the
-      # maximum relative coefficient deviation between sb and so.
-      sb_so_coef_max_dev = ev_so$coef_max_rel
-      sb_so_coef_max_rel = ev_so$coef_max_rel
-
-      sb_so_se_same = ev_so$se_same
-      sb_so_se_max_dev = ev_so$se_max_dev
-      sb_so_se_max_rel = ev_so$se_max_rel
-    }
-
-    if (has_sb_coef && rb_did_run && has_rb_coef) {
-      co_sb = parcels$regcoef[parcels$regcoef$runid == pid, , drop = FALSE]
-      co_rb = parcels$regcoef_rb[parcels$regcoef_rb$runid == pid, , drop = FALSE]
-
-      diff_rb = coef_diff_table(co_sb, co_rb, cmd = run_cmd)
-      ev_rb = mrb_regcheck_diff_eval(
-        diff_rb,
-        max_rel_diff_tol = rb_max_rel_diff_tol,
-        max_deviation_tol = rb_max_deviation_tol
-      )
-
-      rb_sb_coef_same = ev_rb$coef_same
-      rb_sb_coef_max_dev = ev_rb$coef_max_dev
-      rb_sb_coef_max_rel = ev_rb$coef_max_rel
-      rb_sb_se_same = ev_rb$se_same
-      rb_sb_se_max_dev = ev_rb$se_max_dev
-      rb_sb_se_max_rel = ev_rb$se_max_rel
-    }
-
-    if (!rb_did_run & !sb_did_run & !so_did_run) {
-      problem = "All reproductions failed: so, sb and rb"
-    } else if (so_did_run & !sb_did_run & !rb_did_run) {
-      problem = "Original Stata reproduction succeeded, but metaregBase reproductions failed: sb and rb"
-    } else if (!sb_did_run & !rb_did_run) {
-      problem = "metaregBase reproductions failed: sb and rb"
-    } else if (!rb_did_run) {
-      problem = paste0("R replication rb failed: ", error_msg)
-    } else if (!sb_did_run) {
-      problem = "Stata base sb replication failed, but rb did run."
-    } else if (!so_did_run) {
-      problem = "Original Stata reproduction results missing."
-    } else if (sb_did_run & !has_sb_coef) {
-      problem = "Stata base sb metadata exists, but sb coefficients are missing."
-    } else if (rb_did_run & !has_rb_coef) {
-      problem = "R replication rb metadata exists, but rb coefficients are missing."
-    } else if (isTRUE(!rb_sb_coef_same)) {
-      problem = "R and Stata base coefficients differ by > tolerance."
-    } else if (isTRUE(!sb_so_identical)) {
-      problem = "Stata base differs from Stata original."
-    }
-
-    reg_ok = isTRUE(so_did_run) &&
-      isTRUE(sb_did_run) &&
-      isTRUE(rb_did_run) &&
-      isTRUE(has_sb_coef) &&
-      isTRUE(has_rb_coef) &&
-      isTRUE(sb_so_identical) &&
-      isTRUE(rb_sb_coef_same) &&
-      isTRUE(rb_sb_se_same)
-
-    dplyr::tibble(
-      runid = as.integer(pid),
-      cmd = run_cmd,
-      reg_ok = reg_ok,
-      so_did_run = so_did_run,
-      sb_did_run = sb_did_run,
-      rb_did_run = rb_did_run,
-
-      sb_so_identical = sb_so_identical,
-      sb_so_coef_same = sb_so_coef_same,
-      sb_so_coef_max_dev = sb_so_coef_max_dev,
-      sb_so_coef_max_rel = sb_so_coef_max_rel,
-      sb_so_se_same = sb_so_se_same,
-      sb_so_se_max_dev = sb_so_se_max_dev,
-      sb_so_se_max_rel = sb_so_se_max_rel,
-
-      rb_sb_coef_same = rb_sb_coef_same,
-      rb_sb_coef_max_dev = rb_sb_coef_max_dev,
-      rb_sb_coef_max_rel = rb_sb_coef_max_rel,
-      rb_sb_se_same = rb_sb_se_same,
-      rb_sb_se_max_dev = rb_sb_se_max_dev,
-      rb_sb_se_max_rel = rb_sb_se_max_rel,
-
-      repair_code = repair_code,
-      problem = problem,
-      comment = comment
-    )
-  })
-
-  regcheck = dplyr::bind_rows(res_li)
-
-  regcheck$so_raw_did_run = regcheck$so_did_run
-  if (!is.null(mrb$regtab_so) && "runid" %in% names(mrb$regtab_so)) {
-    regcheck$so_raw_did_run = regcheck$so_raw_did_run | regcheck$runid %in% mrb$regtab_so$runid
-  }
-
-  regcheck$sb_raw_did_run = regcheck$sb_did_run
-  if (!is.null(mrb$stata_ct_sb) && "runid" %in% names(mrb$stata_ct_sb)) {
-    regcheck$sb_raw_did_run = regcheck$sb_raw_did_run | regcheck$runid %in% mrb$stata_ct_sb$runid
-  }
-
-  if (!is.null(just_pids)) {
-    parcels = repboxDB::repdb_load_parcels(mrb$project_dir, "regcheck", parcels)
-    old_regcheck = parcels$regcheck %>% anti_join(regcheck, by = "runid")
-    regcheck = bind_rows(regcheck, old_regcheck) %>% arrange(runid)
-  }
-
-  if (save) {
-    repboxDB::repdb_save_parcels(
-      list(regcheck = regcheck),
-      file.path(mrb$project_dir, "repdb"),
-      check = FALSE
-    )
-  }
-
-  mrb$parcels$regcheck = regcheck
-  return(mrb)
+  return(vi)
 }
 ```
-
-!END_MODIFICATION mrb_make_regcheck_parcel
-
-One thing I deliberately left unchanged: the `regcoef_so` block inside `mrb_run_r_base_step()`. It becomes harmless because `mrb_make_r_base_parcels()` now ignores `regcoef_so`. You can remove that block later for cleanliness, but it is not required for the architecture to work.
+!END_MODIFICATION cmdpart_to_regvar in metaregBase/R/mrb_reg_tools.R

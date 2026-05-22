@@ -14,7 +14,7 @@ mrb_print_parcels = function(project_dir=mrb$project_dir,parcel_names = c("regco
     str = paste0(str,"\n\nParcel ", p,":\n\n")
     parcel = parcels[[p]]
     if (is.null(parcel)) next
-    if (!is.null(runid)) parcel = parcel[parcel$runid==runid,]
+    if (!is.null(runid)) parcel = parcel[parcel$runid %in% runid,]
     str = paste0(str, paste0(capture.output(print(parcel, width=1000)), collapse="\n"))
 
   }
