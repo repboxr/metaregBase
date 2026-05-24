@@ -8,13 +8,132 @@ example = function() {
 }
 
 
+#' Automatically repair metaregBase R failures by caching at the point of translation errors.
+#'
+#' Identifies data translation errors on the paths of failed regressions,
+#' determines a common caching point that can serve multiple pids, generates
+#' the cache in Stata, and re-runs the R base and regression steps.
+mrb_repair_failed = function(project_dir = mrb$project_dir, mrb=NULL, max_reg=10) {
+  restore.point("mrb_repair_failed")
+
+  if (is.null(mrb)) {
+    mrb = mrb_init(project_dir)
+  }
+
+  drf_clear_mcache()
+
+  failed_pids = mrb_get_to_repair_runids(mrb=mrb)
+  if (!is.null(max_reg)) {
+    failed_pids = head(failed_pids, max_reg)
+  }
+  if (length(failed_pids) == 0) {
+    cat("\nNo failed runs to repair.\n")
+    return(mrb)
+  }
+
+  cat("\nRepair attempt by translation error caching for runids: ", paste(failed_pids, collapse=", "), "\n")
+
+  # Ensure r_err_runids is loaded/synced
+  mrb$drf = repboxDRF:::drf_sync_r_err_runids(mrb$drf)
+
+  pid = failed_pids[1]
+  for (pid in failed_pids) {
+    drf = mrb$drf
+
+    # 1. Adapt path to caches
+    drf = repboxDRF:::drf_apply_caches(drf, just_pids = pid)
+
+    cache_runid = mrb_determine_repair_cache_runid(mrb, pid=pid, drf=drf)
+
+    if (length(err_runids) == 0) {
+      cat(sprintf("\nFailed pid %d has no identified data translation error on its active path. Trying to re-run R base/reg to see if cache solves it.\n", pid))
+      mrb$drf = drf
+      mrb = mrb_run_r_base(mrb, just_pids = pid)
+      mrb = mrb_run_r_reg(mrb, just_pids = pid)
+      mrb = mrb_make_regcheck_parcel(mrb, just_pids = pid, repair_code = "c_t")
+      next
+    }
+
+
+    # 4. Make cache and try translation again
+    mrb_cache_reg_data(mrb, pids = cache_runid)
+
+    drf = repboxDRF:::drf_apply_caches(drf, just_pids = all_pids_with_err)
+    mrb$drf = drf
+
+    mrb = mrb_run_r_base(mrb, just_pids = pid)
+    mrb = mrb_run_r_reg(mrb, just_pids = pid)
+    mrb = mrb_make_regcheck_parcel(mrb, just_pids = pid, repair_code = "c_t")
+  }
+
+  return(mrb)
+}
+
+# Rules to determine cache for a failed regression at pid
+#
+# 1. If there is no translation error cache directly at pid
+# 2. If there is a translation error in data modification steps,
+#   take the last one call it err_runid,
+#   find the furthest runid in the path that supplies
+#   the same set of pids than the original err_runid
+mrb_determine_repair_cache_runid = function(mrb, pid, drf=mrb$drf) {
+  restore.point("mrb_determine_repair_cache_runid")
+  path_df = drf$path_df[drf$path_df$pid == pid, ]
+
+  if (NROW(path_df) == 0) return(pid)
+
+  # 2. Check for r_err_runids on the path
+  err_runids = intersect(path_df$runid, drf$r_err_runids)
+
+  first_runid = path_df$runid[1]
+  run_df_first = drf$run_df[drf$run_df$runid == first_runid, ]
+    if (NROW(run_df_first) > 0 && isTRUE(run_df_first$has_file_cache[1])) {
+      err_runids = setdiff(err_runids, first_runid)
+    }
+
+
+    err_runid = max(err_runids)
+
+    # 3. Find cache_runid
+    # Find all pids that use err_runid
+    all_pids_with_err = unique(drf$path_df$pid[drf$path_df$runid == err_runid])
+
+    # We want the intersection of paths for all these pids
+    path_list = lapply(all_pids_with_err, function(p) {
+      drf$path_df$runid[drf$path_df$pid == p]
+    })
+    common_runids = Reduce(intersect, path_list)
+    valid_common = common_runids[common_runids >= err_runid]
+
+    cache_runid = err_runid
+    if (length(valid_common) > 0) {
+      # avoid to set cache_runid to the final regression pid (unless cache_runid==pid)
+      if (!err_runid %in% all_pids_with_err) {
+        cands_not_pid = setdiff(valid_common, all_pids_with_err)
+        if (length(cands_not_pid) > 0) {
+          cache_runid = max(cands_not_pid)
+        } else {
+          cache_runid = err_runid
+        }
+      } else {
+        cache_runid = err_runid
+      }
+    }
+
+    cat(sprintf("\nRepairing translation error for pid %d: Caching at runid %d (err_runid was %d)\n", pid, cache_runid, err_runid))
+
+
+
+}
+
+
 #' Automatically repair metaregBase R failures by fetching Stata's exact regression data.
 #'
 #' Generates a Stata script for failed runs that executes the data-prep path, runs the
 #' regression quietly, keeps exactly the estimation sample `e(sample)`, and saves it.
 #' It then forces the R reproduction to load this exact cache, sidestepping R
 #' data translation bugs.
-mrb_repair_failed_runs = function(project_dir = mrb$project_dir, mrb=NULL, max_reg=10) {
+mrb_repair_failed_runs_old = function(project_dir = mrb$project_dir, mrb=NULL, max_reg=10) {
   restore.point("mrb_repair_failed_runs")
 
   if (is.null(mrb)) {
@@ -48,104 +167,7 @@ mrb_repair_failed_runs = function(project_dir = mrb$project_dir, mrb=NULL, max_r
 
   return(mrb)
 }
-#' Automatically repair metaregBase R failures by caching at the point of translation errors.
-#'
-#' Identifies data translation errors on the paths of failed regressions,
-#' determines a common caching point that can serve multiple pids, generates
-#' the cache in Stata, and re-runs the R base and regression steps.
-mrb_repair_translation_errors = function(project_dir = mrb$project_dir, mrb=NULL, max_reg=10) {
-  restore.point("mrb_repair_translation_errors")
 
-  if (is.null(mrb)) {
-    mrb = mrb_init(project_dir)
-  }
-
-  drf_clear_mcache()
-
-  failed_pids = mrb_get_to_repair_runids(mrb=mrb)
-  if (!is.null(max_reg)) {
-    failed_pids = head(failed_pids, max_reg)
-  }
-  if (length(failed_pids) == 0) {
-    cat("\nNo failed runs to repair.\n")
-    return(mrb)
-  }
-
-  cat("\nRepair attempt by translation error caching for runids: ", paste(failed_pids, collapse=", "), "\n")
-
-  # Ensure r_err_runids is loaded/synced
-  mrb$drf = repboxDRF:::drf_sync_r_err_runids(mrb$drf)
-
-  for (pid in failed_pids) {
-    drf = mrb$drf
-
-    # 1. Adapt path to caches
-    drf = repboxDRF:::drf_apply_caches(drf, just_pids = pid)
-    path_df = drf$path_df[drf$path_df$pid == pid, ]
-
-    if (NROW(path_df) == 0) next
-
-    # 2. Check for r_err_runids on the path
-    err_runids = intersect(path_df$runid, drf$r_err_runids)
-
-    first_runid = path_df$runid[1]
-    run_df_first = drf$run_df[drf$run_df$runid == first_runid, ]
-    if (NROW(run_df_first) > 0 && isTRUE(run_df_first$has_file_cache[1])) {
-      err_runids = setdiff(err_runids, first_runid)
-    }
-
-    if (length(err_runids) == 0) {
-      cat(sprintf("\nFailed pid %d has no identified data translation error on its active path. Trying to re-run R base/reg to see if cache solves it.\n", pid))
-      mrb$drf = drf
-      mrb = mrb_run_r_base(mrb, just_pids = pid)
-      mrb = mrb_run_r_reg(mrb, just_pids = pid)
-      mrb = mrb_make_regcheck_parcel(mrb, just_pids = pid, repair_code = "c_t")
-      next
-    }
-
-    err_runid = max(err_runids)
-
-    # 3. Find cache_runid
-    # Find all pids that use err_runid
-    all_pids_with_err = unique(drf$path_df$pid[drf$path_df$runid == err_runid])
-
-    # We want the intersection of paths for all these pids
-    path_list = lapply(all_pids_with_err, function(p) {
-      drf$path_df$runid[drf$path_df$pid == p]
-    })
-    common_runids = Reduce(intersect, path_list)
-    valid_common = common_runids[common_runids >= err_runid]
-
-    cache_runid = err_runid
-    if (length(valid_common) > 0) {
-      # avoid to set cache_runid to the final regression pid (unless cache_runid==pid)
-      if (!err_runid %in% all_pids_with_err) {
-        cands_not_pid = setdiff(valid_common, all_pids_with_err)
-        if (length(cands_not_pid) > 0) {
-          cache_runid = max(cands_not_pid)
-        } else {
-          cache_runid = err_runid
-        }
-      } else {
-        cache_runid = err_runid
-      }
-    }
-
-    cat(sprintf("\nRepairing translation error for pid %d: Caching at runid %d (err_runid was %d)\n", pid, cache_runid, err_runid))
-
-    # 4. Make cache and try translation again
-    mrb_cache_reg_data(mrb, pids = cache_runid)
-
-    drf = repboxDRF:::drf_apply_caches(drf, just_pids = all_pids_with_err)
-    mrb$drf = drf
-
-    mrb = mrb_run_r_base(mrb, just_pids = pid)
-    mrb = mrb_run_r_reg(mrb, just_pids = pid)
-    mrb = mrb_make_regcheck_parcel(mrb, just_pids = pid, repair_code = "c_t")
-  }
-
-  return(mrb)
-}
 
 mrb_get_to_repair_runids = function(mrb, parcels=mrb$parcels, ignore_already_repaired=TRUE) {
   restore.point("mrb_get_to_repair_runids")
@@ -174,7 +196,7 @@ mrb_get_to_repair_runids = function(mrb, parcels=mrb$parcels, ignore_already_rep
     # command known to not match coefs
     mutate(do_repair = do_repair | is.true(!rb_sb_coef_same & !(has.substr(cmd,"logit")|has.substr(cmd, "probit")) )) %>%
     # only repair commands that have an r translation
-    mutate(do_repair = do_repair & (stata_reg_cmd_has_r_trans(cmd) | cmd=="")) %>%
+    mutate(do_repair = do_repair & (stata_reg_cmd_has_r_trans(cmd) | cmd==""))
 
 
   if (ignore_already_repaired) {

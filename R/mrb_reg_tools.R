@@ -266,24 +266,24 @@ cmdpart_to_regvar = function(cmdpart, dat, opts_df, se_info) {
   term_list = list()
 
   # Standard variables (dep, exo, endo, instr)
-  v_df = cmdpart %>% filter(part == "v")
+  v_df = cmdpart %>% dplyr::filter(part == "v")
   if (nrow(v_df) > 0) {
     # Replace tag names with role names (depvar -> dep, others stay same)
     v_df$role = ifelse(v_df$tag == "depvar", "dep", v_df$tag)
-    term_list[[1]] = tibble(ia_expr = v_df$content, role = v_df$role, option = "")
+    term_list[[1]] = dplyr::tibble(ia_expr = v_df$content, role = v_df$role, option = "")
   }
 
   # Weights
-  w_df = cmdpart %>% filter(part == "weight_var")
+  w_df = cmdpart %>% dplyr::filter(part == "weight_var")
   if (nrow(w_df) > 0) {
-    term_list[[2]] = tibble(ia_expr = w_df$content, role = "weight", option = "")
+    term_list[[2]] = dplyr::tibble(ia_expr = w_df$content, role = "weight", option = "")
   }
 
   # Absorb (from reghdfe / areg)
-  absorb_opts = opts_df %>% filter(opt %in% c("absorb", "a", "ab", "abs", "abso", "absor"))
+  absorb_opts = opts_df %>% dplyr::filter(opt %in% c("absorb", "a", "ab", "abs", "abso", "absor"))
   if (nrow(absorb_opts) > 0) {
     abs_vars = strsplit(shorten.spaces(paste0(absorb_opts$opt_arg, collapse = " ")), " ", fixed = TRUE)[[1]]
-    term_list[[3]] = tibble(ia_expr = abs_vars, role = "exo", option = "absorb")
+    term_list[[3]] = dplyr::tibble(ia_expr = abs_vars, role = "exo", option = "absorb")
   }
 
   # FE (from xtreg)
@@ -297,11 +297,11 @@ cmdpart_to_regvar = function(cmdpart, dat, opts_df, se_info) {
     se_args_parsed = repdb_parse_se_args(se_info$se_args, as_df = TRUE)
     cluster_vars = se_args_parsed$arg_val[startsWith(se_args_parsed$arg_name, "cluster")]
     if (length(cluster_vars) > 0) {
-      term_list[[4]] = tibble(ia_expr = cluster_vars, role = "cluster", option = "se")
+      term_list[[4]] = dplyr::tibble(ia_expr = cluster_vars, role = "cluster", option = "se")
     }
   }
 
-  vi = bind_rows(term_list) %>% mutate(main_pos = seq_len(n()))
+  vi = dplyr::bind_rows(term_list) %>% dplyr::mutate(main_pos = seq_len(dplyr::n()))
 
   # 2. Process Interaction Effects and Prefixes
   vi$is_ia = grepl("(\\|)|(#)|(\\*)", vi$ia_expr)
@@ -312,10 +312,10 @@ cmdpart_to_regvar = function(cmdpart, dat, opts_df, se_info) {
   vi$var_expr[rows] = strsplit(vi$ia_expr[rows], "(##)|(#)|(\\|)|(\\*)")
 
   vi = vi %>%
-    unnest(var_expr) %>%
-    group_by(ia_expr) %>%
-    mutate(ia_num = n(), ia_pos = seq_len(n())) %>%
-    ungroup()
+    tidyr::unnest(var_expr) %>%
+    dplyr::group_by(ia_expr) %>%
+    dplyr::mutate(ia_num = dplyr::n(), ia_pos = seq_len(dplyr::n())) %>%
+    dplyr::ungroup()
 
   # Extract Prefix (L1., F., i., c., etc.) - split at LAST dot
   prefix_start = stringi::stri_locate_last_fixed(vi$var_expr, ".")[, 1]
@@ -328,25 +328,24 @@ cmdpart_to_regvar = function(cmdpart, dat, opts_df, se_info) {
 
   # Normalize specific prefixes
   vi = vi %>%
-    mutate(prefix = case_when(
+    dplyr::mutate(prefix = dplyr::case_when(
       startsWith(tolower(prefix), "ib") ~ paste0("b", substring(prefix, 3)),
       TRUE ~ prefix
     ))
 
   # 3. Incorporate column stats info
   cols_info = make_cols_small_info(dat)
-  vi = vi %>% left_join(cols_info, by = c("var" = "col"))
+  vi = vi %>% dplyr::left_join(cols_info, by = c("var" = "col"))
 
   # 4. Determine Types and Classes
   vi = vi %>%
-    mutate(
+    dplyr::mutate(
       is_factor = class %in% c("character", "factor"),
-      fe_type = case_when(
+      fe_type = dplyr::case_when(
         startsWith(tolower(prefix), "c") ~ "",
         startsWith(tolower(prefix), "i") ~ "i",
         startsWith(tolower(prefix), "b") ~ "b",
         option %in% c("absorb", "fe") ~ option,
-        has.substr(ia_expr, "#") ~ "#",
         is_factor ~ class,
         TRUE ~ ""
       ),
@@ -389,8 +388,8 @@ cmdpart_to_regvar = function(cmdpart, dat, opts_df, se_info) {
   # Rebuild ia_cterm from the updated component cterms so interactions with xi
   # variables also become canonical.
   vi = vi %>%
-    group_by(main_pos) %>%
-    mutate(
+    dplyr::group_by(main_pos) %>%
+    dplyr::mutate(
       ia_cterm = {
         if (dplyr::n() == 1) {
           cterm
@@ -406,7 +405,7 @@ cmdpart_to_regvar = function(cmdpart, dat, opts_df, se_info) {
         }
       }
     ) %>%
-    ungroup()
+    dplyr::ungroup()
 
   # basevar should refer to the underlying source variable, not the raw _I name
   vi$basevar = stringi::stri_replace_first_regex(vi$cterm, "^.*@", "")
@@ -417,22 +416,22 @@ cmdpart_to_regvar = function(cmdpart, dat, opts_df, se_info) {
   # 6. Apply interaction types & Reg Types
   vi = vi_add_ia_type(vi)
 
-  vi = vi %>% mutate(
+  vi = vi %>% dplyr::mutate(
     var_org_type = varclass %>% change_val(c("fe", "character"), "factor"),
     var_reg_type = class %>% change_val(c("fe", "character"), "factor") %>% change_val("logical", "dummy"),
     ia_reg_type = ia_type %>%
       change_val("fe", "factor") %>%
       change_val("fe_numeric", "factor_numeric") %>%
       change_val("fe_logical", "factor_dummy")
-  ) %>% mutate(
+  ) %>% dplyr::mutate(
     var_reg_type = ifelse(role == "cluster", "factor", var_reg_type),
     ia_reg_type = ifelse(role == "cluster", "factor", ia_reg_type)
   )
 
   # Ensure column order is clean
-  vi = vi %>% select(
+  vi = vi %>% dplyr::select(
     ia_expr, var_expr, var, role, prefix, option, class, fe_type, is_fe,
-    distinct_num, ia_num, ia_pos, main_pos, ia_cterm, cterm, basevar, everything()
+    distinct_num, ia_num, ia_pos, main_pos, ia_cterm, cterm, basevar, dplyr::everything()
   )
 
   return(vi)
