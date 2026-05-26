@@ -1,49 +1,21 @@
-# FILE: /home/rstudio/repbox/metaregBase/R/mrb_repair.R
+# Try to repair failed translations by ignoring
+# R translation errors
 
 example = function() {
   repboxRun::repbox_load_libs()
   project_dir = rb_get_project_dir("~/repbox/projects_test/test")
-  mrb = mrb_init(project_dir)
-  mrb_find_next_repair_pids(mrb)
-
   mrb_repair_failed_runs(project_dir)
   rstudioapi::filesPaneNavigate(project_dir)
 }
 
-
-mrb_find_next_repair_pids = function(mrb, repair_code="i", parcels=mrb$parcels) {
-  restore.point("mrb_find_next_repair_pids")
-
-  parcels = repdb_load_parcels(project_dir = mrb$project_dir,parcel_names = c("regcheck", "regrepair"), parcels)
-
-  cached_runids = repboxDRF::drf_get_highest_cached_runids(drf=mrb$drf)
-
-  # All currently failed runids
-  pids = mrb_get_regcheck_failed_pids(mrb=mrb, parcels=parcels,ignore_already_repaired = FALSE)
-
-  regrepair = parcels$regrepair
-
-
-
-
-
-}
-
-mrb_repair_codes = function() {
-  # i = ignore
-  # cp = cache preparation
-  # cr = cache regression
-  c("i","cp","cr")
-
-}
 
 #' Automatically repair metaregBase R failures by caching at the point of translation errors.
 #'
 #' Identifies data translation errors on the paths of failed regressions,
 #' determines a common caching point that can serve multiple pids, generates
 #' the cache in Stata, and re-runs the R base and regression steps.
-mrb_repair_failed = function(project_dir = mrb$project_dir, mrb=NULL, max_reg=10) {
-  restore.point("mrb_repair_failed")
+mrb_repair_via_ignore = function(project_dir = mrb$project_dir, mrb=NULL, max_reg=10, pids=NULL) {
+  restore.point("mrb_repair_by_ignore")
 
   if (is.null(mrb)) {
     mrb = mrb_init(project_dir)
@@ -98,67 +70,9 @@ mrb_repair_failed = function(project_dir = mrb$project_dir, mrb=NULL, max_reg=10
   return(mrb)
 }
 
-# Rules to determine cache for a failed regression at pid
-#
-# 1. If there is no translation error cache directly at pid
-# 2. If there is a translation error in data modification steps,
-#   take the last one call it err_runid,
-#   find the furthest runid in the path that supplies
-#   the same set of pids than the original err_runid
-mrb_determine_repair_cache_runid = function(mrb, pid, drf=mrb$drf) {
-  restore.point("mrb_determine_repair_cache_runid")
-  path_df = drf$path_df[drf$path_df$pid == pid, ]
-
-  if (NROW(path_df) == 0) return(pid)
-
-  # 2. Check for r_err_runids on the path
-  err_runids = intersect(path_df$runid, drf$r_err_runids)
-
-  first_runid = path_df$runid[1]
-  run_df_first = drf$run_df[drf$run_df$runid == first_runid, ]
-    if (NROW(run_df_first) > 0 && isTRUE(run_df_first$has_file_cache[1])) {
-      err_runids = setdiff(err_runids, first_runid)
-    }
-
-
-    err_runid = max(err_runids)
-
-    # 3. Find cache_runid
-    # Find all pids that use err_runid
-    all_pids_with_err = unique(drf$path_df$pid[drf$path_df$runid == err_runid])
-
-    # We want the intersection of paths for all these pids
-    path_list = lapply(all_pids_with_err, function(p) {
-      drf$path_df$runid[drf$path_df$pid == p]
-    })
-    common_runids = Reduce(intersect, path_list)
-    valid_common = common_runids[common_runids >= err_runid]
-
-    cache_runid = err_runid
-    if (length(valid_common) > 0) {
-      # avoid to set cache_runid to the final regression pid (unless cache_runid==pid)
-      if (!err_runid %in% all_pids_with_err) {
-        cands_not_pid = setdiff(valid_common, all_pids_with_err)
-        if (length(cands_not_pid) > 0) {
-          cache_runid = max(cands_not_pid)
-        } else {
-          cache_runid = err_runid
-        }
-      } else {
-        cache_runid = err_runid
-      }
-    }
-
-    cat(sprintf("\nRepairing translation error for pid %d: Caching at runid %d (err_runid was %d)\n", pid, cache_runid, err_runid))
-
-
-
-}
-
-
-mrb_get_regcheck_failed_pids = function(mrb, parcels=mrb$parcels) {
-  restore.point("mrb_get_regcheck_failed_pids")
-  parcels = repboxDB::repdb_load_parcels(mrb$project_dir, c("regcheck","reg"), parcels)
+mrb_get_to_repair_runids = function(mrb, parcels=mrb$parcels, ignore_already_repaired=TRUE) {
+  restore.point("mrb_get_to_repair_runids")
+  parcels = repboxDB::repdb_load_parcels(mrb$project_dir, c("regcheck","reg","regrepair"), parcels)
 
   regcheck = parcels$regcheck
   if (is.null(regcheck)) {
@@ -184,6 +98,11 @@ mrb_get_regcheck_failed_pids = function(mrb, parcels=mrb$parcels) {
     mutate(do_repair = do_repair | is.true(!rb_sb_coef_same & !(has.substr(cmd,"logit")|has.substr(cmd, "probit")) )) %>%
     # only repair commands that have an r translation
     mutate(do_repair = do_repair & (stata_reg_cmd_has_r_trans(cmd) | cmd==""))
+
+
+  if (ignore_already_repaired) {
+     regcheck = mutate(regcheck,do_repair = do_repair & repair_code=="")
+  }
 
   # 1. Identify failed runs
   # Failure criteria: sb ran, but rb failed or coefficients mismatch
@@ -251,6 +170,47 @@ mrb_cache_failed_runs_data = function(mrb, pids, overwrite=FALSE, replace_target
 }
 
 
+
+mrb_cache_reg_data_old = function(mrb, pids, overwrite=FALSE) {
+  restore.point("mrb_cache_reg_data")
+
+
+  project_dir = mrb$project_dir
+  cache_dir = file.path(project_dir, "drf/cached_dta")
+
+  cache_files = file.path(cache_dir, paste0(pids,"_cache.dta"))
+  if (!overwrite) {
+    has = file.exists(cache_files)
+    pids = pids[!has]
+    cache_files = cache_files[!has]
+  }
+
+  if (length(pids)==0) {
+    return(invisible(pids))
+  }
+
+  if (!dir.exists(cache_dir)) dir.create(cache_dir)
+
+  # 2. Generate Stata script to save e(sample) filtered caches
+  sc_df = repboxDRF::drf_stata_code_df(mrb$drf, runids = pids, path_merge = "load")
+
+  # find regression command rows for pids
+  cand_rows = which(sc_df$runid==sc_df$pid)
+  rows = cand_rows[match(pids, sc_df$runid[cand_rows])]
+
+  # Replace the regression with a quiet execution, then keep if e(sample)
+  keep_code = drf_stata_code_to_keep_if_in(sc_df$code[rows])
+
+  new_code = paste0(keep_code,"\n",
+    "capture save \"", cache_files, "\", replace\n"
+  )
+  sc_df$code[rows] = new_code
+  script_file = file.path(mrb$project_dir, "metareg/base/stata_code/mrb_repair.do")
+  drf_code_write(sc_df, script_file)
+
+  cat("\nRunning Stata repair script...\n")
+  mrb_run_stata_script(mrb, do_file = script_file)
+}
 
 stata_reg_cmd_has_r_trans = function(cmd) {
   sr_df = regtranslate::stata_to_r_cmds_df()

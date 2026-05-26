@@ -8,7 +8,7 @@ Rerun regressions from reproduction packages and store all relevant information 
 
 1. An initial reproduction, mainly by repboxStata and repboxRegStata. Generates basic regression infos and important parcels like stata_run_cmd.Rds. The regression info is stored as variant so
 
-2. Stata reproduction by metaregBase. Using repboxDRF we determine (guess) all relevant data modification commands in stata_run_cmd.Rds and make another Stata replication run (sb_raw) that only uses the data modification commands and stores again regression infos. The generated code is in /metareg/base/stata_code/mrb_stata.do
+2. DRF (Direct Replication Format), mrb_stata.do and sb_raw. Stata reproduction by metaregBase. Using repboxDRF we determine (guess) all relevant data modification commands in stata_run_cmd.Rds and make another Stata replication run (sb_raw) that only uses the data modification commands and stores again regression infos. The generated code is in /metareg/base/stata_code/mrb_stata.do
 
 Note that we have not yet the full Stata base variant sb, since to generate all needed parcels like regvar, we need to analyze the data set in R, e.g. to expand Stata abbreviations.
 
@@ -28,7 +28,7 @@ regcheck is the main parcel that notes whether the whole chain lead consistent r
 
 Often not all regressions will be perfectly replicated in the first mrb run. That is due to the fact that not all Stata commands are translated to R. The next section describes the trade-offs and different repair strategies.
 
-# Missing translations, caches and repair strategies
+# DRF paths, missing translations, caches and repair strategies
 
 Key for the metareg pipeline is that for every regression we can get the actually prepared data set for this regression that results from applying all original data preparation steps that we run in the do file.
 
@@ -48,6 +48,7 @@ The best practical solution is likely a trade-off. But the best strategy is not 
 use mydata.dta
 
 foreach xvar of varlist xvars {
+  replace wA = `xvar`^2
   regress y `xvar'  wA-wK
   predict y_hat, xb
   generate y_hat_`xvar' = y_hat
@@ -57,15 +58,46 @@ foreach xvar of varlist xvars {
 
 While the `predict`, `generate`, `drop` commands modify the data set, these modifications are actually not needed here to run later regressions in the loop. But it is hard to assess which previous data modifications are needed for a regression or not.
 
-Assume the loop is large and 100 regressions are run. Under the full translation approach we would need to translate and run all previous 99 regressions to compute the data set for regression no 100. Super time intensive and error prone. The full caching approach would save 100 data sets, even though essentially not needed here.
+Assume the loop is large and 100 regressions are run. Under the full translation approach we would need to translate and run all previous 99 regressions to compute the data set for 100th regression. Super time intensive and error prone. The full caching approach would save 100 data sets, even though essentially not needed here.
 
 Our actual approach can be described as following:
 
 ## 1. Comprehensive but incomplete translation
 
-Try to translate most data preparation commands but ignore all commands that require re-running a regression for data preparation, e.g. `predict`. Also ignore those commands that have cache by default. 
+Try to translate all data preparation commands unless there is an exception.
 
-Note that sometimes only the `e(sample)` output of a regression is used. This we will track and just translate such that we determine the actual sample used in the regression without translation the whole regression.
+### 1.1 Exception: commands cached by default
+
+The commands for which default caches will be generated (see 2.) will not be translated.
+
+### 1.2 Exception: regressions and post-regression commands
+
+stata2r shall not translate regression commands or post-regression commands, even if they are required for later regressions. One example is the `predict` function that creates a new column from the previous regression. Our default guess that such commands are not needed as data preparation for subsequent regressions may be reasonable. If not ok, our repair strategies may solve it.
+
+One exception is when the `e(sample)` of a regression is used in the next regression. Here `stata2r` provides translation code that generates the `e(sample)` info. That might work without the complete regression spec. But not clear, actually how well it works. Caching `e(sample)` might be the better idea... actually.
+
+Also regressions with `xi:` prefixes should be dealt in a suitable fashion if the later regressions use the generated variables... Not so clear how. Currently we cache `xi` commands. But a cache at the regression position also caches filters... Maybe we just need to have a cache before the subsequent regression...
+
+### 1.3 Exception: Regression loops
+
+Consider multiple regressions in a loop like:
+
+```
+foreach xvar of varlist xvars {
+  replace wA = `xvar`^2
+  regress y `xvar'  wA-wK
+  predict y_hat, xb
+  generate y_hat_`xvar' = y_hat
+  drop y_hat
+}
+```
+
+We make the general assumption that the i'th iteration does not depend on the commands in any earlier iteration. This does not always have to be the case, but it seems very reasonable that this assumption captures perhaps 99% of cases where regressions are run in a loop. 
+
+The file `drf_loop_paths.R` contains functions to automatically shorten the path_df in DRF consistent with this example. In the example above this means that for the i'th iteration the code path consists only of the code before the loop and inside the loop only the i'th iteration code before the regression command (here: `replace wA = ...`).
+
+TO DO: Implement and think whether in mrb_stata.do we should keep the complete loop code as in natural order. This means we should have original path_df for mrb_stata.do and reduced ones later for R translation.
+
 
 ## 2. Limited caching by default
 
@@ -75,13 +107,13 @@ Currently, we add caches by default after a few commands.
 
 The function `repboxStata::repbox_always_cache_cmd` specifies commands after which a cache will be always generated in the original reproduction run by repboxStata. Currently it is `merge` and `joinby`. Also our mrb_stata.do will directly use these caches. Reason: there are reproduction packages that merge with temporary files, it is hard to correctly store these temporary files for merge. So just caching after every merge and joinby seemed easier.
 
-### 2.2 Caching in mrb_stata.do
+### 2.2 Caching after fixed commands in mrb_stata.do
 
-In addition our MRB stata run can generate some caches targeted to simplify the R translation. `repboxDRF::drf_stata_cmd_types()` contains commands classified as `need_cache`, like `xi`. But it is not clear that this list is up-to-date and currently used. It seems that a bit too much is cached.
+In addition our MRB stata run generates caches after the commands listed in `metaregBase::mrb_stata_always_cache_commands()`. Currently that is only `xi`. A clean R translation of `xi` seems very hard, as we don't know which default factor levels will be dropped by Stata and our current translation in `stata2r` often drops different levels than Stata.
 
-What we probably need to cache is `xi` commands, as we don't know which default factor levels will be dropped by Stata.
+### 2.3 Caching to reduce long data preparation sequences
 
-TO DO: Check how default mrb Stata caches are actually implemented.
+We can have some heuristics to write additional caches in mrb_stata.do to shorten very long data preparation sequences. That can speed up the R analysis and also reduce the scope of translation errors. The exact heuristic should be parametrizable. Factors could be the number of regressions covered, no of steps eliminated and possibly data set size. Accounting for run time would make the algo not-deterministic which may be undesirable...
 
 ## 3. Fail if R translation throws an error
 

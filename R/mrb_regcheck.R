@@ -10,7 +10,9 @@ mrb_make_regcheck_parcel = function(
   max_rel_diff_tol = 1e-4,
   max_deviation_tol = 1e-5,
   rb_max_rel_diff_tol = 0.01,
-  rb_max_deviation_tol = 1e-5
+  rb_max_deviation_tol = 1e-5,
+  cached_runid = NA_integer_,
+  for_regrepair = FALSE
 ) {
   restore.point("mrb_make_regcheck_parcel")
 
@@ -29,7 +31,10 @@ mrb_make_regcheck_parcel = function(
     if (!is.null(mrb$drf$pids)) mrb$drf$pids else integer()
   ))
 
-  if (length(pids) == 0) return(mrb)
+  if (length(pids) == 0) {
+    if (for_regrepair) return(NULL)
+    return(mrb)
+  }
 
   if (!is.null(just_pids)) {
     pids = intersect(pids, just_pids)
@@ -221,6 +226,13 @@ mrb_make_regcheck_parcel = function(
   if (!is.null(mrb$stata_ct_sb) && "runid" %in% names(mrb$stata_ct_sb)) {
     regcheck$sb_raw_did_run = regcheck$sb_raw_did_run | regcheck$runid %in% mrb$stata_ct_sb$runid
   }
+  if (is.data.frame(cached_runid)) {
+    regcheck = left_join(regcheck, cache_runid, by="runid")
+  } else if (!is.null(cached_runid)) {
+    regcheck$cached_runid = rep_len(cached_runid,NROW(regcheck))
+  }
+
+  if (for_regrepair) return(regcheck)
 
   if (!is.null(just_pids)) {
     parcels = repboxDB::repdb_load_parcels(mrb$project_dir, "regcheck", parcels)

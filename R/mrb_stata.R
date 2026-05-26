@@ -39,6 +39,10 @@ mrb_check_stata_reg_out_complete = function(mrb) {
 }
 
 
+mrb_stata_always_cache_commands = function() {
+  "xi"
+}
+
 mrb_full_stata_script = function(mrb, capture=TRUE) {
   restore.point("mrb_full_stata_script")
   run_df = mrb$drf$run_df
@@ -57,7 +61,7 @@ mrb_full_stata_script = function(mrb, capture=TRUE) {
   # to R.
   # Currently that is xi as it is hard to find the same ordering of generated
   # dummy variables as Stata
-  cache_cmds = "xi"
+  cache_cmds = mrb_stata_always_cache_commands() # "xi"
 
   code_df = repboxDRF::drf_stata_code_df(drf=mrb$drf,cache_after_cmd = cache_cmds)
   code_df = code_df %>%

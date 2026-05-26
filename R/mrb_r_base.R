@@ -246,6 +246,9 @@ mrb_run_r_base_step = function(mrb, pid, with_try = isTRUE(mrb$with_try)) {
 mrb_run_r_base = function(mrb, just_pids=NULL, make_parcels=TRUE) {
   restore.point("mrb_run_r")
 
+
+  mrb$drf = drf_apply_loop_ignore(drf)
+
   mrb$artid = basename(mrb$project_dir)
   mrb$parcels = repboxDB::repdb_load_parcels(mrb$project_dir, c("reg_cmdpart", "xtvar"))
 
