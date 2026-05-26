@@ -18151,6 +18151,40 @@ is_negative = function(n) {
 # Your Task
 ##################################
 
+I described a new plan for dealing with side effects, dependencies in the README.md of metaregBase. It is copied again below. Please assess and discuss the proposal and describe on a high level the current state and what changes would need to be implemented. 
+
+
+## Dealing with side effects that don't directly change the data set 
+
+Our ideal setting for the relevant modification commands in path_df that will be translated to R via the stata2r package:
+
+- Only translate commands that directly modify the data set.
+- Don't include regressions as data preparation for later regressions.
+- **Save caching**: We can savely cache the data sets at any runid and cut the previous commands from the path_df.
+
+Currently these ideas are not fully implemented. Current state:
+
+The functions in repboxDRF `drf_deps.R` already mark dependencies of different sorts and store in `drf$dep_df`:
+
+- scalars that will be used later
+- `xi` commands in front of regressions that modify the data set
+- generated e() or r() variables that are used later in data modification commands or in an `if` filter in a regression command.
+
+Handling so far:
+
+- scalars are already all stored in the original repboxStata reproduction and scalar definitions will be added to the R or Stata code when needed. This is handled fine by repboxDRF and needs no change.
+
+- if a regression command line is needed because of a `xi: ` prefix in the regression that changes the data in a way needed by later regressions then `stata2r` probably already replaces the regression by the `xi` command. Don't know how it is detected currently: does stata2r get the info from repboxDRF or does it replicate the `xi` detection? Preferred solution: just use dependency info `drf$dep_df` from repboxDRF as generated in `drf_deps.R`. The `xi` dependencies don't violate save caching, as the `xi:` prefix directly changes the data set which would be respected by a cache that saves the data.
+
+- Dependencies via `e()` or `r()` variables are currently handled such that `stata2r` tries to replicate the generation of the `e()` and `r()` variables, e.g. if `e(sample)` is used later in a regression or data modification command, `stata2r` tries to generate code that creates the `e(sample)`. However I am not convinced by that approach anymore. It has two drawbacks: i) `stata2r` is considerably more complex and ii) it violates "save caching": if we just create a cache at some runid, previously generated `e()` variables will not be used.
+
+Proposed changes: Needed `e()` or `r()` values, according to `drf_deps.R` and only the needed ones, will be systematically stored in the mrb Stata run. This means like the caches, we can add code to mrb_stata.do that saves `e()` or `r()` values in a systematic fashion. Ideally generate a DRF subdirectory, stata_e_r and use the following filename convention. E.g. if `e(sample)` after runid 23 should be stored, call the file `e_23.sample.dta` (possibly a different file type depending on the type of info, like simple scalar numbers or strings values should rather be stored in a .txt file). To save the data from Stata, generate some helper `.ado` commands like, `repbox_write_e_r_value.ado` for saving a specific single value entry like `e(rmse)` and `repbox_write_e_sample` to save the whole vector that specifies the `e_sample`.
+
+Now repboxDRF drf_get_data, shall ensure that if some `e()` or `r()` value is needed according to `drf$dep_df` then that value is loaded into a variable, named like `e.sample` for `e(sample)`. That is similar to how needed scalar values are added to the code. The difference is that one looks at the existing files in the `stata_e_r` subfolder. If a dependency file is missing that should be noted with a repbox_problem.
+
+Our package `stata2r` shall not create any `e()` or `r()` anymore itself but just expect that variables following the naming convention like `e.sample` for `e(sample)` exist in the execution environment. So we remove a lot of stuff from `stata2r`. Also the whole dependency check currently still in `stata2r`, which duplicates ideas from `drf_deps.R` shall be removed from `stata2r`.
+
+
 
 
 
