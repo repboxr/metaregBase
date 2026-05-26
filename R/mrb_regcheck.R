@@ -79,6 +79,11 @@ mrb_make_regcheck_parcel = function(
     has_sb_reg = !is.null(parcels$reg) && pid %in% parcels$reg$runid
     sb_did_run = has_sb_coef || has_sb_reg
 
+    sb_num_coef = NA_integer_
+    if (has_sb_coef) {
+      sb_num_coef = as.integer(NROW(parcels$regcoef[parcels$regcoef$runid == pid, , drop = FALSE]))
+    }
+
     run_cmd = get_run_cmd(pid)
 
     rb_did_run = FALSE
@@ -103,6 +108,7 @@ mrb_make_regcheck_parcel = function(
     sb_so_se_max_rel = NA_real_
 
     rb_sb_coef_same = NA
+    rb_sb_share_coeff_same = NA_real_
     rb_sb_coef_max_dev = NA_real_
     rb_sb_coef_max_rel = NA_real_
     rb_sb_se_same = NA
@@ -148,6 +154,7 @@ mrb_make_regcheck_parcel = function(
       )
 
       rb_sb_coef_same = ev_rb$coef_same
+      rb_sb_share_coeff_same = ev_rb$coef_same_share
       rb_sb_coef_max_dev = ev_rb$coef_max_dev
       rb_sb_coef_max_rel = ev_rb$coef_max_rel
       rb_sb_se_same = ev_rb$se_same
@@ -194,6 +201,8 @@ mrb_make_regcheck_parcel = function(
       sb_did_run = sb_did_run,
       rb_did_run = rb_did_run,
 
+      sb_num_coef = sb_num_coef,
+
       sb_so_identical = sb_so_identical,
       sb_so_coef_same = sb_so_coef_same,
       sb_so_coef_max_dev = sb_so_coef_max_dev,
@@ -203,6 +212,7 @@ mrb_make_regcheck_parcel = function(
       sb_so_se_max_rel = sb_so_se_max_rel,
 
       rb_sb_coef_same = rb_sb_coef_same,
+      rb_sb_share_coeff_same = rb_sb_share_coeff_same,
       rb_sb_coef_max_dev = rb_sb_coef_max_dev,
       rb_sb_coef_max_rel = rb_sb_coef_max_rel,
       rb_sb_se_same = rb_sb_se_same,
@@ -290,6 +300,7 @@ mrb_regcheck_diff_eval = function(
   if (is.null(diff_tab) || NROW(diff_tab) == 0) {
     return(list(
       coef_same = FALSE,
+      coef_same_share = NA_real_,
       se_same = FALSE,
       all_same = FALSE,
       coef_max_dev = NA_real_,
@@ -302,24 +313,26 @@ mrb_regcheck_diff_eval = function(
   coef_missing_one = xor(is.na(diff_tab$coef_1), is.na(diff_tab$coef_2))
   se_missing_one = xor(is.na(diff_tab$se_1), is.na(diff_tab$se_2))
 
-  coef_same = mrb_regcheck_numeric_same(
-    abs_err = diff_tab$abs_err_coef,
-    rel_err = diff_tab$rel_err_coef,
-    missing_one = coef_missing_one,
-    max_rel_diff_tol = max_rel_diff_tol,
-    max_deviation_tol = max_deviation_tol
-  )
+  coef_same_vec = is.na(diff_tab$abs_err_coef) |
+    diff_tab$abs_err_coef <= max_deviation_tol |
+    (!is.na(diff_tab$rel_err_coef) & diff_tab$rel_err_coef <= max_rel_diff_tol)
 
-  se_same = mrb_regcheck_numeric_same(
-    abs_err = diff_tab$abs_err_se,
-    rel_err = diff_tab$rel_err_se,
-    missing_one = se_missing_one,
-    max_rel_diff_tol = max_rel_diff_tol,
-    max_deviation_tol = max_deviation_tol
-  )
+  coef_missing_one[is.na(coef_missing_one)] = FALSE
+  coef_same_vec[coef_missing_one] = FALSE
+
+  se_same_vec = is.na(diff_tab$abs_err_se) |
+    diff_tab$abs_err_se <= max_deviation_tol |
+    (!is.na(diff_tab$rel_err_se) & diff_tab$rel_err_se <= max_rel_diff_tol)
+
+  se_missing_one[is.na(se_missing_one)] = FALSE
+  se_same_vec[se_missing_one] = FALSE
+
+  coef_same = isTRUE(all(coef_same_vec))
+  se_same = isTRUE(all(se_same_vec))
 
   list(
     coef_same = coef_same,
+    coef_same_share = mean(coef_same_vec),
     se_same = se_same,
     all_same = isTRUE(coef_same) && isTRUE(se_same),
     coef_max_dev = max_empty_na(diff_tab$abs_err_coef, na.rm = TRUE),

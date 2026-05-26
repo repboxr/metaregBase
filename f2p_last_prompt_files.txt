@@ -12,6 +12,7 @@ R/mrb_regcheck.R
 R/mrb_regcoef.R
 R/mrb_reg_tools.R
 R/mrb_regxvar.R
+R/mrb_repair_ignore.R
 R/mrb_repair.R
 R/mrb_r_reg.R
 R/mrb_se.R

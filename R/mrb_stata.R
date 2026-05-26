@@ -43,6 +43,21 @@ mrb_stata_always_cache_commands = function() {
   "xi"
 }
 
+
+# custom caches are caches we add due to a positive speed / cache size trade-off. The trade-off parameters are defined in mrb and we use the heuristic in drf_suggest_cache_runids
+
+mrb_find_custom_cache_runids = function(mrb, cache_cmds = mrb_stata_always_cache_commands()) {
+  restore.point("mrb_find_custom_cache_runids")
+  drf = mrb$drf
+
+  # Consider the caches we add due to cache_cmds
+  extra_caches = drf$run_df$runid[drf$run_df$cmd %in% cache_cmds]
+
+
+  cache_runids = repboxDRF::drf_suggest_cache_runids(drf,max_caches = mrb$custom_max_caches,min_score = mrb$custom_cache_min_score,extra_caches = extra_caches)
+  cache_runids
+}
+
 mrb_full_stata_script = function(mrb, capture=TRUE) {
   restore.point("mrb_full_stata_script")
   run_df = mrb$drf$run_df
@@ -62,8 +77,10 @@ mrb_full_stata_script = function(mrb, capture=TRUE) {
   # Currently that is xi as it is hard to find the same ordering of generated
   # dummy variables as Stata
   cache_cmds = mrb_stata_always_cache_commands() # "xi"
+  cache_runids = mrb_find_custom_cache_runids(mrb, cache_cmds)
 
-  code_df = repboxDRF::drf_stata_code_df(drf=mrb$drf,cache_after_cmd = cache_cmds)
+  code_df = repboxDRF::drf_stata_code_df(drf=mrb$drf,cache_after_cmd = cache_cmds,cache_after_runids = cache_runids)
+
   code_df = code_df %>%
     drf_code_adapt(mrb_code_reg_stata, just_path_pos="end", run_df=run_df, outdir=outdir, capture=capture) %>%
     drf_code_stata_path_header()

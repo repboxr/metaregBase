@@ -44,7 +44,7 @@ mrb_run_all = function(project_dir, drf=repboxDRF::drf_load(project_dir,apply_ca
   mrb
 }
 
-mrb_init = function(project_dir=drf$project_dir, drf=NULL,use_mcache=TRUE, mcache_files = use_mcache, mcache_runid=use_mcache, mcache_clear = TRUE, with_try=TRUE) {
+mrb_init = function(project_dir=drf$project_dir, drf=NULL,use_mcache=TRUE, mcache_files = use_mcache, mcache_runid=use_mcache, mcache_clear = TRUE, with_try=TRUE, custom_cache_min_score=100,custom_max_caches=10) {
   project_dir = normalizePath(project_dir)
   if (is.null(drf)) {
     drf = drf_load(project_dir)
@@ -61,7 +61,9 @@ mrb_init = function(project_dir=drf$project_dir, drf=NULL,use_mcache=TRUE, mcach
     mrb_dir = file.path(project_dir, "metareg", "base"),
     parcels = drf$parcels,
     reg_runids = unique(drf$path_df$pid),
-    with_try = with_try
+    with_try = with_try,
+    custom_cache_min_score = custom_cache_min_score,
+    custom_max_caches = custom_max_caches
   )
   mrb
 }
