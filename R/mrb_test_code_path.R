@@ -75,22 +75,26 @@ mrb_test_code_path = function(project_dir, runid, parcels, drf, opts = mrb_test_
     if (r_id == runid) {
       # This is the final analysis target / regression command.
 
-      # Keep the explicit translated filter/data-prep code for debugging visibility.
-      filter_code = drf_get_filter_code(r_id, drf, parcels = parcels)
+      # Explicit dependency load logic and filter translation from drf_get_data()
+      pid_load_code = repboxDRF:::drf_get_dependency_load_code(r_id, drf)
+      filter_code = repboxDRF::drf_get_filter_code(r_id, drf, parcels = parcels)
+
+      final_step_drf_code = c(pid_load_code, filter_code)
+      final_step_drf_code = final_step_drf_code[!is.na(final_step_drf_code) & nzchar(final_step_drf_code)]
 
       # Also add the direct regression-ready data construction so the block is runnable as-is.
       data_prep_code = mrb_test_reg_data_prep_code(project_dir, r_id, parcels)
 
       reg_code = mrb_test_reg_r_code(project_dir, r_id, parcels, add_function = FALSE)
 
-      rcode = c(
-        if (!is.null(filter_code) && !all(is.na(filter_code)) && any(nzchar(filter_code))) filter_code else NULL,
-        if (!is.null(filter_code) && !all(is.na(filter_code)) && any(nzchar(filter_code))) "" else NULL,
+      rcode_parts = c(
+        if (length(final_step_drf_code) > 0) final_step_drf_code else NULL,
+        if (length(final_step_drf_code) > 0) "" else NULL,
         data_prep_code,
         "",
         reg_code
       )
-      rcode_str = paste0(rcode, collapse = "\n")
+      rcode_str = paste0(rcode_parts, collapse = "\n")
       if (!nzchar(rcode_str) || all(is.na(rcode_str))) {
         rcode_str = "# No R translation found/needed"
       }
@@ -121,6 +125,3 @@ mrb_test_code_path = function(project_dir, runid, parcels, drf, opts = mrb_test_
 
   paste0(txt_lines, collapse = "\n")
 }
-
-
-

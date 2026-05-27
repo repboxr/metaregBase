@@ -1,358 +1,92 @@
-I completely understand your concern. Function-scope modifications are indeed much safer to prevent accidental overwrites of unrelated parts of the file. 
+An issue with regressions that use `if e(sample)` is that the code to load dependencies like `e(sample)` from the generated Stata caches was being injected into the `rcode` column of the `run_df` DataFrame. However, when `repboxDRF::drf_get_data` executes the data preparation path for a regression command (`pid`), it executes the path *up to* the command (`runid < pid`), meaning the regression command's own `rcode` string (which houses the dependency load) is skipped. 
 
-Here are the exact same changes, meticulously broken down into `function` scope modifications for targeted, precise injections.
+The filter code (`drf_get_filter_code`) is applied subsequently, but fails because `stata2r_env$e_sample` has not been loaded yet.
 
-!MODIFICATION drf_add_dep_df repboxDRF/R/drf_deps.R
-scope = "function"
-file = "/home/rstudio/repbox/repboxDRF/R/drf_deps.R"
-function_name = "drf_add_dep_df"
-description = "Update drf_add_dep_df to capture the exact macro_name required for downstream dependency caching."
+To fix this, we need to extract the generation of the dependency load code into a shared helper function `drf_get_dependency_load_code`. Then, we can explicitly call it in `drf_get_data` for the `pid` command *before* executing the filter code, ensuring the dependencies exist in `stata2r_env` exactly when they're needed.
+
+Finally, we update `mrb_test_code_path.R` to actively show this dependency load code and the `drf_get_filter_code` result so that the test path report contains the actual R code representing what `drf_get_data` runs.
+
+Here are the fixes:
+
+!MODIFICATION drf_r_code.R
+scope = "file"
+file = "/home/rstudio/repbox/repboxDRF/R/drf_r_code.R"
+description = "Extract dependency loading logic into drf_get_dependency_load_code and update drf_run_df_create_rcode to use it"
 ---
 ```r
-#' Compute r(), e() or xi dependencies between run_df commands
-drf_add_dep_df = function(drf) {
-  restore.point("drf_make_deps_df")
-  run_df = drf$run_df
-  cmdlines = run_df$cmdline
-  run_df$code = run_df$cmdline
+example = function() {
+  # Should point to this project dir
+  project_dir = "~/repbox/projects/aejapp_11_2_10"
+  project_dir = "~/repbox/projects/test"
 
-  # e() dependencies (via regression commands)
-  make_df_e = run_df %>%
-    filter(cmd_type %in% c("reg","quasi_reg")) %>%
-    select(source_runid=runid)
+  if (FALSE)
+    rstudioapi::filesPaneNavigate(project_dir)
 
-  e_matches = stringi::stri_extract_all_regex(run_df$cmdline, "\\be\\([a-zA-Z0-9_]+\\)")
-  edep_list = lapply(seq_along(e_matches), function(i) {
-    if (is.na(e_matches[[i]][1])) return(NULL)
-    data.frame(runid = run_df$runid[i], dep_type = "e", macro_name = e_matches[[i]], stringsAsFactors = FALSE)
-  })
-  edep_df = bind_rows(edep_list)
-  if (NROW(edep_df) > 0) {
-    edep_df = edep_df %>% distinct() %>% left_join(make_df_e, by = join_by(closest(runid > source_runid)), relationship = "many-to-one")
-  } else {
-    edep_df = data.frame(runid=integer(), source_runid=integer(), dep_type=character(), macro_name=character())
-  }
-
-  # r() dependencies (via commands like summarize)
-  make_df_r = run_df %>%
-    filter(cmd %in% stata_make_r_cmds()) %>%
-    select(source_runid=runid)
-
-  r_matches = stringi::stri_extract_all_regex(run_df$cmdline, "\\br\\([a-zA-Z0-9_]+\\)")
-  rdep_list = lapply(seq_along(r_matches), function(i) {
-    if (is.na(r_matches[[i]][1])) return(NULL)
-    data.frame(runid = run_df$runid[i], dep_type = "r", macro_name = r_matches[[i]], stringsAsFactors = FALSE)
-  })
-  rdep_df = bind_rows(rdep_list)
-  if (NROW(rdep_df) > 0) {
-    rdep_df = rdep_df %>% distinct() %>% left_join(make_df_r, by = join_by(closest(runid > source_runid)), relationship = "many-to-one")
-  } else {
-    rdep_df = data.frame(runid=integer(), source_runid=integer(), dep_type=character(), macro_name=character())
-  }
-
-  # xi dependencies
-  makes_xi = run_df$cmd == "xi"
-  rows = which(run_df$cmd_type %in%  c("reg","quasi_reg"))
-  mxi = stringi::stri_detect_regex(run_df$cmdline[rows], "\\bxi\\:")
-  makes_xi[rows[mxi]] = TRUE
-
-  make_df_xi = data.frame(source_runid = run_df$runid[makes_xi])
-
-  xidep_df = run_df %>%
-    filter(stringi::stri_detect_regex(cmdline, "\\b_I[a-zA-Z0-9_]+")) %>%
-    select(runid) %>%
-    mutate(dep_type = "xi", macro_name = "xi") %>%
-    left_join(make_df_xi, by = join_by(closest(runid > source_runid)), relationship = "many-to-one")
-
-  drf$dep_df = bind_rows(edep_df, rdep_df, xidep_df) %>% filter(!is.na(source_runid))
-  
-  outfile = file.path(drf$project_dir,"drf/dep_df.Rds")
-  save_rds_create_dir(drf$dep_df, outfile)
-
-  drf
+  drf = drf_load(project_dir)
+  drf$sc_df = drf_stata_code_df(drf, path_merge = "load_natural")
 }
-```
-!END_MODIFICATION drf_add_dep_df repboxDRF/R/drf_deps.R
 
-!MODIFICATION drf_add_code_store_e_r repboxDRF/R/drf_stata_code.R
-scope = "function"
-file = "/home/rstudio/repbox/repboxDRF/R/drf_stata_code.R"
-insert_before_fun = "drf_stata_code_df"
-description = "Inject a new helper function that writes Stata ADO instructions to save dependencies locally."
----
-```r
-drf_add_code_store_e_r = function(run_df, dep_df, project_dir, overwrite_e_r = FALSE) {
-  restore.point("drf_add_code_store_e_r")
-  if (is.null(dep_df) || NROW(dep_df) == 0) return(run_df)
 
-  e_r_deps = dep_df %>% dplyr::filter(dep_type %in% c("e", "r"), !is.na(source_runid)) %>%
-    dplyr::select(source_runid, dep_type, macro_name) %>% dplyr::distinct()
+drf_make_r_trans_parcel = function(drf) {
+  restore.point("drf_make_r_trans_parcel")
+  run_df = drf_run_df_create_rcode(drf=drf)
+  rt_df = run_df %>%
+    filter(rcode != "") %>%
+    select(runid, rcode)
 
-  if (NROW(e_r_deps) == 0) return(run_df)
+  drf$parcels[["r_trans"]] = rt_df
+  repdb_save_parcels(drf$parcels["r_trans"],file.path(drf$project_dir, "repdb"),check=TRUE)
+  drf
 
-  outdir = file.path(project_dir, "drf", "stata_e_r")
-  if (!dir.exists(outdir)) dir.create(outdir, recursive = TRUE, showWarnings = FALSE)
+}
 
-  for (i in seq_len(NROW(e_r_deps))) {
-    s_runid = e_r_deps$source_runid[i]
-    m_name = e_r_deps$macro_name[i]
-    
-    prefix = substr(m_name, 1, 1) # 'e' or 'r'
+# Writes stata code skeleton for direct replication of one or
+# multiple regression commands
+# The regression commands themselves will be palceholder of form
+# {{runid-3562}}
+
+# TO DO: omit unneccesary previous reg steps.
+# They are currently always included in path since
+# later regressions may need them if r() or something is used from it.
+
+drf_get_dependency_load_code = function(r_id, drf) {
+  load_code = c()
+  if (is.null(drf$dep_df) || NROW(drf$dep_df) == 0) return(load_code)
+
+  my_deps = drf$dep_df %>% dplyr::filter(runid == r_id, dep_type %in% c("e", "r"), !is.na(source_runid))
+  if (NROW(my_deps) == 0) return(load_code)
+
+  for (j in seq_len(NROW(my_deps))) {
+    s_runid = my_deps$source_runid[j]
+    m_name = my_deps$macro_name[j]
+    prefix = substr(m_name, 1, 1)
     inner = gsub("^[er]\\(|\\)$", "", m_name)
 
     if (m_name == "e(sample)") {
-      outfile = file.path(outdir, paste0(prefix, "_", s_runid, "_", inner, ".dta"))
-      if (!overwrite_e_r && file.exists(outfile)) next
-      save_code = paste0(
-        "\n* Save e(sample) for downstream R dependency\n",
-        "capture {\n",
-        "  preserve\n",
-        "  gen __esample = e(sample)\n",
-        "  keep __esample\n",
-        "  save \"", outfile, "\", replace\n",
-        "  restore\n",
-        "}\n"
-      )
+      outfile = file.path("drf", "stata_e_r", paste0(prefix, "_", s_runid, "_", inner, ".dta"))
+      var_name = "e_sample"
+      load_code = c(load_code, paste0(
+        "if (file.exists(file.path(project_dir, '", outfile, "'))) {\n",
+        "  stata2r_env$", var_name, " = haven::read_dta(file.path(project_dir, '", outfile, "'))$__esample\n",
+        "} else {\n",
+        "  repboxUtils::repbox_problem('Missing dependency file: ", outfile, "', type='missing_dep', project_dir=project_dir, fail_action='warn')\n",
+        "}"
+      ))
     } else {
-      outfile = file.path(outdir, paste0(prefix, "_", s_runid, "_", inner, ".txt"))
-      if (!overwrite_e_r && file.exists(outfile)) next
-      save_code = paste0(
-        "\n* Save macro for downstream R dependency\n",
-        "capture file close _er_file\n",
-        "capture file open _er_file using \"", outfile, "\", write replace\n",
-        "capture file write _er_file (string(", m_name, "))\n",
-        "capture file close _er_file\n"
-      )
-    }
-
-    row_idx = match(s_runid, run_df$runid)
-    if (!is.na(row_idx)) {
-      run_df$code[row_idx] = paste0(run_df$code[row_idx], save_code)
+      outfile = file.path("drf", "stata_e_r", paste0(prefix, "_", s_runid, "_", inner, ".txt"))
+      var_name = paste0(prefix, "_", inner)
+      load_code = c(load_code, paste0(
+        "if (file.exists(file.path(project_dir, '", outfile, "'))) {\n",
+        "  stata2r_env$", var_name, " = as.numeric(readLines(file.path(project_dir, '", outfile, "'), warn=FALSE)[1])\n",
+        "} else {\n",
+        "  repboxUtils::repbox_problem('Missing dependency file: ", outfile, "', type='missing_dep', project_dir=project_dir, fail_action='warn')\n",
+        "}"
+      ))
     }
   }
-  run_df
+  return(load_code)
 }
-```
-!END_MODIFICATION drf_add_code_store_e_r repboxDRF/R/drf_stata_code.R
 
-!MODIFICATION drf_stata_code_df repboxDRF/R/drf_stata_code.R
-scope = "function"
-file = "/home/rstudio/repbox/repboxDRF/R/drf_stata_code.R"
-function_name = "drf_stata_code_df"
-description = "Update drf_stata_code_df to trigger the e/r Stata dependency writes, honoring the new arguments."
----
-```r
-drf_stata_code_df = function(drf,runids=NULL, path_merge = c("none", "load", "natural", "load_natural")[4], cache_after_runids = drf$cache_after_runids, cache_after_cmd=drf$cache_after_cmd, write_e_r = TRUE, overwrite_e_r = FALSE) {
-  restore.point("drf_stata_code_skel")
-  project_dir = drf$project_dir
-  pids = runids
-  path_df = drf$path_df
-  if (!is.null(pids)) {
-    path_df = path_df %>%
-      filter(pid %in% pids)
-  }
-  pids = unique(path_df$pid)
-  if (length(pids)<=1) path_merge = "none"
-
-  restore_code = function(data_path) {
-    paste0("* Restore previously loaded data set", basename(data_path), "\nframe copy cache_frame default, replace")
-  }
-  preserve_code = function() {
-    "\nframe copy default cache_frame, replace"
-  }
-  update_rdf_cache_code = function(rdf) {
-    rdf$pre = rep("", NROW(rdf))
-    if (isTRUE(rdf$has_file_cache[1]) & NROW(rdf) > 1) {
-         rdf$code[1] = paste0('use "', rdf$drf_cache_file[1], '", clear')
-    } else if (isTRUE(rdf$has_file_cache[1])) {
-      # load file cache and keep code that runs regression
-      rdf$pre[1] = paste0('use "', rdf$drf_cache_file[1], '", clear\n\n')
-    }
-    rdf
-  }
-
-  run_df = drf$run_df
-  run_df = run_df %>% semi_join(path_df, by="runid")
-
-  if (!has_col(run_df, "aux_cmd_type")) {
-    run_df$aux_cmd_type = rep("", NROW(run_df))
-  }
-
-  run_df$code = ifelse(is.na(run_df$ok) | run_df$ok, run_df$cmdline, paste0("capture noisily ", run_df$cmdline))
-
-  run_df = drf_replace_run_df_code_data_path(run_df = run_df, drf=drf)
-
-  # Only relevant for 1st element in paths
-  run_df$data_path = ifelse(is.na(run_df$drf_cache_file) | run_df$drf_cache_file=="", run_df$org_data_path, run_df$drf_cache_file)
-
-  run_df = drf_code_stata_add_save_cache(project_dir = project_dir, run_df=run_df,cache_after_runids = cache_after_runids, cache_after_cmd = cache_after_cmd)
-
-  if (write_e_r) {
-    run_df = drf_add_code_store_e_r(run_df, drf$dep_df, project_dir, overwrite_e_r)
-  }
-
-  path_li = split(path_df, path_df$pid)
-  code_li = NULL
-  pid = pids[1]
-  if (path_merge == "none") {
-    code_li = lapply(pids, function(pid) {
-      pdf = path_li[[as.character(pid)]]
-      pdf = drf_remove_non_mod_reg_from_path_df(pdf, drf)
-
-      rdf = run_df[run_df$runid %in% pdf$runid, ]
-      rdf = update_rdf_cache_code(rdf)
-      rdf %>%
-        transmute(pid=pid,runid=runid, code=code, pre=pre, post="", cmd_type=cmd_type, cmd=cmd, is_target = runid==pid, aux_cmd_type=na.val(aux_cmd_type,""))
-    })
-    sc_df = bind_rows(code_li)
-    # we now add scalar definitions from scalar map
-    sc_df = sc_df %>%
-      left_join(drf$scalar_code, by="runid") %>%
-      mutate(
-        scalar_stata_code = na.val(scalar_stata_code,""),
-        scalar_r_code = na.val(scalar_r_code,"")
-      )
-
-    return(sc_df)
-  }
-  ps_df = path_df %>%
-    group_by(pid) %>%
-    summarize(
-      first_runid = min(runid),
-      last_runid = max(runid),
-    ) %>%
-    left_join(run_df %>% select(first_runid=runid, data_path), by="first_runid")
-
-  data_df = ps_df %>%
-    group_by(data_path) %>%
-    summarize(
-      data_runid = min(first_runid),
-      data_num_paths = n()
-    ) %>%
-    arrange(data_runid)
-
-  ps_df = ps_df %>%
-    left_join(data_df, by="data_path")
-
-  merge_load = path_merge %in% c("load", "load_natural")
-  merge_natural = path_merge %in% c("natural", "load_natural")
-
-  if (merge_load) {
-    ps_df = ps_df %>%
-      ungroup() %>%
-      arrange(data_runid, first_runid, last_runid) %>%
-      mutate(
-        restore_data = is.true(lag(data_runid)==data_runid),
-        preserve_data = !restore_data & data_num_paths > 1
-      )
-
-  } else {
-    ps_df = ps_df %>%
-      arrange(first_runid, last_runid) %>%
-      mutate(restore_data = FALSE, preserve_data=FALSE)
-  }
-
-  pids = ps_df$pid
-  if (!merge_natural) {
-    code_li = lapply(pids, function(pid) {
-      pdf = path_li[[as.character(pid)]]
-      pdf = drf_remove_non_mod_reg_from_path_df(pdf, drf)
-      rdf = run_df[run_df$runid %in% pdf$runid, ]
-      rdf = update_rdf_cache_code(rdf)
-
-      rdf = rdf %>%
-        transmute(pid=pid,runid=runid, code=code, pre=pre, post="", cmd_type=cmd_type, cmd=cmd, is_target = runid==pid, aux_cmd_type="", clear=FALSE)
-
-      ps = ps_df[ps_df$pid==pid,]
-      if (ps$preserve_data) {
-        rdf$code[1] = paste0(rdf$code[1],preserve_code())
-        rdf$aux_cmd_type[1] = paste0("load_preserve")
-      } else if (ps$restore_data) {
-        rdf$code[1] = restore_code(ps$data_path)
-        rdf$aux_cmd_type[1] = paste0("restore")
-      }
-      rdf
-    })
-    sc_df = bind_rows(code_li)
-    # we now add scalar definitions from scalar map
-    sc_df = sc_df %>%
-      left_join(drf$scalar_code, by="runid") %>%
-      mutate(
-        scalar_stata_code = na.val(scalar_stata_code,""),
-        scalar_r_code = na.val(scalar_r_code,"")
-      )
-
-    return(sc_df)
-  }
-
-  code_li = vector("list", length(pids))
-  opdf = NULL
-  counter = 0
-
-  while (counter < length(pids)) {
-    counter = counter+1
-    pid = pids[counter]
-    pdf = path_li[[as.character(pid)]]
-    if (is.null(opdf) | NROW(opdf)>=NROW(pdf)) {
-      restart = TRUE
-    } else {
-      restart = !all(opdf$runid == pdf$runid[1:NROW(opdf)])
-    }
-
-    if (restart) {
-      rdf = run_df[run_df$runid %in% pdf$runid, ]
-      rdf = update_rdf_cache_code(rdf)
-
-      rdf = rdf %>%
-        transmute(pid=pid,runid=runid, code=code, pre=pre, post="", cmd_type=cmd_type, cmd=cmd, is_target = runid==pid, aux_cmd_type="", clear=FALSE)
-
-      ps = ps_df[ps_df$pid==pid,]
-
-      if (ps$preserve_data) {
-        rdf$code[1] = paste0(rdf$code[1],preserve_code())
-        rdf$aux_cmd_type[1] = paste0("load_preserve")
-      } else if (ps$restore_data) {
-        rdf$code[1] = restore_code(ps$data_path)
-        rdf$aux_cmd_type[1] = paste0("restore")
-      }
-      opdf = pdf
-
-    } else if (!restart) {
-      npdf = pdf %>% filter(runid > max(opdf$runid))
-      opdf = pdf
-      pdf = npdf
-
-      rdf = run_df[run_df$runid %in% pdf$runid, ]
-      rdf = update_rdf_cache_code(rdf)
-
-      rdf = rdf %>%
-        transmute(pid=pid,runid=runid, code=code, pre=pre, post="", cmd_type=cmd_type, cmd=cmd, is_target = runid==pid, aux_cmd_type="", clear=FALSE)
-    }
-    code_li[[counter]] = rdf
-  }
-  sc_df = bind_rows(code_li)
-
-  # we now add scalar definitions from scalar map
-  if (!is.null(drf$scalar_code)) {
-    sc_df = sc_df %>%
-      left_join(drf$scalar_code, by="runid") %>%
-      mutate(
-        scalar_stata_code = na.val(scalar_stata_code,""),
-        scalar_r_code = na.val(scalar_r_code,"")
-      )
-  }
-  sc_df
-}
-```
-!END_MODIFICATION drf_stata_code_df repboxDRF/R/drf_stata_code.R
-
-!MODIFICATION drf_run_df_create_rcode repboxDRF/R/drf_r_code.R
-scope = "function"
-file = "/home/rstudio/repbox/repboxDRF/R/drf_r_code.R"
-function_name = "drf_run_df_create_rcode"
-description = "Inject logic into drf_run_df_create_rcode to load e/r dependencies saved by Stata locally before running translated code."
----
-```r
 drf_run_df_create_rcode = function(run_df=drf$run_df, runids=drf_runids(drf), scalar_code = drf$scalar_code, drf=NULL) {
   restore.point("drf_run_df_create_rcode")
 
@@ -410,45 +144,15 @@ drf_run_df_create_rcode = function(run_df=drf$run_df, runids=drf_runids(drf), sc
       run_df$rcode[idx] = code
     }
   }
-  
+
   run_df$rcode = na.val(run_df$rcode, "")
 
   # Load locally saved Stata dependency values into the R environment
   if (!is.null(drf) && !is.null(drf$dep_df) && NROW(drf$dep_df) > 0) {
     for (idx in update_rows) {
       r_id = run_df$runid[idx]
-      my_deps = drf$dep_df %>% dplyr::filter(runid == r_id, dep_type %in% c("e", "r"), !is.na(source_runid))
-
-      if (NROW(my_deps) > 0) {
-        load_code = c()
-        for (j in seq_len(NROW(my_deps))) {
-          s_runid = my_deps$source_runid[j]
-          m_name = my_deps$macro_name[j]
-          prefix = substr(m_name, 1, 1)
-          inner = gsub("^[er]\\(|\\)$", "", m_name)
-
-          if (m_name == "e(sample)") {
-            outfile = file.path("drf", "stata_e_r", paste0(prefix, "_", s_runid, "_", inner, ".dta"))
-            var_name = "e_sample"
-            load_code = c(load_code, paste0(
-              "if (file.exists(file.path(project_dir, '", outfile, "'))) {\n",
-              "  stata2r_env$", var_name, " = haven::read_dta(file.path(project_dir, '", outfile, "'))$__esample\n",
-              "} else {\n",
-              "  repboxUtils::repbox_problem('Missing dependency file: ", outfile, "', type='missing_dep', project_dir=project_dir, fail_action='warn')\n",
-              "}"
-            ))
-          } else {
-            outfile = file.path("drf", "stata_e_r", paste0(prefix, "_", s_runid, "_", inner, ".txt"))
-            var_name = paste0(prefix, "_", inner)
-            load_code = c(load_code, paste0(
-              "if (file.exists(file.path(project_dir, '", outfile, "'))) {\n",
-              "  stata2r_env$", var_name, " = as.numeric(readLines(file.path(project_dir, '", outfile, "'), warn=FALSE)[1])\n",
-              "} else {\n",
-              "  repboxUtils::repbox_problem('Missing dependency file: ", outfile, "', type='missing_dep', project_dir=project_dir, fail_action='warn')\n",
-              "}"
-            ))
-          }
-        }
+      load_code = drf_get_dependency_load_code(r_id, drf)
+      if (length(load_code) > 0) {
         run_df$rcode[idx] = paste0(paste(load_code, collapse="\n"), "\n", run_df$rcode[idx])
       }
     }
@@ -464,502 +168,470 @@ drf_run_df_create_rcode = function(run_df=drf$run_df, runids=drf_runids(drf), sc
 
   run_df
 }
-```
-!END_MODIFICATION drf_run_df_create_rcode repboxDRF/R/drf_r_code.R
 
-!MODIFICATION do_parse stata2r/R/do_parse.R
-scope = "function"
-file = "/home/rstudio/aicoder/stata2r/R/do_parse.R"
-function_name = "do_parse"
-description = "Clean up tracking of unused 'needed' macros logic, leaving only need_xi."
+
+#
+# drf_rcode_df = function(drf,runids=NULL, path_merge = c("none", "load", "natural", "load_natural")[4], update_rcode = FALSE) {
+#   restore.point("drf_rcode_df")
+#
+#   # perform path merge like as for stata code
+#   sc_df = drf_stata_code_df(drf, runids=runids, path_merge=path_merge)
+#   runids = unique(rc_df$runid)
+#
+#   run_df = drf$run_df
+#   if (update_rcode) {
+#     run_df = drf_run_df_create_rcode(run_df, runids=runids)
+#   }
+#
+#   run_df = drf$run_df %>%
+#     filter(runid %in% runids)
+#
+#   rc_df = rc_df %>%
+#     left_join(run_df %>% select(runid, cmdline,rcode), by="runid") %>%
+#     mutate(code = rcode, pre = "", post="")
+#   rc_df
+# }
+#
+#
+#
+```
+!END_MODIFICATION drf_r_code.R
+
+!MODIFICATION drf_run_r.R
+scope = "file"
+file = "/home/rstudio/repbox/repboxDRF/R/drf_run_r.R"
+description = "Inject dependency load logic explicitly inside drf_get_data to capture dependencies of regression commands"
 ---
 ```r
-do_parse = function(do_code) {
-  if (is.list(do_code)) {
-    do_code = unlist(do_code)
-  }
-  if (!is.character(do_code)) {
-    do_code = as.character(do_code)
+example = function() {
+  # Should point to this project dir
+  project_dir = "~/repbox/projects/aejapp_11_2_10"
+  drf = drf_load(project_dir)
+  drf$pids
+  drf$path_df %>%
+    group_by(pid) %>%
+    summarize(ncmd = n())
+  pid = 188
+
+  # test caches
+  file_mcache_cand = drf_find_file_mcache_cand(drf=drf)
+  runid_mcache_cand = drf_find_runid_mcache_cand(drf=drf)
+  drf_set_file_mcache_cand(file_mcache_cand, project_dir)
+  drf_set_runid_mcache_cand(runid_mcache_cand, project_dir)
+
+  class(drf_mcache_object())
+  names(drf_mcache_object())
+
+  drf_mcache_info()
+
+  data = drf_get_data(pid, drf=drf,update_rcode = TRUE)
+
+
+
+
+}
+drf_get_data = function(runid=pid, drf, update_rcode=FALSE,
+    exec_env = new.env(parent = globalenv()), filtered=TRUE, pid=NULL, use_mcache=TRUE, adapt_path_to_caches=TRUE,
+    continue_on_error=FALSE, start_stepwise=FALSE) {
+
+  restore.point("drf_get_data")
+  project_dir = drf$project_dir
+
+  if (is.null(runid)) {
+    stop("Specify a runid (or pid as synonym).")
   }
 
-  num_lines = length(do_code)
-  if (num_lines == 0) {
-    return(data.frame(
-      line = integer(0),
-      do_code = character(0),
-      stata_cmd_original = character(0),
-      stata_cmd = character(0),
-      rest_of_cmd = character(0),
-      is_by_prefix = logical(0),
-      is_bysort_prefix = logical(0),
-      by_group_vars = character(0),
-      by_sort_vars = character(0),
-      is_quietly_prefix = logical(0),
-      is_capture_prefix = logical(0),
-      is_xi_prefix = logical(0),
-      do_translate = logical(0),
-      is_mod = logical(0),
-      need_xi = logical(0),
-      stata_translation_error = character(0),
-      will_have_original_order_idx = logical(0),
-      will_ignore_row_order_for_comparison = logical(0),
-      stringsAsFactors = FALSE
-    ))
+  if (adapt_path_to_caches) {
+    drf = drf_apply_caches(drf, just_pids = runid)
   }
 
-  parsed_info = parse_stata_command_lines(do_code)
+  runids = drf_runids(drf)
+  if (!runid %in% runids) {
+    stop("runid is not part of any DRF path. We only build paths that lead to a successfully run regression.")
+  }
 
-  cmd_df = data.frame(
-    line = seq_len(num_lines),
-    do_code = do_code,
-    stata_cmd_original = parsed_info$stata_cmd_original,
-    stata_cmd = parsed_info$stata_cmd,
-    rest_of_cmd = parsed_info$rest_of_cmd,
-    is_by_prefix = parsed_info$is_by_prefix,
-    is_bysort_prefix = parsed_info$is_bysort_prefix,
-    by_group_vars = parsed_info$by_group_vars,
-    by_sort_vars = parsed_info$by_sort_vars,
-    is_quietly_prefix = parsed_info$is_quietly_prefix,
-    is_capture_prefix = parsed_info$is_capture_prefix,
-    is_xi_prefix = parsed_info$is_xi_prefix,
-    stata_translation_error = NA_character_,
-    will_ignore_row_order_for_comparison = FALSE,
-    stringsAsFactors = FALSE
+  path_df = drf$path_df
+  pid = first(path_df$pid[path_df$runid == runid])
+
+  if (runid == pid & filtered) {
+    if (use_mcache) {
+      data = drf_get_mcache_data(runid = runid, project_dir = drf$project_dir)
+      if (!is.null(data)) {
+        return(data)
+      }
+    }
+    if (drf_has_cache_file(project_dir, runid)) {
+      data = drf_load_cache_file(project_dir, runid)
+      if (use_mcache) {
+        drf_store_if_mcache_cand(data, runid = runid, project_dir = drf$project_dir)
+      }
+      return(data)
+    }
+  }
+
+  path_df_full = path_df[path_df$pid == pid,]
+  path_df_sub = path_df_full[path_df_full$runid < runid,]
+
+  mcache_runid = NULL
+  if (use_mcache) {
+    mcache_runid = drf_get_best_runid_mcache(drf, path_df_sub)
+  }
+  if (!is.null(mcache_runid)) {
+    path_df_sub = path_df_sub[path_df_sub$runid > mcache_runid,]
+    exec_env$data = drf_get_mcache_data(runid=mcache_runid, project_dir = drf$project_dir)
+  }
+
+  exec_runids = path_df_sub$runid
+  run_df = drf$run_df
+
+  if (!has_col(run_df, "rcode") | update_rcode) {
+    run_df = drf_run_df_create_rcode(run_df, runids=path_df_full$runid, drf=drf)
+  }
+
+  rows = match(exec_runids, run_df$runid)
+  run_df = run_df[rows,]
+
+  rcode = run_df$rcode
+
+  if (length(rcode) == 0) {
+    stop("No R code found for getting data. That looks like a bug.")
+  }
+
+  drf = drf_sync_r_err_runids(drf)
+
+  check_runids = run_df$runid
+  if (NROW(run_df) > 0 && isTRUE(run_df$has_file_cache[1])) {
+    check_runids = check_runids[-1]
+  }
+
+  if (!continue_on_error && any(check_runids %in% drf$r_err_runids)) {
+    cat("\nSkip as R translation error on path was noted earlier.\n")
+    return(NULL)
+  }
+
+  if (NROW(run_df) > 0 & is.null(mcache_runid)) {
+    first_runid = run_df$runid[1]
+    if (isTRUE(run_df$has_file_cache[1])) {
+      drf_rel_path = paste0("cached_dta/", basename(run_df$drf_cache_file[1]))
+      cache_load_code = paste0(
+        'data = drf_load_data(project_dir, "', drf_rel_path ,'")\n',
+        'data$stata2r_original_order_idx = seq_len(nrow(data))\n',
+        'assign("has_original_order_idx", TRUE, envir = stata2r::stata2r_env)'
+      )
+      rcode[1] = cache_load_code
+    }
+  }
+
+  if (filtered) {
+    filter_code = drf_get_filter_code(pid, drf)
+    pid_load_code = drf_get_dependency_load_code(pid, drf)
+
+    scalar_code = NULL
+    if (pid %in% drf$scalar_code$runid) {
+      rows = which(drf$scalar_code$runid == pid)
+      scalar_code = drf$scalar_code$scalar_r_code[rows]
+    }
+
+    rcode = c(rcode, scalar_code, pid_load_code, filter_code)
+  }
+
+  res = drf_eval_create_data_r_code(
+    project_dir = drf$project_dir,
+    rcode = rcode,
+    runid = runid,
+    exec_env = exec_env,
+    continue_on_error = continue_on_error,
+    start_stepwise = start_stepwise
   )
 
-  cmd_df$will_have_original_order_idx = rep(FALSE, NROW(cmd_df))
-  cmd_df$do_translate = rep(FALSE, NROW(cmd_df))
-  cmd_df$is_mod = rep(FALSE, NROW(cmd_df))
-  cmd_df$need_xi = rep(FALSE, NROW(cmd_df))
+  data = res$data
 
-  return(cmd_df)
+  if (res$has_err) {
+    err_lines = res$err_lines[res$err_lines <= NROW(run_df)]
+    err_runids = run_df$runid[err_lines]
+
+    if (!continue_on_error) {
+      drf = drf_sync_r_err_runids(drf, err_runids)
+      return(NULL)
+    }
+  }
+
+  if (use_mcache & filtered & !is.null(data)) {
+    drf_store_if_mcache_cand(data, runid = runid, project_dir = drf$project_dir)
+  }
+
+  data
 }
-```
-!END_MODIFICATION do_parse stata2r/R/do_parse.R
 
-!MODIFICATION s2r_check_mod_df stata2r/R/s2r_check_mod.R
-scope = "function"
-file = "/home/rstudio/aicoder/stata2r/R/s2r_check_mod.R"
-function_name = "s2r_check_mod_df"
-description = "Rewrite s2r_check_mod_df to remove fragile backwards scanning for dependencies. Commands are marked only if they intrinsically modify data."
----
-```r
-s2r_check_mod_df = function(cmd_df) {
-  restore.point("s2r_check_mod_df")
 
-  n_rows = NROW(cmd_df)
-  if (n_rows == 0) {
-    if (!("is_mod" %in% names(cmd_df))) cmd_df$is_mod = logical(0)
-    if (!("do_translate" %in% names(cmd_df))) cmd_df$do_translate = logical(0)
-    if (!("need_xi" %in% names(cmd_df))) cmd_df$need_xi = logical(0)
-    return(cmd_df)
+drf_eval_create_data_r_code = function(project_dir, rcode, runid=NULL, exec_env=NULL, continue_on_error=FALSE, start_stepwise=FALSE) {
+
+  restore.point("drf_eval_create_data_r_code")
+
+  env = new.env(parent = globalenv())
+  env$project_dir = project_dir
+
+  if (!is.null(exec_env)) {
+    env$data = exec_env[["data"]]
+  } else {
+    env$data = NULL
   }
 
-  if (!("is_xi_prefix" %in% names(cmd_df))) cmd_df$is_xi_prefix = rep(FALSE, n_rows)
+  err = NULL
 
-  cmd_df$is_mod = rep(FALSE, n_rows)
-  cmd_df$do_translate = rep(FALSE, n_rows)
-  cmd_df$need_xi = rep(FALSE, n_rows)
-
-  # Commands that are inherently data-modifying are always kept.
-  cmd_df$is_mod = !is.na(cmd_df$stata_cmd) & (cmd_df$stata_cmd %in% stata_data_manip_cmds)
-
-  # tabulate is usually display-only, but tabulate ..., gen(...) creates dummy variables.
-  idx_tabulate_gen = which(!is.na(cmd_df$stata_cmd) & cmd_df$stata_cmd %in% c("tabulate", "tab"))
-  if (length(idx_tabulate_gen) > 0) {
-    has_gen = vapply(
-      cmd_df$rest_of_cmd[idx_tabulate_gen],
-      s2r_tabulate_has_gen_option,
-      logical(1)
-    )
-    cmd_df$is_mod[idx_tabulate_gen[has_gen]] = TRUE
-  }
-
-  cmd_is_est = !is.na(cmd_df$stata_cmd) & (cmd_df$stata_cmd %in% stata_estimation_cmds)
-  rest_of_cmd_vec = cmd_df$rest_of_cmd
-  rest_of_cmd_vec[is.na(rest_of_cmd_vec)] = ""
-
-  # Xi side effects from xi-prefixed estimation commands
-  idx_xi_est = which(cmd_df$is_xi_prefix & cmd_is_est)
-  if (length(idx_xi_est) > 0) {
-    do_code_vec = cmd_df$do_code
-    do_code_vec[is.na(do_code_vec)] = ""
-
-    for (i in idx_xi_est) {
-      parsed_est = s2r_p_estimation_cmd(rest_of_cmd_vec[i], estimator = cmd_df$stata_cmd[i])
-      xi_prefixes = s2r_xi_specs_to_prefixes(parsed_est$xi_specs)
-
-      need_xi_i = FALSE
-      if (length(xi_prefixes) > 0 && i < n_rows) {
-        later_lines = do_code_vec[(i + 1):n_rows]
-
-        # Fast vectorized check across all later lines at once
-        if (any(stringi::stri_detect_fixed(later_lines, "_I*"))) {
-          need_xi_i = TRUE
-        } else {
-          for (pref in xi_prefixes) {
-            if (any(stringi::stri_detect_fixed(later_lines, pref))) {
-              need_xi_i = TRUE
-              break
-            }
-          }
-        }
+  if (!start_stepwise) {
+    tryCatch(
+      {
+        rcode_call = parse(text = paste0(rcode, collapse = "\n"))
+        eval(rcode_call, envir = env)
+      },
+      error = function(e) {
+        err <<- e
+        NULL
       }
+    )
+  }
+  if (!is.null(err) | start_stepwise) {
+    env = new.env(parent = globalenv())
 
-      cmd_df$need_xi[i] = need_xi_i
-      if (need_xi_i) {
-        cmd_df$is_mod[i] = TRUE
+    res = drf_eval_create_data_r_code_stepwise(
+      project_dir = project_dir,
+      rcode = rcode,
+      env = env,
+      runid = runid,
+      continue_on_error = continue_on_error
+    )
+
+    data = res$data
+    has_err = res$has_err
+    err_lines = res$err_lines
+  } else {
+    data = env$data
+    has_err = FALSE
+    err_lines = integer(0)
+  }
+
+  list(data = data, has_err = has_err, err_lines = err_lines)
+}
+
+
+drf_eval_create_data_r_code_stepwise = function(project_dir, rcode, env,
+    runid=NULL, continue_on_error=FALSE) {
+
+  restore.point("drf_eval_r_code_stepwise")
+
+  env$data = NULL
+  env$project_dir = project_dir
+
+  rcode = trimws(rcode)
+
+  has_err = FALSE
+  err_lines = integer(0)
+
+  for (i in seq_along(rcode)) {
+    err = NULL
+    if (rcode[i] == "") next
+
+    tryCatch(
+      {
+        expr = parse(text = rcode[i])
+        eval(expr, envir = env)
+      },
+      error = function(e) {
+        err <<- e
+        NULL
+      }
+    )
+
+    if (!is.null(err)) {
+      err_lines = c(err_lines, i)
+      if (has_err) next
+
+      has_err = TRUE
+
+      code = rcode[i]
+      msg = paste0(
+        "runid=", runid,
+        " has error in drf_get_data (R translation of data preparation):\n\n",
+        code, "\n\n",
+        conditionMessage(err)
+      )
+
+      repbox_problem(
+        msg,
+        type = "r_trans_get_data",
+        fail_action = "msg",
+        project_dir = project_dir,
+        runid = runid
+      )
+
+      if (!continue_on_error) {
+        return(list(data = NULL, has_err = TRUE, err_lines = err_lines))
       }
     }
   }
 
-  # Final explicit overrides (vectorized)
-  is_non_manip = !is.na(cmd_df$stata_cmd) & (cmd_df$stata_cmd %in% stata_non_data_manip_cmds)
-
-  override_idx = is_non_manip & !cmd_df$need_xi
-  if (any(override_idx)) {
-    cmd_df$is_mod[override_idx] = FALSE
-  }
-
-  cmd_df$is_mod[is.na(cmd_df$stata_cmd)] = FALSE
-
-  is_standalone_clear = !is.na(cmd_df$stata_cmd) & cmd_df$stata_cmd == "clear" & (rest_of_cmd_vec == "")
-  if (any(is_standalone_clear)) {
-    cmd_df$is_mod[is_standalone_clear] = TRUE
-  }
-
-  cmd_df$do_translate = cmd_df$is_mod
-  return(cmd_df)
+  list(data = env$data, has_err = has_err, err_lines = err_lines)
 }
-```
-!END_MODIFICATION s2r_check_mod_df stata2r/R/s2r_check_mod.R
 
-!MODIFICATION t_estimation_cmd stata2r/R/t_estimation_cmd.R
-scope = "function"
-file = "/home/rstudio/aicoder/stata2r/R/t_estimation_cmd.R"
-function_name = "t_estimation_cmd"
-description = "Make estimation commands no-ops unless they contain xi: prefixes that generate variables."
+# We store info about runids whose r translation threw an error
+# those runids will then be omitted from the translation to save
+# tryCatch time, which can be surprisingly time consuming.
+drf_sync_r_err_runids = function(drf, runids=NULL) {
+  err_dir = file.path(drf$project_dir, "drf/r_err_runids")
+
+  if (dir.exists(err_dir)) {
+    file_runids = as.integer(list.files(err_dir,pattern = "[0-9]+", full.names=FALSE))
+    file_runids = file_runids[!is.na(file_runids)]
+  } else {
+    file_runids = NULL
+  }
+  drf_runids = union(drf$r_err_runids, runids)
+
+  to_file_err_runids = setdiff(drf_runids, file_runids)
+  for (runid in to_file_err_runids){
+    if (!dir.exists(err_dir)) dir.create(err_dir, recursive = TRUE)
+    writeLines("", file.path(err_dir, runid))
+  }
+  drf$r_err_runids = union(drf_runids, file_runids)
+  drf
+}
+
+```
+!END_MODIFICATION drf_run_r.R
+
+!MODIFICATION mrb_test_code_path.R
+scope = "file"
+file = "/home/rstudio/repbox/metaregBase/R/mrb_test_code_path.R"
+description = "Update mrb_test_code_path to render the regression step correctly with dependency loading and explicit filter code visible"
 ---
 ```r
-t_estimation_cmd = function(rest_of_cmd, cmd_obj, cmd_df, line_num, context, estimator = cmd_obj$stata_cmd) {
-  restore.point("t_estimation_cmd")
+# For a given runid=pid
+# create a text that shows the complete path including Stata data modification steps,
+# the filter code, and the translated R regression steps, formatted clearly.
 
-  need_xi = isTRUE(cmd_obj$need_xi)
+example = function() {
 
-  if (!need_xi) {
-    return(paste0("# ", estimator, " at line ", line_num, " is no-op (no later-used side effects)."))
+}
+
+mrb_runid_test_files = function(project_dir, runid, parcels = list(), drf = repboxDRF::drf_load(project_dir, parcels), outdir = paste0(project_dir, "/run/runid_", runid)) {
+
+  if (!dir.exists(outdir)) dir.create(outdir)
+  r_code = mrb_test_code_path(project_dir, runid, parcels, drf)
+  r_code = paste0('project_dir = "', project_dir, '"\n', r_code)
+  file = paste0(outdir, "/test_runid_", runid, ".R")
+  writeLines(r_code, file)
+  invisible()
+}
+
+
+mrb_test_reg_data_prep_code = function(project_dir, runid, parcels = list()) {
+  restore.point("mrb_test_reg_data_prep_code")
+
+  need = c("reg", "regvar", "regxvar")
+  missing = need[!need %in% names(parcels)]
+
+  load_call = if (length(missing) == 0) {
+    'parcels = parcels'
+  } else {
+    paste0(
+      'parcels = repboxDB::repdb_load_parcels(project_dir, c(',
+      paste0('"', missing, '"', collapse = ", "),
+      '), parcels = parcels)'
+    )
   }
 
-  parsed = s2r_p_estimation_cmd(rest_of_cmd, estimator = estimator)
-  if (is.na(parsed$dep_var) && length(parsed$xi_specs) == 0) {
-    return(paste0("# Failed to parse estimation command at line ", line_num, ": ", cmd_obj$do_code))
+  lines = c(
+    paste0("runid = ", runid),
+    "if (!exists(\"parcels\")) parcels = list()",
+    load_call,
+    "drf = repboxDRF::drf_load(project_dir, parcels = parcels)",
+    "reg = parcels$reg[parcels$reg$runid == runid, , drop = FALSE]",
+    "regvar = parcels$regvar[parcels$regvar$runid == runid, , drop = FALSE]",
+    "regxvar = if (!is.null(parcels$regxvar)) parcels$regxvar[parcels$regxvar$runid == runid, , drop = FALSE] else tibble::tibble()",
+    "",
+    "# dat is the regression-ready data, including the DRF path, filtering,",
+    "# generated cterm columns, and regxvar columns",
+    "dat = metaregBase:::mrb_get_regression_data(runid = runid, drf = drf, reg = reg, regvar = regvar, regxvar = regxvar)"
+  )
+
+  paste0(lines, collapse = "\n")
+}
+
+
+mrb_test_code_path = function(project_dir, runid, parcels, drf, opts = mrb_test_opts()) {
+  restore.point("mrb_test_code_path")
+
+  path_df = drf$path_df %>% filter(pid == !!runid, runid <= !!runid) %>% arrange(runid)
+
+  if (NROW(path_df) == 0) {
+    return(paste0("# No path found in drf$path_df for pid ", runid))
   }
 
-  code_lines = character(0)
+  run_df = drf$run_df %>% filter(runid %in% path_df$runid) %>% arrange(runid)
 
-  if (length(parsed$xi_specs) == 0) {
-    return(paste0("# Failed to parse xi side effects for estimation command at line ", line_num, ": ", cmd_obj$do_code))
-  }
+  txt_lines = c()
 
-  for (spec in parsed$xi_specs) {
-    if (is.null(spec$var2) || is.na(spec$var2) || spec$var2 == "") {
-      code_lines = c(
-        code_lines,
-        paste0(
-          "data = scmd_xi(data = data, var1 = ",
-          quote_for_r_literal(spec$var1),
-          ")"
-        )
+  for (i in seq_len(NROW(run_df))) {
+    r_id = run_df$runid[i]
+    stata_cmd = run_df$cmdline[i]
+
+    # Format the original Stata command neatly as an R comment
+    stata_cmd_lines = strsplit(stata_cmd, "\n")[[1]]
+    stata_cmd_comment = paste0("# Stata: ", paste0(stata_cmd_lines, collapse = "\n#        "))
+
+    if (r_id == runid) {
+      # This is the final analysis target / regression command.
+
+      # Explicit dependency load logic and filter translation from drf_get_data()
+      pid_load_code = repboxDRF:::drf_get_dependency_load_code(r_id, drf)
+      filter_code = repboxDRF::drf_get_filter_code(r_id, drf, parcels = parcels)
+      
+      final_step_drf_code = c(pid_load_code, filter_code)
+      final_step_drf_code = final_step_drf_code[!is.na(final_step_drf_code) & nzchar(final_step_drf_code)]
+
+      # Also add the direct regression-ready data construction so the block is runnable as-is.
+      data_prep_code = mrb_test_reg_data_prep_code(project_dir, r_id, parcels)
+
+      reg_code = mrb_test_reg_r_code(project_dir, r_id, parcels, add_function = FALSE)
+
+      rcode_parts = c(
+        if (length(final_step_drf_code) > 0) final_step_drf_code else NULL,
+        if (length(final_step_drf_code) > 0) "" else NULL,
+        data_prep_code,
+        "",
+        reg_code
       )
+      rcode_str = paste0(rcode_parts, collapse = "\n")
+      if (!nzchar(rcode_str) || all(is.na(rcode_str))) {
+        rcode_str = "# No R translation found/needed"
+      }
+
+      txt_lines = c(txt_lines, stata_cmd_comment, rcode_str, "")
+
     } else {
-      code_lines = c(
-        code_lines,
-        paste0(
-          "data = scmd_xi(data = data, var1 = ",
-          quote_for_r_literal(spec$var1),
-          ", var2 = ",
-          quote_for_r_literal(spec$var2),
-          ")"
+      # Modification or data loading step preceding the target.
+      rcode = run_df$rcode[i]
+
+      # If this is the FIRST runid in the path, and it has a cache, inject the cache load code
+      if (i == 1 && isTRUE(run_df$has_file_cache[i])) {
+        drf_rel_path = paste0("cached_dta/", basename(run_df$drf_cache_file[i]))
+        rcode = paste0(
+          'data = drf_load_data(project_dir, "', drf_rel_path, '")\n',
+          'data$stata2r_original_order_idx = seq_len(nrow(data))\n',
+          'assign("has_original_order_idx", TRUE, envir = stata2r::stata2r_env)'
         )
-      )
+      }
+
+      if (is.null(rcode) || is.na(rcode) || !nzchar(rcode)) {
+        rcode = "# No R translation found/needed"
+      }
+
+      txt_lines = c(txt_lines, stata_cmd_comment, rcode, "")
     }
   }
 
-  paste(code_lines, collapse = "\n")
+  paste0(txt_lines, collapse = "\n")
 }
 ```
-!END_MODIFICATION t_estimation_cmd stata2r/R/t_estimation_cmd.R
-
-!MODIFICATION scmd_estimation_effects stata2r/R/t_estimation_cmd.R
-scope = "function"
-file = "/home/rstudio/aicoder/stata2r/R/t_estimation_cmd.R"
-function_name = "scmd_estimation_effects"
-description = "Mark internal simulation regression logic as deprecated because dependencies are now directly read from file caches."
----
-```r
-scmd_estimation_effects = function(data, dep_var, model_vars, needed_e, r_if_cond = NA_character_, estimator = "regress", formula_terms = character(0)) {
-  stop("scmd_estimation_effects is deprecated. R translations should load e() variables from repboxDRF caches.")
-}
-```
-!END_MODIFICATION scmd_estimation_effects stata2r/R/t_estimation_cmd.R
-
-!MODIFICATION translate_stata_expression_with_r_values stata2r/R/translate_stata_expression_with_r_values.R
-scope = "function"
-file = "/home/rstudio/aicoder/stata2r/R/translate_stata_expression_with_r_values.R"
-function_name = "translate_stata_expression_with_r_values"
-description = "Remove fragile backwards scanning and map e() and r() directly to the stated conventions established by repboxDRF."
----
-```r
-translate_stata_expression_with_r_values = function(stata_expr, line_num, cmd_df, context) {
-  restore.point("translate_stata_expression_with_r_values")
-
-  r_value_mappings = list()
-
-  # We extract all e(...) and r(...) used in stata_expr
-  e_matches = stringi::stri_extract_all_regex(stata_expr, "\\be\\([a-zA-Z0-9_]+\\)")[[1]]
-  e_matches = e_matches[!is.na(e_matches)]
-  for (m in e_matches) {
-    inner = gsub("^[er]\\(|\\)$", "", m)
-    r_value_mappings[[m]] = paste0("stata2r_env$e_", inner)
-  }
-
-  r_matches = stringi::stri_extract_all_regex(stata_expr, "\\br\\([a-zA-Z0-9_]+\\)")[[1]]
-  r_matches = r_matches[!is.na(r_matches)]
-  for (m in r_matches) {
-    inner = gsub("^[er]\\(|\\)$", "", m)
-    r_value_mappings[[m]] = paste0("stata2r_env$r_", inner)
-  }
-
-  translated_expr = translate_stata_expression_to_r(
-    stata_expr,
-    context = context,
-    r_value_mappings = r_value_mappings
-  )
-
-  return(translated_expr)
-}
-```
-!END_MODIFICATION translate_stata_expression_with_r_values stata2r/R/translate_stata_expression_with_r_values.R
-
-!MODIFICATION t_summarize stata2r/R/t_summarize.R
-scope = "function"
-file = "/home/rstudio/aicoder/stata2r/R/t_summarize.R"
-function_name = "t_summarize"
-description = "Make summarize entirely a no-op."
----
-```r
-t_summarize = function(rest_of_cmd, cmd_obj, cmd_df, line_num, context) {
-  restore.point("t_summarize")
-  return(paste0("# summarize at line ", line_num, " is no-op (handled via DRF caching)."))
-}
-```
-!END_MODIFICATION t_summarize stata2r/R/t_summarize.R
-
-!MODIFICATION scmd_summarize stata2r/R/t_summarize.R
-scope = "function"
-file = "/home/rstudio/aicoder/stata2r/R/t_summarize.R"
-function_name = "scmd_summarize"
-description = "Make internal summarize computation a deprecation stub."
----
-```r
-scmd_summarize = function(data, needed_r, var_for_r = NA_character_, r_if_cond = NA_character_) {
-  stop("scmd_summarize is deprecated. R translations should load r() variables from repboxDRF caches.")
-}
-```
-!END_MODIFICATION scmd_summarize stata2r/R/t_summarize.R
-
-!MODIFICATION t_tabulate stata2r/R/t_tabulate.R
-scope = "function"
-file = "/home/rstudio/aicoder/stata2r/R/t_tabulate.R"
-function_name = "t_tabulate"
-description = "Simplify tabulate to only run when using the `gen(...)` option and remove r() dependency evaluation."
----
-```r
-t_tabulate = function(rest_of_cmd, cmd_obj, cmd_df, line_num, context) {
-  restore.point("t_tabulate")
-
-  parsed = s2r_p_tabulate(rest_of_cmd)
-  has_gen = !is.na(parsed$gen_stub) && parsed$gen_stub != ""
-
-  if (!has_gen) {
-    return(paste0("# tabulate at line ", line_num, " is no-op (no generated dummies)."))
-  }
-
-  if (length(parsed$var_tokens) == 0) {
-    return(paste0("# Failed to parse tabulate command: ", rest_of_cmd))
-  }
-
-  if (has_gen && length(parsed$var_tokens) != 1) {
-    return(paste0("# tabulate generate() is only implemented for one-way tabulate: ", rest_of_cmd))
-  }
-
-  varname = parsed$var_tokens[1]
-
-  r_if_cond = NA_character_
-  if (!is.na(parsed$if_str) && parsed$if_str != "") {
-    r_if_cond = translate_stata_expression_with_r_values(
-      parsed$if_str,
-      line_num,
-      cmd_df,
-      list(is_by_group = FALSE)
-    )
-  }
-
-  r_in_range = s2r_in_str_to_r_range_str(parsed$in_str)
-
-  args = c(
-    "data = data",
-    paste0("varname = ", quote_for_r_literal(varname)),
-    paste0("gen_stub = ", quote_for_r_literal(parsed$gen_stub))
-  )
-
-  if (!is.na(r_if_cond)) {
-    args = c(args, paste0("r_if_cond = ", quote_for_r_literal(r_if_cond)))
-  }
-  if (!is.na(r_in_range)) {
-    args = c(args, paste0("r_in_range = ", quote_for_r_literal(r_in_range)))
-  }
-
-  args = c(args, paste0("include_missing = ", parsed$include_missing))
-
-  r_code = paste0("data = scmd_tabulate(", paste(args, collapse = ", "), ")")
-  return(r_code)
-}
-```
-!END_MODIFICATION t_tabulate stata2r/R/t_tabulate.R
-
-!MODIFICATION scmd_tabulate stata2r/R/t_tabulate.R
-scope = "function"
-file = "/home/rstudio/aicoder/stata2r/R/t_tabulate.R"
-function_name = "scmd_tabulate"
-description = "Remove internal r() dependency calculation since they are handled strictly via cached states."
----
-```r
-scmd_tabulate = function(data, varname, gen_stub = NA_character_,
-                         r_if_cond = NA_character_, r_in_range = NA_character_,
-                         include_missing = FALSE) {
-  restore.point("scmd_tabulate")
-
-  var_actual = expand_varlist(varname, names(data))[1]
-  if (is.na(var_actual) || !(var_actual %in% names(data))) {
-    stop(paste0("scmd_tabulate: variable '", varname, "' not found"))
-  }
-
-  n = NROW(data)
-  mask = rep(TRUE, n)
-
-  if (!is.na(r_if_cond) && r_if_cond != "") {
-    r_if_cond = resolve_abbrevs_in_expr(r_if_cond, names(data))
-    mask = mask & s2r_eval_cond(data, r_if_cond, envir = parent.frame())
-  }
-
-  if (!is.na(r_in_range) && r_in_range != "") {
-    idx = s2r_eval_range(data, r_in_range)
-    in_mask = rep(FALSE, n)
-    in_mask[idx] = TRUE
-    mask = mask & in_mask
-  }
-
-  x = data[[var_actual]]
-  x_for_tab = x[mask]
-
-  is_missing_value = function(v) {
-    if (is.character(v)) {
-      return(is.na(v) | stringi::stri_trim_both(v) == "")
-    }
-    is.na(v)
-  }
-
-  missing_x_for_tab = is_missing_value(x_for_tab)
-
-  if (!include_missing) {
-    levels_source = x_for_tab[!missing_x_for_tab]
-  } else {
-    levels_source = x_for_tab
-  }
-
-  if (is.character(levels_source) || is.factor(levels_source)) {
-    levels_chr = as.character(levels_source)
-    levels_chr[is.na(levels_chr)] = ""
-    levs = unique(levels_chr)
-    levs = stringi::stri_sort(levs, locale = "C")
-  } else {
-    levs = sort(unique(as.numeric(levels_source)), na.last = TRUE)
-  }
-
-  has_gen = !is.na(gen_stub) && gen_stub != ""
-  if (has_gen) {
-    if (length(levs) > 0) {
-      new_names = paste0(gen_stub, seq_along(levs))
-      existing_new = intersect(new_names, names(data))
-      if (length(existing_new) > 0) {
-        stop(paste0(
-          "scmd_tabulate: generated variable(s) already exist: ",
-          paste(existing_new, collapse = ", ")
-        ))
-      }
-
-      x_cmp = x
-      if (is.character(x_cmp) || is.factor(x_cmp)) {
-        x_cmp = as.character(x_cmp)
-        x_cmp[is.na(x_cmp)] = ""
-      } else {
-        x_cmp = as.numeric(x_cmp)
-      }
-
-      for (i in seq_along(levs)) {
-        level_i = levs[i]
-        new_var = new_names[i]
-
-        if (is.character(x_cmp)) {
-          match_i = x_cmp == as.character(level_i)
-        } else if (is.na(level_i)) {
-          match_i = is.na(x_cmp)
-        } else {
-          match_i = x_cmp == level_i
-        }
-
-        match_i[is.na(match_i)] = FALSE
-
-        out = rep(NA_integer_, n)
-        out[mask] = 0L
-        out[mask & match_i] = 1L
-
-        data[[new_var]] = out
-        attr(data[[new_var]], "label") = paste0(var_actual, "==", as.character(level_i))
-      }
-    }
-  }
-
-  return(data)
-}
-```
-!END_MODIFICATION scmd_tabulate stata2r/R/t_tabulate.R
-
-!MODIFICATION s2r_store_e_results stata2r/R/s2r_store_results.R
-scope = "function"
-file = "/home/rstudio/aicoder/stata2r/R/s2r_store_results.R"
-function_name = "s2r_store_e_results"
-description = "Remove legacy environment tracking wrapper code."
----
-```r
-s2r_store_e_results = function(res) {
-  # Deprecated - handled through explicit read via drf
-  invisible(res)
-}
-```
-!END_MODIFICATION s2r_store_e_results stata2r/R/s2r_store_results.R
-
-!MODIFICATION s2r_store_r_results stata2r/R/s2r_store_results.R
-scope = "function"
-file = "/home/rstudio/aicoder/stata2r/R/s2r_store_results.R"
-function_name = "s2r_store_r_results"
-description = "Remove legacy environment tracking wrapper code."
----
-```r
-s2r_store_r_results = function(res) {
-  # Deprecated - handled through explicit read via drf
-  invisible(res)
-}
-```
-!END_MODIFICATION s2r_store_r_results stata2r/R/s2r_store_results.R
+!END_MODIFICATION mrb_test_code_path.R
