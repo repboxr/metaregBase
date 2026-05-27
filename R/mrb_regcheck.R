@@ -11,7 +11,6 @@ mrb_make_regcheck_parcel = function(
   max_deviation_tol = 1e-5,
   rb_max_rel_diff_tol = 0.01,
   rb_max_deviation_tol = 1e-5,
-  cached_runid = NA_integer_,
   for_regrepair = FALSE
 ) {
   restore.point("mrb_make_regcheck_parcel")
@@ -236,11 +235,14 @@ mrb_make_regcheck_parcel = function(
   if (!is.null(mrb$stata_ct_sb) && "runid" %in% names(mrb$stata_ct_sb)) {
     regcheck$sb_raw_did_run = regcheck$sb_raw_did_run | regcheck$runid %in% mrb$stata_ct_sb$runid
   }
-  if (is.data.frame(cached_runid)) {
-    regcheck = left_join(regcheck, cache_runid, by="runid")
-  } else if (!is.null(cached_runid)) {
-    regcheck$cached_runid = rep_len(cached_runid,NROW(regcheck))
-  }
+
+
+  if (!has_col(regcheck, "cached_runid"))
+    regcheck$cached_runid = rep(NA_integer_, NROW(regcheck))
+
+  cached_runid_df = drf_get_cached_runids_by_pid(drf=mrb$drf, pids=pids)
+  pos = match(cached_runid_df$pid, regcheck$runid)
+  regcheck$cached_runid[pos] = cached_runid_df$cached_runid
 
   if (for_regrepair) return(regcheck)
 

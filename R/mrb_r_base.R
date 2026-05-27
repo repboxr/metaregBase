@@ -24,11 +24,11 @@ example = function() {
 
 
 #' Process a single regression, expand syntax, and format standard parcels
-mrb_run_r_base_step = function(mrb, pid, with_try = isTRUE(mrb$with_try)) {
+mrb_run_r_base_step = function(mrb, pid, with_try = isTRUE(mrb$with_try), continue_on_error=FALSE) {
   restore.point("mrb_run_r_base_step")
   if (with_try) {
     restore.point("mrb_run_r_base_step_with_try")
-    res = repboxUtils::try_catch_repbox_problems(mrb_run_r_base_step(mrb,pid, with_try=FALSE),project_dir = mrb$project_dir,runid = pid,msg_prefix = "mrb_run_r_base_step: ", err_val=NULL)
+    res = repboxUtils::try_catch_repbox_problems(mrb_run_r_base_step(mrb,pid, with_try=FALSE, continue_on_error = continue_on_error),project_dir = mrb$project_dir,runid = pid,msg_prefix = "mrb_run_r_base_step: ", err_val=NULL)
     return(res$value)
   }
 
@@ -45,7 +45,7 @@ mrb_run_r_base_step = function(mrb, pid, with_try = isTRUE(mrb$with_try)) {
   }
 
   # 0. Load Data & Expand Syntax
-  dat = repboxDRF::drf_get_data(pid, drf = mrb$drf)
+  dat = repboxDRF::drf_get_data(pid, drf = mrb$drf,continue_on_error = continue_on_error)
 
   # NULL means problem in data loading
   if (is.null(dat)) return(list())
@@ -243,7 +243,7 @@ mrb_run_r_base_step = function(mrb, pid, with_try = isTRUE(mrb$with_try)) {
 }
 
 #' Extract Stata metaregBase results and create corresponding metaregBase parcels
-mrb_run_r_base = function(mrb, just_pids=NULL, make_parcels=TRUE) {
+mrb_run_r_base = function(mrb, just_pids=NULL, make_parcels=TRUE, continue_on_error=FALSE) {
   restore.point("mrb_run_r")
 
 
@@ -274,7 +274,7 @@ mrb_run_r_base = function(mrb, just_pids=NULL, make_parcels=TRUE) {
   cat("\nmrb_r_base processing runids: ")
   for (pid in pids) {
     cat(paste0(pid," "))
-    step_parcels = mrb_run_r_base_step(mrb, pid)
+    step_parcels = mrb_run_r_base_step(mrb, pid, continue_on_error=continue_on_error)
     all_step_parcels[[as.character(pid)]] = step_parcels
   }
   cat("\n")
