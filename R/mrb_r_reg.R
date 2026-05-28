@@ -30,7 +30,7 @@ example = function() {
 mrb_run_r_reg = function(mrb, just_pids=NULL, continue_on_error=FALSE) {
   restore.point("mrb_run_r_reg")
 
-  mrb$drf = drf_apply_loop_ignore(drf)
+  mrb$drf = drf_apply_loop_ignore(mrb$drf)
 
   mrb$artid = basename(mrb$project_dir)
   mrb$parcels = repboxDB::repdb_load_parcels(mrb$project_dir, c("reg_cmdpart", "reg","regvar","regxvar","regcoef", "regcoef_so"))

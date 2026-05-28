@@ -1,611 +1,279 @@
-Looking at the code, I need to:
+The issue you are observing—where non-regression commands are somehow identified as regression `pid`s and added to `drf$pids` and `drf$path_df`—stems from a combination of lexical scoping bugs, `NA` value leakage, and partial matching in R. 
 
-1. Finish `mrb_repair_via_ignore` in `mrb_repair_ignore.R` - repair failed regressions by continuing past R translation errors
-2. Add a `regrepair` parcel tracking repair attempts
-3. Update `mrb_repair.R` to remove duplication and add cache-based repair
+### Why this happens:
+1. **Un-scoped `drf` variable Leakage:** In `metaregBase/R/mrb_r_base.R` and `metaregBase/R/mrb_r_reg.R`, there are calls to `mrb$drf = drf_apply_loop_ignore(drf)`. Notice that `drf` is passed directly, rather than `mrb$drf`. Since `drf` is not defined in the local scope, R searches the parent environments and will often grab a `drf` object lingering in the global environment (e.g. created if you ran `example()` code). If this global `drf` belongs to a *different* project, its completely unrelated `pids` get injected into the current project! These foreign `pids` will match random `runid`s in the current project, assigning data manipulation steps as "regressions".
+2. **`NA` values entering `drf$pids`:** In `repboxDRF/R/drf_create.R`, the function `drf_find_pid` uses the filter `run_df$runid[(run_df$cmd %in% acmds) & run_df$ok]`. If `run_df$ok` is `NA`, this introduces `NA`s directly into `drf$pids` instead of omitting them.
+3. **List Partial Matching:** In `repboxDRF/R/drf_paths.R`, `pid = drf$pid` relies on R's partial list matching to return `drf$pids`. This is fragile and highly prone to causing silent evaluation bugs.
+4. **Silent fall-through in `drf_pids()`:** In `repboxDRF/R/drf.R`, the `drf_pids()` function attempts to return `drf$pids` if available but omits the `return()` keyword, causing it to fall through to `unique(drf$path_df$pid)`.
 
-Let me analyze the existing code carefully before writing the modifications.
+Here is the code to fix these issues.
 
-Key observations:
-- `mrb_get_to_repair_runids` already identifies failed pids
-- `drf_get_data` has `continue_on_error=TRUE` option we can use
-- `drf_sync_r_err_runids` tracks known error runids
-- The repair via ignore should: run with `continue_on_error=TRUE`, see if the resulting data produces matching coefficients
-
-!MODIFICATION mrb_repair_ignore.R
-scope = "file"
-file = "/home/rstudio/repbox/metaregBase/R/mrb_repair_ignore.R"
-description = "Complete mrb_repair_via_ignore with sequential repair, avoid re-attempting known failures, and add regrepair parcel management."
+!MODIFICATION mrb_run_r_base in metaregBase/R/mrb_r_base.R
+scope = "function"
+file = "/home/rstudio/repbox/metaregBase/R/mrb_r_base.R"
+function_name = "mrb_run_r_base"
+description = "Fix unscoped drf variable causing it to pull from global environment"
 ---
 ```r
-# Try to repair failed translations by ignoring
-# R translation errors
-
-example = function() {
-  repboxRun::repbox_load_libs()
-  project_dir = rb_get_project_dir("~/repbox/projects_test/test")
-  mrb = mrb_init(project_dir)
-  mrb = mrb_repair_via_ignore(mrb)
-  rstudioapi::filesPaneNavigate(project_dir)
-}
+#' Extract Stata metaregBase results and create corresponding metaregBase parcels
+mrb_run_r_base = function(mrb, just_pids=NULL, make_parcels=TRUE, continue_on_error=FALSE) {
+  restore.point("mrb_run_r")
 
 
-#' Automatically repair metaregBase R failures by continuing past R translation errors.
-#'
-#' Identifies regressions where sb ran successfully but rb failed.
-#' For each failed pid, attempts to re-run data preparation with
-#' continue_on_error=TRUE so that erroring data modification steps are skipped.
-#' Tracks results in the regrepair parcel.
-mrb_repair_via_ignore = function(project_dir = mrb$project_dir, mrb = NULL, max_reg = 10, pids = NULL) {
-  restore.point("mrb_repair_via_ignore")
+  mrb$drf = drf_apply_loop_ignore(mrb$drf)
 
-  if (is.null(mrb)) {
-    mrb = mrb_init(project_dir)
-    mrb = mrb_agg_stata(mrb, skip_if_has = TRUE)
-  }
+  mrb$artid = basename(mrb$project_dir)
+  mrb$parcels = repboxDB::repdb_load_parcels(mrb$project_dir, c("reg_cmdpart", "xtvar"))
 
-  drf_clear_mcache()
-
-  if (is.null(pids)) {
-    pids = mrb_get_to_repair_runids(mrb = mrb)
-  }
-  if (!is.null(max_reg)) {
-    pids = head(pids, max_reg)
-  }
+  pids = mrb$drf$pids
   if (length(pids) == 0) {
-    cat("\nNo failed runs to repair via ignore.\n")
+    cat("\nNo pids to process.\n")
     return(mrb)
   }
 
-  cat("\nRepair attempt via ignore for runids: ", paste(pids, collapse = ", "), "\n")
-
-  # Ensure r_err_runids is loaded/synced
-  mrb$drf = repboxDRF:::drf_sync_r_err_runids(mrb$drf)
-
-  # Load existing regrepair parcel so we can detect previously failed ignore attempts
-  mrb$parcels = repboxDB::repdb_load_parcels(mrb$project_dir, "regrepair", mrb$parcels)
-  existing_regrepair = mrb$parcels$regrepair
-
-  # Track which first-error runids have already failed an ignore repair.
-  # If ignore repair for pid1 failed because of first_err_runid X,
-  # we skip pid2 that also has X as its first error on the path.
-  failed_first_err_runids = mrb_regrepair_failed_ignore_first_errs(existing_regrepair)
-
-  repair_results = vector("list", length(pids))
-
-  for (i in seq_along(pids)) {
-    pid = pids[i]
-    cat(sprintf("\n--- Attempting ignore repair for pid %d ---\n", pid))
-
-    result = mrb_repair_ignore_one_pid(mrb, pid, failed_first_err_runids)
-
-    repair_results[[i]] = result$regrepair_row
-    mrb = result$mrb
-
-    # If this attempt failed, record the first error runid so we skip similar pids
-    if (!isTRUE(result$success) && !is.null(result$first_err_runid)) {
-      failed_first_err_runids = union(failed_first_err_runids, result$first_err_runid)
-    }
+  all_pids = pids
+  if (!is.null(just_pids)) {
+    pids = just_pids
+    mrb$is_partial_run = TRUE
+    mrb$partial_pids = just_pids
+  } else {
+    mrb$is_partial_run = FALSE
   }
 
-  # Save updated regrepair parcel
-  new_rows = dplyr::bind_rows(repair_results)
-  mrb = mrb_update_regrepair_parcel(mrb, new_rows)
+  mrb = mrb_agg_stata(mrb, skip_if_has = TRUE)
 
-  # Recompute regcheck for repaired pids
-  repaired_pids = new_rows$runid[isTRUE_VEC(new_rows$repair_attempted)]
-  if (length(repaired_pids) > 0) {
-    mrb = mrb_make_regcheck_parcel(mrb, just_pids = repaired_pids, repair_code = "i")
+  all_step_parcels = list()
+
+  cat("\nmrb_r_base processing runids: ")
+  for (pid in pids) {
+    cat(paste0(pid," "))
+    step_parcels = mrb_run_r_base_step(mrb, pid, continue_on_error=continue_on_error)
+    all_step_parcels[[as.character(pid)]] = step_parcels
+  }
+  cat("\n")
+
+  mrb$all_step_parcels = all_step_parcels
+  if (make_parcels) {
+    mrb = mrb_make_r_base_parcels(mrb)
   }
 
   mrb
-}
-
-
-#' Attempt ignore-based repair for a single pid.
-#'
-#' Returns a list with:
-#'   mrb         - updated mrb object
-#'   success     - logical, TRUE if rb now matches sb
-#'   first_err_runid - the first erroring runid on the path (or NULL)
-#'   regrepair_row   - tibble row for the regrepair parcel
-mrb_repair_ignore_one_pid = function(mrb, pid, failed_first_err_runids = integer(0)) {
-  restore.point("mrb_repair_ignore_one_pid")
-
-  project_dir = mrb$project_dir
-  drf = mrb$drf
-
-  # Apply caches for this specific pid
-  drf_pid = repboxDRF:::drf_apply_caches(drf, just_pids = pid)
-
-  path_df = drf_pid$path_df[drf_pid$path_df$pid == pid, , drop = FALSE]
-  if (NROW(path_df) == 0) {
-    cat(sprintf("  pid %d: no path found, skipping.\n", pid))
-    row = mrb_regrepair_empty_row(pid, repair_code = "i", repair_attempted = FALSE,
-                                   repair_note = "no path found")
-    return(list(mrb = mrb, success = FALSE, first_err_runid = NULL, regrepair_row = row))
-  }
-
-  # Find first error runid on path (excluding file-cached first entry)
-  err_runids = intersect(path_df$runid, drf$r_err_runids)
-  if (NROW(drf$run_df) > 0) {
-    first_row_idx = match(path_df$runid[1], drf$run_df$runid)
-    if (!is.na(first_row_idx) && isTRUE(drf$run_df$has_file_cache[first_row_idx])) {
-      err_runids = setdiff(err_runids, path_df$runid[1])
-    }
-  }
-
-  first_err_runid = if (length(err_runids) > 0) min(err_runids) else NULL
-
-  # Check: if we already know this first error runid caused ignore repair to fail, skip
-  if (!is.null(first_err_runid) && first_err_runid %in% failed_first_err_runids) {
-    cat(sprintf("  pid %d: first error runid %d already failed ignore repair, skipping.\n",
-                pid, first_err_runid))
-    row = mrb_regrepair_empty_row(pid, repair_code = "i", repair_attempted = FALSE,
-                                   repair_note = paste0("skipped: first_err_runid=", first_err_runid, " previously failed"))
-    return(list(mrb = mrb, success = FALSE, first_err_runid = first_err_runid, regrepair_row = row))
-  }
-
-  # Temporarily update drf in mrb to the cache-applied version for this pid
-  old_drf = mrb$drf
-  mrb$drf = drf_pid
-
-  # Re-run r_base step with continue_on_error via drf_get_data(continue_on_error=TRUE)
-  # We do this by temporarily patching drf to allow continuation
-  mrb$drf$r_err_runids_backup = mrb$drf$r_err_runids
-  # Clear r_err_runids so drf_get_data doesn't skip early
-  mrb$drf$r_err_runids = integer(0)
-
-  step_parcels_base = mrb_run_r_base_step_ignore(mrb, pid)
-  step_parcels_reg = NULL
-
-  repair_attempted = TRUE
-  success = FALSE
-  repair_note = ""
-
-  if (!is.null(step_parcels_base) && length(step_parcels_base) > 0) {
-    # Temporarily store step parcels and run regression
-    mrb_tmp = mrb
-    mrb_tmp$all_step_parcels = list()
-    mrb_tmp$all_step_parcels[[as.character(pid)]] = step_parcels_base
-    mrb_tmp = mrb_make_r_base_parcels(mrb_tmp, save = FALSE, is_partial_run = FALSE)
-    mrb_tmp$parcels = repboxDB::repdb_load_parcels(project_dir,
-      c("reg_cmdpart", "reg", "regvar", "regxvar", "regcoef", "regcoef_so"),
-      parcels = mrb_tmp$parcels)
-
-    step_parcels_reg = mrb_run_r_reg_step(mrb_tmp, pid)
-
-    # Check if repair succeeded
-    if (!is.null(step_parcels_reg) && !is.null(step_parcels_reg$regcoef_rb) &&
-        NROW(step_parcels_reg$regcoef_rb) > 0 &&
-        !is.null(step_parcels_base$regcoef) && NROW(step_parcels_base$regcoef) > 0) {
-
-      rc_check = mrb_make_regcheck_parcel(mrb_tmp,
-        just_pids = pid,
-        for_regrepair = TRUE,
-        repair_code = "i"
-      )
-
-      if (!is.null(rc_check) && NROW(rc_check) > 0) {
-        success = isTRUE(rc_check$reg_ok[rc_check$runid == pid][1])
-        if (!success) {
-          repair_note = na.val(rc_check$problem[rc_check$runid == pid][1], "")
-        }
-      }
-    } else {
-      repair_note = "rb did not produce coefficients"
-    }
-
-    if (success) {
-      cat(sprintf("  pid %d: ignore repair SUCCEEDED.\n", pid))
-      # Save the repaired parcels properly
-      mrb_save = mrb
-      mrb_save$all_step_parcels = list()
-      mrb_save$all_step_parcels[[as.character(pid)]] = step_parcels_base
-      mrb_save$is_partial_run = TRUE
-      mrb_save$partial_pids = pid
-      mrb = mrb_make_r_base_parcels(mrb_save, save = TRUE, is_partial_run = TRUE)
-
-      mrb_save2 = mrb
-      mrb_save2$all_step_parcels = list()
-      mrb_save2$all_step_parcels[[as.character(pid)]] = step_parcels_reg
-      mrb_save2$is_partial_run = TRUE
-      mrb_save2$partial_pids = pid
-      mrb = mrb_make_r_reg_parcels(mrb_save2, save = TRUE, is_partial_run = TRUE)
-    } else {
-      cat(sprintf("  pid %d: ignore repair failed. %s\n", pid, repair_note))
-    }
-  } else {
-    repair_note = "mrb_run_r_base_step_ignore returned NULL or empty"
-    cat(sprintf("  pid %d: base step failed. %s\n", pid, repair_note))
-  }
-
-  # Restore drf
-  mrb$drf = old_drf
-
-  row = mrb_regrepair_empty_row(
-    pid,
-    repair_code = "i",
-    repair_attempted = repair_attempted,
-    repair_success = success,
-    repair_note = repair_note,
-    first_err_runid = first_err_runid
-  )
-
-  list(mrb = mrb, success = success, first_err_runid = first_err_runid, regrepair_row = row)
-}
-
-
-#' Run mrb_run_r_base_step with continue_on_error=TRUE in drf_get_data
-#'
-#' This is done by running the step but with the drf patched to not skip
-#' on known error runids (r_err_runids cleared), and drf_get_data called
-#' with continue_on_error=TRUE.
-mrb_run_r_base_step_ignore = function(mrb, pid) {
-  restore.point("mrb_run_r_base_step_ignore")
-
-  project_dir = mrb$project_dir
-  runid = pid
-
-  xtvar = mrb$parcels$xtvar
-  if (!is.null(xtvar)) xtvar = xtvar[xtvar$runid == pid, ]
-  if (is.null(xtvar) || NROW(xtvar) == 0) {
-    xtvar = list(timevar = NA, panelvar = NA, tdelta = NA_integer_)
-  }
-
-  # Load data with continue_on_error=TRUE to skip erroring translation steps
-  dat = repboxDRF::drf_get_data(pid, drf = mrb$drf, continue_on_error = TRUE)
-
-  if (is.null(dat)) {
-    cat(sprintf("  drf_get_data returned NULL for pid %d even with continue_on_error.\n", pid))
-    return(NULL)
-  }
-
-  # Delegate to the normal base step but with our data
-  # We call the step directly - it will call drf_get_data again internally,
-  # so we need to ensure our mrb$drf has r_err_runids cleared
-  res = mrb_run_r_base_step(mrb, pid, with_try = FALSE)
-  res
-}
-
-
-#' Create or update the regrepair parcel with new repair attempt rows.
-mrb_update_regrepair_parcel = function(mrb, new_rows, save = TRUE) {
-  restore.point("mrb_update_regrepair_parcel")
-
-  if (is.null(new_rows) || NROW(new_rows) == 0) return(mrb)
-
-  mrb$parcels = repboxDB::repdb_load_parcels(mrb$project_dir, "regrepair", mrb$parcels)
-  existing = mrb$parcels$regrepair
-
-  if (!is.null(existing) && NROW(existing) > 0) {
-    combined = dplyr::bind_rows(existing, new_rows)
-  } else {
-    combined = new_rows
-  }
-
-  mrb$parcels$regrepair = combined
-
-  if (save) {
-    repboxDB::repdb_save_parcels(
-      list(regrepair = combined),
-      file.path(mrb$project_dir, "repdb"),
-      check = FALSE
-    )
-  }
-
-  mrb
-}
-
-
-#' Create an empty regrepair row for a given pid.
-mrb_regrepair_empty_row = function(
-  pid,
-  repair_code = "",
-  repair_attempted = FALSE,
-  repair_success = NA,
-  repair_note = "",
-  first_err_runid = NA_integer_,
-  timestamp = Sys.time()
-) {
-  dplyr::tibble(
-    runid = as.integer(pid),
-    repair_code = as.character(repair_code),
-    repair_attempted = as.logical(repair_attempted),
-    repair_success = as.logical(repair_success),
-    repair_note = as.character(repair_note),
-    first_err_runid = as.integer(first_err_runid),
-    timestamp = timestamp
-  )
-}
-
-
-#' From an existing regrepair parcel, extract the set of first_err_runids
-#' for which ignore ("i") repair was already attempted and failed.
-mrb_regrepair_failed_ignore_first_errs = function(regrepair) {
-  if (is.null(regrepair) || NROW(regrepair) == 0) return(integer(0))
-  if (!"repair_code" %in% names(regrepair)) return(integer(0))
-
-  failed = regrepair[
-    regrepair$repair_code == "i" &
-    isTRUE_VEC(regrepair$repair_attempted) &
-    !isTRUE_VEC(regrepair$repair_success) &
-    !is.na(regrepair$first_err_runid),
-    ,
-    drop = FALSE
-  ]
-
-  if (NROW(failed) == 0) return(integer(0))
-  unique(as.integer(failed$first_err_runid))
-}
-
-
-mrb_get_to_repair_runids = function(mrb, parcels = mrb$parcels, ignore_already_repaired = TRUE) {
-  restore.point("mrb_get_to_repair_runids")
-  parcels = repboxDB::repdb_load_parcels(mrb$project_dir, c("regcheck", "reg", "regrepair"), parcels)
-
-  regcheck = parcels$regcheck
-  if (is.null(regcheck)) {
-    cat("\nNo regcheck parcel found. Run mrb_make_regcheck_parcel() first.\n")
-    return(NULL)
-  }
-  reg = parcels$reg
-  if (!has_col(regcheck, "cmd") & NROW(regcheck) > 0) {
-    if (!is.null(reg)) {
-      regcheck = left_join(regcheck, reg %>% select(cmd, runid), by = "runid")
-    } else {
-      regcheck$cmd = ""
-    }
-  }
-  regcheck$cmd = na.val(regcheck$cmd, "")
-
-  regcheck = regcheck %>%
-    mutate(do_repair = (sb_raw_did_run) & (!rb_did_run)) %>%
-    mutate(do_repair = do_repair | is.true(!rb_sb_coef_same & !(has.substr(cmd, "logit") | has.substr(cmd, "probit")))) %>%
-    mutate(do_repair = do_repair & (stata_reg_cmd_has_r_trans(cmd) | cmd == ""))
-
-  if (ignore_already_repaired) {
-    regrepair = parcels$regrepair
-    if (!is.null(regrepair) && NROW(regrepair) > 0) {
-      already_attempted = unique(regrepair$runid[isTRUE_VEC(regrepair$repair_attempted)])
-      regcheck = mutate(regcheck, do_repair = do_repair & !runid %in% already_attempted)
-    }
-  }
-
-  failed_pids = regcheck$runid[regcheck$do_repair]
-  failed_pids
-}
-
-
-stata_reg_cmd_has_r_trans = function(cmd) {
-  sr_df = regtranslate::stata_to_r_cmds_df()
-  cmd %in% sr_df$stata_cmd
 }
 ```
-!END_MODIFICATION mrb_repair_ignore.R
+!END_MODIFICATION mrb_run_r_base in metaregBase/R/mrb_r_base.R
 
-!MODIFICATION mrb_repair.R
-scope = "file"
-file = "/home/rstudio/repbox/metaregBase/R/mrb_repair.R"
-description = "Clean up mrb_repair.R to remove duplication, keep cache-based repair, and delegate ignore repair to mrb_repair_ignore.R."
+!MODIFICATION mrb_run_r_reg in metaregBase/R/mrb_r_reg.R
+scope = "function"
+file = "/home/rstudio/repbox/metaregBase/R/mrb_r_reg.R"
+function_name = "mrb_run_r_reg"
+description = "Fix unscoped drf variable"
 ---
 ```r
-# FILE: /home/rstudio/repbox/metaregBase/R/mrb_repair.R
-#
-# Contains the main repair entry point and cache-based repair strategies.
-# Ignore-based repair (continue_on_error) lives in mrb_repair_ignore.R.
+#' Run translated r regressions, store results and compare with Stata results
+#' uses the parcels already generated by mrb_run_r_base and regtranslate for
+#' regression translation
+mrb_run_r_reg = function(mrb, just_pids=NULL, continue_on_error=FALSE) {
+  restore.point("mrb_run_r_reg")
 
-example = function() {
-  repboxRun::repbox_load_libs()
-  project_dir = rb_get_project_dir("~/repbox/projects_test/test")
-  mrb = mrb_init(project_dir)
-  mrb = mrb_repair_failed_runs(mrb = mrb)
-  rstudioapi::filesPaneNavigate(project_dir)
-}
+  mrb$drf = drf_apply_loop_ignore(mrb$drf)
 
+  mrb$artid = basename(mrb$project_dir)
+  mrb$parcels = repboxDB::repdb_load_parcels(mrb$project_dir, c("reg_cmdpart", "reg","regvar","regxvar","regcoef", "regcoef_so"))
 
-#' Top-level repair entry point.
-#'
-#' Tries, in order:
-#'   1. Ignore repair (continue_on_error=TRUE in data preparation)
-#'   2. Cache repair (add strategic caches, re-run)
-mrb_repair_failed_runs = function(project_dir = mrb$project_dir, mrb = NULL, max_reg = 10) {
-  restore.point("mrb_repair_failed_runs")
-
-  if (is.null(mrb)) {
-    mrb = mrb_init(project_dir)
-    mrb = mrb_agg_stata(mrb, skip_if_has = TRUE)
-  }
-
-  mrb = mrb_repair_via_ignore(mrb = mrb, max_reg = max_reg)
-  mrb = mrb_repair_via_cache(mrb = mrb, max_reg = max_reg)
-
-  mrb
-}
-
-
-#' Cache-based repair: add strategic data caches, re-run failed regressions.
-#'
-#' For each failed pid that still needs repair after the ignore pass,
-#' determine the best cache position, generate it in Stata, and re-run.
-mrb_repair_via_cache = function(project_dir = mrb$project_dir, mrb = NULL, max_reg = 10) {
-  restore.point("mrb_repair_via_cache")
-
-  if (is.null(mrb)) {
-    mrb = mrb_init(project_dir)
-    mrb = mrb_agg_stata(mrb, skip_if_has = TRUE)
-  }
-
-  drf_clear_mcache()
-
-  failed_pids = mrb_get_to_repair_runids(mrb = mrb)
-  if (!is.null(max_reg)) {
-    failed_pids = head(failed_pids, max_reg)
-  }
-  if (length(failed_pids) == 0) {
-    cat("\nNo failed runs left to repair via cache.\n")
+  pids = mrb$drf$pids
+  if (length(pids) == 0) {
+    cat("\nNo pids to process.\n")
     return(mrb)
   }
 
-  cat("\nCache repair attempt for runids: ", paste(failed_pids, collapse = ", "), "\n")
+  all_pids = pids
+  if (!is.null(just_pids)) {
+    pids = just_pids
+    mrb$is_partial_run = TRUE
+    mrb$partial_pids = just_pids
+  } else {
+    mrb$is_partial_run = FALSE
+  }
 
-  mrb$drf = repboxDRF:::drf_sync_r_err_runids(mrb$drf)
+  all_step_parcels = list()
 
-  for (pid in failed_pids) {
-    drf = mrb$drf
-    drf = repboxDRF:::drf_apply_caches(drf, just_pids = pid)
+  cat("\nmrb_r_reg processing runids: ")
+  for (pid in pids) {
+    cat(paste0(pid," "))
+    step_parcels = mrb_run_r_reg_step(mrb, pid, continue_on_error=continue_on_error)
+    all_step_parcels[[as.character(pid)]] = step_parcels
+  }
+  cat("\n")
+  mrb$all_step_parcels = all_step_parcels
 
-    cache_runid = mrb_determine_repair_cache_runid(mrb, pid = pid, drf = drf)
+  mrb = mrb_make_r_reg_parcels(mrb)
 
-    if (is.null(cache_runid)) {
-      cat(sprintf("\n  pid %d: cannot determine cache runid, skipping.\n", pid))
+  mrb
+}
+```
+!END_MODIFICATION mrb_run_r_reg in metaregBase/R/mrb_r_reg.R
+
+!MODIFICATION drf_pids in repboxDRF/R/drf.R
+scope = "function"
+file = "/home/rstudio/repbox/repboxDRF/R/drf.R"
+function_name = "drf_pids"
+description = "Fix drf_pids to properly return drf$pids instead of silently evaluating it."
+---
+```r
+drf_pids = function(drf, path_df=drf$path_df) {
+  if (!is.null(drf[["pids"]])) return(drf$pids)
+  if (!is.null(path_df)) return(unique(path_df$pid))
+  return(NULL)
+}
+```
+!END_MODIFICATION drf_pids in repboxDRF/R/drf.R
+
+!MODIFICATION drf_runids in repboxDRF/R/drf.R
+scope = "function"
+file = "/home/rstudio/repbox/repboxDRF/R/drf.R"
+function_name = "drf_runids"
+description = "Fix drf_runids to properly return drf$runids instead of silently evaluating it."
+---
+```r
+drf_runids = function(drf, path_df=drf$path_df) {
+  if (!is.null(drf[["runids"]])) return(drf$runids)
+  if (!is.null(path_df)) return(unique(path_df$runid))
+  return(NULL)
+}
+```
+!END_MODIFICATION drf_runids in repboxDRF/R/drf.R
+
+!MODIFICATION drf_find_pid in repboxDRF/R/drf_create.R
+scope = "function"
+file = "/home/rstudio/repbox/repboxDRF/R/drf_create.R"
+function_name = "drf_find_pid"
+description = "Wrap logical condition in which() to drop NA values which cause NA pids."
+---
+```r
+drf_find_pid = function(run_df,acmds = drf_acmds()) {
+  restore.point("drf_find_pid")
+  run_df$runid[which((run_df$cmd %in% acmds) & run_df$ok)]
+}
+```
+!END_MODIFICATION drf_find_pid in repboxDRF/R/drf_create.R
+
+!MODIFICATION drf_make_paths in repboxDRF/R/drf_paths.R
+scope = "function"
+file = "/home/rstudio/repbox/repboxDRF/R/drf_paths.R"
+function_name = "drf_make_paths"
+description = "Explicitly use drf$pids instead of drf$pid to avoid partial matching bugs."
+---
+```r
+drf_make_paths = function(drf) {
+  restore.point("drf_make_paths")
+  run_df = drf$run_df; project_dir = drf$project_dir
+  pids = drf$pids
+  if (is.null(pids)) {
+    stop("Please specify drf$pids, the analyis runid of run_df.")
+  }
+
+  type_vec = drf_stata_cmd_types_vec()
+
+  run_df = run_df %>%
+    mutate(
+      cmd_type = type_vec[cmd]
+    )
+
+  dep_df = drf$dep_df
+
+  run_df = run_df %>%
+  mutate(
+    is_mod =  cmd %in% stata2r::stata_data_manip_cmds |
+      runid %in% dep_df$source_runid |
+      cmd_type %in% c("mod","load")
+  )
+  run_df$is_mod[run_df$cmd=="scalar"] = FALSE
+
+  # Split run_df by root_file_path and compute path_df
+  # Then merge path_df again for all run_df
+  srun_li = split(run_df,run_df$root_file_path)
+  path_li = lapply(srun_li, find_one_root_data_paths, pids=pids)
+  path_df = bind_rows(path_li)
+
+  if (NROW(path_df)==0) {
+    cat("\nNo regression command found.")
+    return(NULL)
+  }
+  return(path_df)
+}
+```
+!END_MODIFICATION drf_make_paths in repboxDRF/R/drf_paths.R
+
+!MODIFICATION find_one_root_data_paths in repboxDRF/R/drf_paths.R
+scope = "function"
+file = "/home/rstudio/repbox/repboxDRF/R/drf_paths.R"
+function_name = "find_one_root_data_paths"
+description = "Update argument name from pid to pids for clarity and consistency."
+---
+```r
+find_one_root_data_paths = function(srun_df, pids) {
+  restore.point("find_one_root_data_paths")
+
+  srun_df$.ROW = seq_len(NROW(srun_df))
+  srun_df = add_load_blocks_to_run_df(srun_df)
+
+  # --- OPTIMIZATION: Compute data modification flags globally ONCE ---
+  # We check the entire run block to resolve dependencies accurately and quickly
+  # rather than doing this inside the loop for every path
+
+
+  #stata_code = gsub("\n", " ", srun_df$cmdline, fixed = TRUE)
+  #cmd_df = stata2r::s2r_check_mod(stata_code)
+  #srun_df$is_mod = cmd_df$is_mod
+  # -------------------------------------------------------------------
+
+  spid_rows = match(pids, srun_df$runid)
+  spid_rows = spid_rows[!is.na(spid_rows)]
+
+  path_df = bind_rows(lapply(spid_rows, find_data_run_path, srun_df = srun_df, pids=pids))
+
+  if (NROW(path_df)==0) return(NULL)
+  path_df
+}
+```
+!END_MODIFICATION find_one_root_data_paths in repboxDRF/R/drf_paths.R
+
+!MODIFICATION find_data_run_path in repboxDRF/R/drf_paths.R
+scope = "function"
+file = "/home/rstudio/repbox/repboxDRF/R/drf_paths.R"
+function_name = "find_data_run_path"
+description = "Update argument name from pid to pids for clarity and consistency."
+---
+```r
+find_data_run_path = function(pid_row, srun_df, pids=NULL) {
+  restore.point("find_data_run_path")
+
+  # All runid in same load block until pid
+  path = which(srun_df$load_block == srun_df$load_block[pid_row] & srun_df$.ROW <= pid_row)
+
+  # If we start with a restore command then jump to previous preserve
+  # and then add all rows with the same load_block
+  while (TRUE) {
+    if (srun_df$cmd[path[1]] == "restore") {
+      pr_row = srun_df$preserve_row[path[1]]
+      new_path = which(srun_df$load_block == srun_df$load_block[pr_row] & srun_df$.ROW < pr_row)
+      path = c(new_path, path[-1])
       next
     }
-
-    cat(sprintf("\n  pid %d: caching at runid %d.\n", pid, cache_runid))
-
-    mrb_cache_failed_runs_data(mrb, pids = cache_runid)
-
-    drf = repboxDRF:::drf_apply_caches(drf, just_pids = pid)
-    mrb$drf = drf
-
-    mrb = mrb_run_r_base(mrb, just_pids = pid)
-    mrb = mrb_run_r_reg(mrb, just_pids = pid)
-    mrb = mrb_make_regcheck_parcel(mrb, just_pids = pid, repair_code = "c")
-
-    # Record in regrepair
-    rc = mrb$parcels$regcheck
-    success = FALSE
-    if (!is.null(rc) && pid %in% rc$runid) {
-      success = isTRUE(rc$reg_ok[rc$runid == pid][1])
-    }
-    repair_row = mrb_regrepair_empty_row(
-      pid,
-      repair_code = "c",
-      repair_attempted = TRUE,
-      repair_success = success,
-      first_err_runid = NA_integer_
-    )
-    mrb = mrb_update_regrepair_parcel(mrb, repair_row)
+    break
   }
 
-  mrb
-}
+  # Adapt path: Utilize the globally computed is_mod flag from srun_df
+  cmd_types = drf_stata_cmd_types()
+  allow = c(cmd_types$scalar, cmd_types$xtset)
 
+  keep = seq_along(path) %in% c(1, length(path)) |
+    ((srun_df$is_mod[path] | srun_df$cmd[path] %in% allow) & srun_df$ok[path]) |
+    srun_df$runid[path] %in% pids
 
-#' Determine the best cache runid for repairing a failed pid.
-#'
-#' Rules:
-#'  1. If no translation errors on path, return NULL (nothing to cache).
-#'  2. Find last error runid on path.
-#'  3. Find the furthest downstream runid shared by all pids that use the error runid.
-mrb_determine_repair_cache_runid = function(mrb, pid, drf = mrb$drf) {
-  restore.point("mrb_determine_repair_cache_runid")
+  path = path[keep]
 
-  path_df = drf$path_df[drf$path_df$pid == pid, ]
-  if (NROW(path_df) == 0) return(NULL)
-
-  err_runids = intersect(path_df$runid, drf$r_err_runids)
-
-  # Exclude cached first runid from error consideration
-  first_runid = path_df$runid[1]
-  run_df_first = drf$run_df[drf$run_df$runid == first_runid, ]
-  if (NROW(run_df_first) > 0 && isTRUE(run_df_first$has_file_cache[1])) {
-    err_runids = setdiff(err_runids, first_runid)
-  }
-
-  if (length(err_runids) == 0) return(NULL)
-
-  err_runid = max(err_runids)
-
-  # Find all pids sharing this error runid
-  all_pids_with_err = unique(drf$path_df$pid[drf$path_df$runid == err_runid])
-
-  # Common runids across all those pids, at or after err_runid
-  path_list = lapply(all_pids_with_err, function(p) {
-    drf$path_df$runid[drf$path_df$pid == p]
-  })
-  common_runids = Reduce(intersect, path_list)
-  valid_common = common_runids[common_runids >= err_runid]
-
-  cache_runid = err_runid
-  if (length(valid_common) > 0) {
-    if (!err_runid %in% all_pids_with_err) {
-      cands_not_pid = setdiff(valid_common, all_pids_with_err)
-      if (length(cands_not_pid) > 0) {
-        cache_runid = max(cands_not_pid)
-      }
-    }
-  }
-
-  cat(sprintf(
-    "\n  Cache repair: pid=%d err_runid=%d -> cache_runid=%d\n",
-    pid, err_runid, cache_runid
-  ))
-
-  cache_runid
-}
-
-
-#' Generate Stata caches for specified pids / runids.
-mrb_cache_failed_runs_data = function(mrb, pids, overwrite = FALSE, replace_target_with_keep = NULL) {
-  restore.point("mrb_cache_failed_runs_data")
-
-  project_dir = mrb$project_dir
-  cache_dir = file.path(project_dir, "drf/cached_dta")
-
-  cache_files = file.path(cache_dir, paste0(pids, "_cache.dta"))
-  if (!overwrite) {
-    has = file.exists(cache_files)
-    pids = pids[!has]
-    cache_files = cache_files[!has]
-  }
-
-  if (length(pids) == 0) {
-    return(invisible(pids))
-  }
-
-  if (!dir.exists(cache_dir)) dir.create(cache_dir, recursive = TRUE)
-
-  sc_df = repboxDRF::drf_stata_code_df(mrb$drf, runids = pids, path_merge = "load")
-
-  cand_rows = which(sc_df$runid == sc_df$pid)
-  rows = cand_rows[match(pids, sc_df$runid[cand_rows])]
-
-  if (is.null(replace_target_with_keep)) {
-    cmd_types = mrb$drf$run_df$cmd_type[match(pids, mrb$drf$run_df$runid)]
-    replace_target_with_keep = cmd_types %in% c("reg", "quasi_reg")
-  } else {
-    replace_target_with_keep = rep(replace_target_with_keep, length.out = length(pids))
-  }
-
-  for (i in seq_along(rows)) {
-    row = rows[i]
-    if (replace_target_with_keep[i]) {
-      keep_code = drf_stata_code_to_keep_if_in(sc_df$code[row])
-      new_code = paste0(keep_code, "\n",
-        "capture save \"", cache_files[i], "\", replace\n"
-      )
-      sc_df$code[row] = new_code
-    } else {
-      new_code = paste0(sc_df$code[row], "\n",
-        "capture save \"", cache_files[i], "\", replace\n"
-      )
-      sc_df$code[row] = new_code
-    }
-  }
-
-  script_file = file.path(mrb$project_dir, "metareg/base/stata_code/mrb_repair.do")
-  metaregBase:::drf_code_write(sc_df, script_file)
-
-  cat("\nRunning Stata repair script...\n")
-  mrb_run_stata_script(mrb, do_file = script_file)
-}
-
-
-stata_reg_cmd_has_r_trans = function(cmd) {
-  sr_df = regtranslate::stata_to_r_cmds_df()
-  cmd %in% sr_df$stata_cmd
+  return( tibble(pid=srun_df$runid[pid_row], runid=srun_df$runid[path]))
 }
 ```
-!END_MODIFICATION mrb_repair.R
+!END_MODIFICATION find_data_run_path in repboxDRF/R/drf_paths.R

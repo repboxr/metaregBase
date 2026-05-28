@@ -247,7 +247,7 @@ mrb_run_r_base = function(mrb, just_pids=NULL, make_parcels=TRUE, continue_on_er
   restore.point("mrb_run_r")
 
 
-  mrb$drf = drf_apply_loop_ignore(drf)
+  mrb$drf = drf_apply_loop_ignore(mrb$drf)
 
   mrb$artid = basename(mrb$project_dir)
   mrb$parcels = repboxDB::repdb_load_parcels(mrb$project_dir, c("reg_cmdpart", "xtvar"))

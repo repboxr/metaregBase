@@ -21,14 +21,14 @@ mrb_make_regcheck_parcel = function(
     mrb$parcels
   )
 
-  pids = unique(c(
+  pids = sort(unique(c(
     if (!is.null(parcels$reg)) parcels$reg$runid else integer(),
     if (!is.null(parcels$reg_rb)) parcels$reg_rb$runid else integer(),
     if (!is.null(parcels$regcoef)) parcels$regcoef$runid else integer(),
     if (!is.null(parcels$regcoef_so)) parcels$regcoef_so$runid else integer(),
     if (!is.null(parcels$regcoef_rb)) parcels$regcoef_rb$runid else integer(),
     if (!is.null(mrb$drf$pids)) mrb$drf$pids else integer()
-  ))
+  )))
 
   if (length(pids) == 0) {
     if (for_regrepair) return(NULL)

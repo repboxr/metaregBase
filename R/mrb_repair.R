@@ -54,7 +54,7 @@ mrb_repair_via_ignore = function(project_dir = mrb$project_dir, mrb = NULL, max_
 
     # TO DO: ignore already performed repair attempts
     #        if same cached runid was used
-    cached_runid_df = drf_get_cached_runids_by_pid(drf, pids) %>% rename(runid=pid)
+    cached_runid_df = drf_get_cached_runids_by_pid(mrb$drf, pids) %>% rename(runid=pid)
 
 
     regrepair = regrepair %>%

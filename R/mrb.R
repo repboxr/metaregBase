@@ -44,7 +44,8 @@ mrb_run_all = function(project_dir, drf=repboxDRF::drf_load(project_dir,apply_ca
   mrb
 }
 
-mrb_init = function(project_dir=drf$project_dir, drf=NULL,use_mcache=TRUE, mcache_files = use_mcache, mcache_runid=use_mcache, mcache_clear = TRUE, with_try=TRUE, custom_cache_min_score=100,custom_max_caches=10) {
+mrb_init = function(project_dir=drf$project_dir, drf=NULL,use_mcache=TRUE, mcache_files = use_mcache, mcache_runid=use_mcache, mcache_clear = TRUE, with_try=TRUE, custom_cache_min_score=100,custom_max_caches=20) {
+  restore.point("mrb_init")
   project_dir = normalizePath(project_dir)
   if (is.null(drf)) {
     drf = drf_load(project_dir)
