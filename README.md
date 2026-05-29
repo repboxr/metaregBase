@@ -200,3 +200,14 @@ Now repboxDRF drf_get_data, shall ensure that if some `e()` or `r()` value is ne
 
 Our package `stata2r` shall not create any `e()` or `r()` anymore itself but just expect that variables following the naming convention like `e.sample` for `e(sample)` exist in the execution environment. So we remove a lot of stuff from `stata2r`. Also the whole dependency check currently still in `stata2r`, which duplicates ideas from `drf_deps.R` shall be removed from `stata2r`.
 
+
+# Special cases we ignore
+
+## in aer_99_4_8
+
+```
+keep if activeD==0|[activeD==1&consip==1]
+xi: areg  Lprice199 i.consip i.goodid*Lquantity    i.year i.goodid*trend `controls'       if activeD==0|[activeD==1&consip==1],   a(id) robust
+```
+
+Here the [] are used like (). This somehow works with the Stata parser but is not documented. Usually [] are used to index elements. Trying to duplicate this parser quirk seems too complicated as we don't want to corrupt by accident correct [] use.
