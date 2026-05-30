@@ -32,9 +32,6 @@ mrb_run_r_base_step = function(mrb, pid, with_try = isTRUE(mrb$with_try), contin
     return(res$value)
   }
 
-
-
-
   project_dir = mrb$project_dir
   runid = pid
 
@@ -213,6 +210,11 @@ mrb_run_r_base_step = function(mrb, pid, with_try = isTRUE(mrb$with_try), contin
   nobs_val = if ("N" %in% names(stats_wide)) as.numeric(stats_wide$N) else NA_real_
   r2_val = if ("r2" %in% names(stats_wide)) as.numeric(stats_wide$r2) else if ("r2_p" %in% names(stats_wide)) as.numeric(stats_wide$r2_p) else NA_real_
 
+  flags_vec = character()
+  if (any(startsWith(tolower(opts_df$opt), "nocon"))) {
+    flags_vec = c(flags_vec, "noconst")
+  }
+  flags_str = paste0(flags_vec, collapse = ", ")
 
   reg_dat = tibble(
     runid = pid,
@@ -233,6 +235,7 @@ mrb_run_r_base_step = function(mrb, pid, with_try = isTRUE(mrb$with_try), contin
     nobs = nobs_val,
     nobs_org = NROW(org_dat),
     r2 = r2_val,
+    flags = flags_str,
     error_in_r = FALSE
   )
 

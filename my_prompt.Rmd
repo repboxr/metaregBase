@@ -1505,9 +1505,6 @@ mrb_run_r_base_step = function(mrb, pid, with_try = isTRUE(mrb$with_try), contin
     return(res$value)
   }
 
-
-
-
   project_dir = mrb$project_dir
   runid = pid
 
@@ -1686,6 +1683,11 @@ mrb_run_r_base_step = function(mrb, pid, with_try = isTRUE(mrb$with_try), contin
   nobs_val = if ("N" %in% names(stats_wide)) as.numeric(stats_wide$N) else NA_real_
   r2_val = if ("r2" %in% names(stats_wide)) as.numeric(stats_wide$r2) else if ("r2_p" %in% names(stats_wide)) as.numeric(stats_wide$r2_p) else NA_real_
 
+  flags_vec = character()
+  if (any(startsWith(tolower(opts_df$opt), "nocon"))) {
+    flags_vec = c(flags_vec, "noconst")
+  }
+  flags_str = paste0(flags_vec, collapse = ", ")
 
   reg_dat = tibble(
     runid = pid,
@@ -1706,6 +1708,7 @@ mrb_run_r_base_step = function(mrb, pid, with_try = isTRUE(mrb$with_try), contin
     nobs = nobs_val,
     nobs_org = NROW(org_dat),
     r2 = r2_val,
+    flags = flags_str,
     error_in_r = FALSE
   )
 
@@ -7998,13 +8001,14 @@ split_and_sort = function(terms, split = "#", ..., k = NULL) {
 
 # Replace stata_to_r_code_fixest and fixest_vcov_code_from_regdb
 # Replace stata_to_r_code_fixest and fixest_vcov_code_from_regdb
+# Replace stata_to_r_code_fixest and fixest_vcov_code_from_regdb
 stata_to_r_code_fixest = function(reg, regvar, regxvar, cmdpart, opts=code_options(), parts = list()) {
   restore.point("stata_to_r_code_fixest")
 
   org_depvars = regvar$cterm[regvar$role=="dep"]
   mod_depvars = replace_cterm_special_symbols(org_depvars)
 
-  formula = regvar_to_formula_fixest(regvar, regxvar, cmdpart)
+  formula = regvar_to_formula_fixest(regvar, regxvar, cmdpart, reg = reg)
 
   vcov_type = fixest_vcov_type_from_regdb(reg$se_type, reg$se_args)
   ssc_expr = fixest_ssc_code_from_reg(reg, vcov_type = vcov_type)
@@ -8156,7 +8160,11 @@ fixest_ssc_code_from_reg = function(reg, vcov_type = fixest_vcov_type_from_regdb
 # which regvar was generated. E.g. it would be create
 # if we could translate both a stata command and an R command to
 # fixest
-regvar_to_formula_fixest = function(regvar, regxvar, cmdpart) {
+# Ideally this is independent of the original language from
+# which regvar was generated. E.g. it would be create
+# if we could translate both a stata command and an R command to
+# fixest
+regvar_to_formula_fixest = function(regvar, regxvar, cmdpart, reg = NULL) {
   restore.point("regvar_to_formula_fixest")
 
   add_main_effects = TRUE
@@ -8182,24 +8190,29 @@ regvar_to_formula_fixest = function(regvar, regxvar, cmdpart) {
   depvars = replace_cterm_special_symbols(depvars)
   form = paste0(paste0("`",depvars,"`", collapse=" + "), " ~ ")
 
-
-
-  omit_constant = any(cmdpart$part=="opt" & cmdpart$content=="nocons")
-  if (omit_constant) {
-    form = paste0(form, "0 + ")
+  omit_constant = FALSE
+  if (!is.null(reg) && "flags" %in% names(reg)) {
+    omit_constant = stringi::stri_detect_fixed(reg$flags, "noconst")
+  } else if (!is.null(cmdpart)) {
+    omit_constant = any(cmdpart$part=="opt" & startsWith(tolower(cmdpart$content), "nocon"))
   }
 
-  # Create xvariables from regxvars this
-  # means we have manually expanded factors and interaction terms
+  rhs_terms = character()
+  if (omit_constant) {
+    rhs_terms = c(rhs_terms, "0")
+  }
 
   # Exogeneous x that are no FE
   rows = which(rxv$role == "exo")
   if (sum(rows)>0) {
-    form = paste0(form, paste0("`",rxv$cterm[rows],"`", collapse= " + "))
+    rhs_terms = c(rhs_terms, paste0("`",rxv$cterm[rows],"`"))
   } else {
-    # add explicit constant if no x variables
-    form = paste0(form, "1")
+    if (!omit_constant) {
+      rhs_terms = c(rhs_terms, "1")
+    }
   }
+
+  form = paste0(form, paste0(rhs_terms, collapse= " + "))
 
   # Exogeneous x as FE
   rows = which(rv$role == "exo" & rv$absorbed_fe)
@@ -8242,7 +8255,11 @@ regvar_to_formula_fixest = function(regvar, regxvar, cmdpart) {
 # which regvar was generated. E.g. it would be create
 # if we could translate both a stata command and an R command to
 # fixest
-regvar_to_formula_fixest_noregxvar = function(regvar, regxvar, cmdpart) {
+# Ideally this is independent of the original language from
+# which regvar was generated. E.g. it would be create
+# if we could translate both a stata command and an R command to
+# fixest
+regvar_to_formula_fixest_noregxvar = function(regvar, regxvar, cmdpart, reg = NULL) {
   restore.point("regvar_to_formula_fixest")
 
   add_main_effects = TRUE
@@ -8256,20 +8273,23 @@ regvar_to_formula_fixest_noregxvar = function(regvar, regxvar, cmdpart) {
   # We replace prefix @ with .
   #rv = replace_regvar_prefix_sep(rv, "@",".")
 
-
   depvars = rv$cterm[rv$role=="dep"]
   form = paste0(paste0(depvars, collapse=" + "), " ~ ")
 
-
-  omit_constant = any(cmdpart$part=="opt" & cmdpart$content=="nocons")
-  if (omit_constant) {
-    form = paste0(form, "0 + ")
+  omit_constant = FALSE
+  if (!is.null(reg) && "flags" %in% names(reg)) {
+    omit_constant = stringi::stri_detect_fixed(reg$flags, "noconst")
+  } else if (!is.null(cmdpart)) {
+    omit_constant = any(cmdpart$part=="opt" & startsWith(tolower(cmdpart$content), "nocon"))
   }
 
+  rhs_terms = character()
+  if (omit_constant) {
+    rhs_terms = c(rhs_terms, "0")
+  }
 
   # In stata x variables starting with o. like o.var will be omitted
   rv = rv %>% filter(prefix!="o")
-
 
   # TO DO: Specify whether in interaction A*B also A and B
   #        should be included or not.
@@ -8308,7 +8328,6 @@ regvar_to_formula_fixest_noregxvar = function(regvar, regxvar, cmdpart) {
     ia = NULL
   }
 
-
   no_ia = rv %>%
     filter(!is_ia) %>%
     mutate(
@@ -8325,8 +8344,14 @@ regvar_to_formula_fixest_noregxvar = function(regvar, regxvar, cmdpart) {
   # Exogeneous x that are no FE
   rows = which(terms$role == "exo" & !terms$absorbed_fe)
   if (sum(rows)>0) {
-    form = paste0(form, paste0(terms$x_expr[rows], collapse= " + "))
+    rhs_terms = c(rhs_terms, terms$x_expr[rows])
+  } else {
+    if (!omit_constant) {
+      rhs_terms = c(rhs_terms, "1")
+    }
   }
+
+  form = paste0(form, paste0(rhs_terms, collapse= " + "))
 
   # Exogeneous x as FE
   rows = which(terms$role == "exo" & terms$absorbed_fe)
@@ -8367,13 +8392,14 @@ stata_to_r_code_fixest_fit.old = function(reg, regvar, regxvar, cmdpart, opts=co
 # FILE: /home/rstudio/repbox/regtranslate/R/to_r_lm.R
 ```
 # TO DO: VCOV
+# TO DO: VCOV
 stata_to_r_code_lm = function(reg, regvar, regxvar, cmdpart, opts=code_options(), parts = list()) {
   restore.point("stata_to_r_code_lm")
 
   org_depvars = regvar$cterm[regvar$role=="dep"]
   mod_depvars = replace_cterm_special_symbols(org_depvars)
 
-  formula = regvar_to_formula_fixest(regvar, regxvar, cmdpart)
+  formula = regvar_to_formula_fixest(regvar, regxvar, cmdpart, reg = reg)
 
   command = "lm"
   arg_str = c(
@@ -8430,8 +8456,8 @@ stata_to_r_code_lm = function(reg, regvar, regxvar, cmdpart, opts=code_options()
   code_df
 }
 
-regvar_to_formula_lm = function(regvar, regxvar, cmdpart) {
-  regvar_to_formula_fixest(regvar, regxvar, cmdpart)
+regvar_to_formula_lm = function(regvar, regxvar, cmdpart, reg = NULL) {
+  regvar_to_formula_fixest(regvar, regxvar, cmdpart, reg = reg)
 }
 ```
 # END OF FILE: /home/rstudio/repbox/regtranslate/R/to_r_lm.R
@@ -8462,7 +8488,7 @@ stata_to_r_code_mfx = function(reg, regvar, regxvar, cmdpart, opts=code_options(
   #regvar = filter(regvar, !is_dropped | ia_cterm != cterm)
 
   # Currently we just use the fixest formula
-  formula = regvar_to_formula_fixest(regvar,regxvar, cmdpart)
+  formula = regvar_to_formula_fixest(regvar,regxvar, cmdpart, reg = reg)
 
   cmd = reg$cmd
   if (cmd=="dprobit") {
@@ -8526,7 +8552,7 @@ stata_to_r_code_quantreg = function(reg, regvar,regxvar, cmdpart, opts=code_opti
 
 
   # Currently we just use the fixest formula
-  formula = regvar_to_formula_fixest(regvar, regxvar, cmdpart)
+  formula = regvar_to_formula_fixest(regvar, regxvar, cmdpart, reg = reg)
 
   rcmd = "rq"
 
@@ -8637,7 +8663,7 @@ reg_stata_to_r_formula = function(reg, regvar, regxvar, cmdpart, prefer="fixest"
     stop(paste0("The Stata command ", reg$cmd, " is neither implemented for translation nor specified in stata_cmds_without_r_translation()"))
   }
 
-  args = list(regvar=regvar,regxvar, cmdpart=cmdpart)
+  args = list(regvar=regvar,regxvar=regxvar, cmdpart=cmdpart, reg=reg)
   fun = paste0("regvar_to_formula_",r_cmd)
   res = do.call(fun, args)
   as.formula(res)
@@ -8768,7 +8794,7 @@ stata_to_r_code_tobit = function(reg, regvar, regxvar, cmdpart, opts=code_option
   #regvar = filter(regvar, !is_dropped | ia_cterm != cterm)
 
   # Currently we just use the fixest formula
-  formula = regvar_to_formula_fixest(regvar, regxvar, cmdpart)
+  formula = regvar_to_formula_fixest(regvar, regxvar, cmdpart, reg = reg)
 
   rcmd = "tobit"
 
@@ -8982,28 +9008,6 @@ is_negative = function(n) {
 # Your Task
 ##################################
 
-Currently, my regression translation does not account for a noconst option in a Stata regression. Consider the following Stata code:
-
-reg y x1, noconst
-
-It run the regression without constant. Currently it is translated to an R regression with constant. Also, while the cmdpart parcel contains the options and the regcoef parcel misses the constant the noconst flag is not very transparent in our data base.
-
-Please check and discuss the following update proposal:
-
-- I added a new field `flags`  to the reg parcel:
-
-```
-  flags:
-    descr: |
-      Additional flags we may store for the regression
-      as a comma separated string. Currently:
-
-      noconst: regression was specified without a constant
-```
-
-- By default reg$flag = "" (must be added in code that generates parcels), but metaregBase shall ensure that the `noconst` is added to flags for regressions with noconst argument.
-
-- We should pass that information to regtranslate in a suitable fashion and it should adapt the R code for regressions without constants.
 
 
 
