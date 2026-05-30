@@ -233,6 +233,17 @@ Now repboxDRF drf_get_data, shall ensure that if some `e()` or `r()` value is ne
 
 Our package `stata2r` shall not create any `e()` or `r()` anymore itself but just expect that variables following the naming convention like `e.sample` for `e(sample)` exist in the execution environment. So we remove a lot of stuff from `stata2r`. Also the whole dependency check currently still in `stata2r`, which duplicates ideas from `drf_deps.R` shall be removed from `stata2r`.
 
+
+# Special cases we ignore
+
+## in aer_99_4_8
+
+```
+keep if activeD==0|[activeD==1&consip==1]
+xi: areg  Lprice199 i.consip i.goodid*Lquantity    i.year i.goodid*trend `controls'       if activeD==0|[activeD==1&consip==1],   a(id) robust
+```
+
+Here the [] are used like (). This somehow works with the Stata parser but is not documented. Usually [] are used to index elements. Trying to duplicate this parser quirk seems too complicated as we don't want to corrupt by accident correct [] use.
 ```
 # END OF FILE: /home/rstudio/repbox/metaregBase/README.md
 
@@ -1930,7 +1941,7 @@ mrb_run_r_base = function(mrb, just_pids=NULL, make_parcels=TRUE, continue_on_er
   restore.point("mrb_run_r")
 
 
-  mrb$drf = drf_apply_loop_ignore(drf)
+  mrb$drf = drf_apply_loop_ignore(mrb$drf)
 
   mrb$artid = basename(mrb$project_dir)
   mrb$parcels = repboxDB::repdb_load_parcels(mrb$project_dir, c("reg_cmdpart", "xtvar"))
@@ -3744,7 +3755,7 @@ mrb_repair_via_ignore = function(project_dir = mrb$project_dir, mrb = NULL, max_
 
     # TO DO: ignore already performed repair attempts
     #        if same cached runid was used
-    cached_runid_df = drf_get_cached_runids_by_pid(drf, pids) %>% rename(runid=pid)
+    cached_runid_df = drf_get_cached_runids_by_pid(mrb$drf, pids) %>% rename(runid=pid)
 
 
     regrepair = regrepair %>%
@@ -4054,7 +4065,7 @@ example = function() {
 mrb_run_r_reg = function(mrb, just_pids=NULL, continue_on_error=FALSE) {
   restore.point("mrb_run_r_reg")
 
-  mrb$drf = drf_apply_loop_ignore(drf)
+  mrb$drf = drf_apply_loop_ignore(mrb$drf)
 
   mrb$artid = basename(mrb$project_dir)
   mrb$parcels = repboxDB::repdb_load_parcels(mrb$project_dir, c("reg_cmdpart", "reg","regvar","regxvar","regcoef", "regcoef_so"))
@@ -7441,7 +7452,6 @@ drf_suggest_cache_runids = function(drf,max_caches = Inf,min_score=100, prepare_
 
 drf_suggest_best_cache_runid = function(path_df,  num_pid_exp=0.5) {
   restore.point("drf_suggest_best_cache_runid")
-  project_dir = drf$project_dir
 
   pids = unique(path_df$pid)
   df = path_df %>%
@@ -7612,7 +7622,7 @@ drf_acmds = function() {
 
 drf_find_pid = function(run_df,acmds = drf_acmds()) {
   restore.point("drf_find_pid")
-  run_df$runid[(run_df$cmd %in% acmds) & run_df$ok]
+  run_df$runid[which((run_df$cmd %in% acmds) & run_df$ok)]
 }
 
 require_project_dir = function(project_dir) {
@@ -8447,9 +8457,9 @@ drf_path_df_to_split_df = function(path_df) {
 drf_make_paths = function(drf) {
   restore.point("drf_make_paths")
   run_df = drf$run_df; project_dir = drf$project_dir
-  pid = drf$pid
-  if (is.null(drf$pid)) {
-    stop("Please specify drf$pid, the analyis runid of run_df.")
+  pids = drf$pids
+  if (is.null(pids)) {
+    stop("Please specify drf$pids, the analyis runid of run_df.")
   }
 
   type_vec = drf_stata_cmd_types_vec()
@@ -8472,7 +8482,7 @@ drf_make_paths = function(drf) {
   # Split run_df by root_file_path and compute path_df
   # Then merge path_df again for all run_df
   srun_li = split(run_df,run_df$root_file_path)
-  path_li = lapply(srun_li, find_one_root_data_paths, pid=pid)
+  path_li = lapply(srun_li, find_one_root_data_paths, pids=pids)
   path_df = bind_rows(path_li)
 
   if (NROW(path_df)==0) {
@@ -8483,7 +8493,7 @@ drf_make_paths = function(drf) {
 }
 
 
-find_one_root_data_paths = function(srun_df, pid) {
+find_one_root_data_paths = function(srun_df, pids) {
   restore.point("find_one_root_data_paths")
 
   srun_df$.ROW = seq_len(NROW(srun_df))
@@ -8499,10 +8509,10 @@ find_one_root_data_paths = function(srun_df, pid) {
   #srun_df$is_mod = cmd_df$is_mod
   # -------------------------------------------------------------------
 
-  spid_rows = match(pid, srun_df$runid)
+  spid_rows = match(pids, srun_df$runid)
   spid_rows = spid_rows[!is.na(spid_rows)]
 
-  path_df = bind_rows(lapply(spid_rows, find_data_run_path, srun_df = srun_df, pid=pid))
+  path_df = bind_rows(lapply(spid_rows, find_data_run_path, srun_df = srun_df, all_pids = pids))
 
   if (NROW(path_df)==0) return(NULL)
   path_df
@@ -8528,7 +8538,7 @@ extract_run_tree_from_path_df = function(root, path_df) {
 # FILE: repboxDRF/R/drf_paths.R
 # Replace the existing find_data_run_path function:
 
-find_data_run_path = function(pid_row, srun_df, pid=NULL) {
+find_data_run_path = function(pid_row, srun_df, all_pids=NULL) {
   restore.point("find_data_run_path")
 
   # All runid in same load block until pid
@@ -8552,14 +8562,12 @@ find_data_run_path = function(pid_row, srun_df, pid=NULL) {
 
   keep = seq_along(path) %in% c(1, length(path)) |
     ((srun_df$is_mod[path] | srun_df$cmd[path] %in% allow) & srun_df$ok[path]) |
-    srun_df$runid[path] %in% pid
+    srun_df$runid[path] %in% all_pids
 
   path = path[keep]
 
   return( tibble(pid=srun_df$runid[pid_row], runid=srun_df$runid[path]))
 }
-
-
 
 # Only works for run_df that have a single rootdonum
 add_load_blocks_to_run_df = function(run_df) {
@@ -8581,7 +8589,7 @@ add_load_blocks_to_run_df = function(run_df) {
       #rows = which(run_df$load_block == run_df$load_block[r])
       #run_df$load_block[rows] = run_df$load_block[cur_preserve]
     } else {
-      wpidning("Restore command without previous preserve command is encountered!")
+      warning("Restore command without previous preserve command is encountered!")
     }
   }
   run_df
@@ -8688,13 +8696,16 @@ drf_load = function(project_dir, parcels=list(), apply_caches=TRUE) {
 }
 
 drf_pids = function(drf, path_df=drf$path_df) {
-  if (!is.null(drf[["runids"]])) drf$pids
-  unique(drf$path_df$pid)
+  if (!is.null(drf[["pids"]])) return(drf$pids)
+  if (!is.null(path_df)) return(sort(unique(path_df$pid)))
+  return(NULL)
 }
 
+
 drf_runids = function(drf, path_df=drf$path_df) {
-  if (!is.null(drf[["runids"]])) drf$runids
-  unique(drf$path_df$runid)
+  if (!is.null(drf[["runids"]])) return(drf$runids)
+  if (!is.null(path_df)) return(unique(path_df$runid))
+  return(NULL)
 }
 
 
@@ -9834,7 +9845,7 @@ drf_run_df_add_data_paths = function(run_df = drf$run_df, drf_dir = drf$drf_dir,
 
 
 
-drf_data_load_needs_clear = function(run_df=NULL, cmd=run_cmd$cmd, cmd_type=run_df$cmd_type) {
+drf_data_load_needs_clear = function(run_df=NULL, cmd=run_df$cmd, cmd_type=run_df$cmd_type) {
   cmd_type %in% c("load")
 }
 
@@ -10132,9 +10143,9 @@ drf_load_path_index = function(project_dir) {
   index_df
 }
 
-drf_load_path = function(project_dir, pid, index_df = drf_load_path_index(pid))  {
+drf_load_path = function(project_dir, pid, index_df = drf_load_path_index(project_dir))  {
 
-  row = which(index_df$pid==row)
+  row = which(index_df$pid==pid)
   from = index_df$start_row[row]
   to= index_df$start_row[row+1]-1
   file = file.path(project_dir, "drf/path_df.fst")
@@ -14753,7 +14764,7 @@ slimify.solved.project = function(project_dir, max.org.mb = 10, max.log.mb = 1, 
     slimify$slimify.org = slimify.org | slimify$slimify.org
     slimify$slimify.stata.res = slimify.stata.res | slimify$slimify.stata.res
     slimify$slimify.matching = slimify.matching | slimify$slimify.matching
-    slimify$slimify.cmd = slimify.log | isTRUE(slimify$slimify.cmd)
+    slimify$slimify.cmd = slimify.cmd | isTRUE(slimify$slimify.cmd)
     slimify$max.log.mb = min(c(slimify$max.log.mb, max.log.mb))
     slimify$max.org.mb = min(c(slimify$max.org.mb, max.org.mb))
     slimify$max.stata.res.mb = min(c(slimify$max.stata.res.mb, max.stata.res.mb))
@@ -15063,6 +15074,37 @@ is_negative = function(n) {
 # Your Task
 ##################################
 
-Somewhere in the code wrong pid are sometimes added to drf$pids and likele also to drf$path_df. The wrong pid corrrespond to runid that are not regressions. Do you know why? Where is the error? How to fix it. Please explain.
+The metaregBase pipeline fails for the following do file:
 
+```
+import excel "Data for Main Analysis.xlsx", clear sheet("Main Analysis") firstrow
+
+reg logAbsentBallotsCastPerPollPlace logVotersPerPW
+```
+
+The beginning of mrb_stata.do is
+
+```
+
+***** Path for runid=2 ****
+
+import excel "Data for Main Analysis.xlsx", clear sheet("Main Analysis") firstrow
+capture noisily reg logAbsentBallotsCastPerPollPlace logVotersPerPW
+local repbox_reg_rc = _rc
+```
+
+And mrb_stata.log shows:
+
+```
+. 
+. ***** Path for runid=2 ****
+. 
+. import excel "Data for Main Analysis.xlsx", clear sheet("Main Analysis") firs
+> trow
+file Data for Main Analysis.xlsx not found
+r(601);
+
+```
+
+For thr `import` command the file path seems not be changed to the drf/org_data folder in mrb_stata.do as is done for `use` commands that load .dta files. Can you check where the bug is (likely either somewhere in repboxDRF or metaregBase) and propose an elegant fix in line with the current packages designs?
 

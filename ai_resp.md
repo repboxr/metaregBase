@@ -1,279 +1,128 @@
-The issue you are observing—where non-regression commands are somehow identified as regression `pid`s and added to `drf$pids` and `drf$path_df`—stems from a combination of lexical scoping bugs, `NA` value leakage, and partial matching in R. 
+You are absolutely right. The Stata parser typically registers the `cmd` column using just the first word of the command line, meaning `"import excel"` is recorded as `"import"`. Since `"import"` is already mapped to `"load"` in `drf_stata_cmd_types_vec()`, modifying the mapping lists would indeed have zero effect. Good catch!
 
-### Why this happens:
-1. **Un-scoped `drf` variable Leakage:** In `metaregBase/R/mrb_r_base.R` and `metaregBase/R/mrb_r_reg.R`, there are calls to `mrb$drf = drf_apply_loop_ignore(drf)`. Notice that `drf` is passed directly, rather than `mrb$drf`. Since `drf` is not defined in the local scope, R searches the parent environments and will often grab a `drf` object lingering in the global environment (e.g. created if you ran `example()` code). If this global `drf` belongs to a *different* project, its completely unrelated `pids` get injected into the current project! These foreign `pids` will match random `runid`s in the current project, assigning data manipulation steps as "regressions".
-2. **`NA` values entering `drf$pids`:** In `repboxDRF/R/drf_create.R`, the function `drf_find_pid` uses the filter `run_df$runid[(run_df$cmd %in% acmds) & run_df$ok]`. If `run_df$ok` is `NA`, this introduces `NA`s directly into `drf$pids` instead of omitting them.
-3. **List Partial Matching:** In `repboxDRF/R/drf_paths.R`, `pid = drf$pid` relies on R's partial list matching to return `drf$pids`. This is fragile and highly prone to causing silent evaluation bugs.
-4. **Silent fall-through in `drf_pids()`:** In `repboxDRF/R/drf.R`, the `drf_pids()` function attempts to return `drf$pids` if available but omits the `return()` keyword, causing it to fall through to `unique(drf$path_df$pid)`.
+The actual issue lies in **`replace_stata_cmdline_path()`** in `repboxDRF/R/drf_tools.R`. The `metaregBase` pipeline uses this function to rewrite data-loading paths to point to the `drf/org_data` folder. However, the static parser inside `repboxStata::replace.files.and.paths.with.ph()` frequently misses file paths in `import` commands. When it fails to find the path, it silently returns the unmodified command, leaving the relative path (`"Data for Main Analysis.xlsx"`) intact, which inevitably breaks when running `mrb_stata.do`.
 
-Here is the code to fix these issues.
+Additionally, we need to adapt **`drf_stata_ensure_use_clear()`** so that it properly appends the `, clear` option to `import`, `insheet`, `infile`, and `infix` commands, preventing Stata from throwing a "data in memory would be lost" error when loading the new data.
 
-!MODIFICATION mrb_run_r_base in metaregBase/R/mrb_r_base.R
+Here are the fixes implementing a robust regex fallback to catch unreplaced file paths in `load` commands:
+
+!MODIFICATION replace_stata_cmdline_path in repboxDRF/R/drf_tools.R
 scope = "function"
-file = "/home/rstudio/repbox/metaregBase/R/mrb_r_base.R"
-function_name = "mrb_run_r_base"
-description = "Fix unscoped drf variable causing it to pull from global environment"
+file = "/home/rstudio/repbox/repboxDRF/R/drf_tools.R"
+function_name = "replace_stata_cmdline_path"
+description = "Add a fallback to aggressively replace file paths in load commands like 'import excel' that the static parser misses."
 ---
 ```r
-#' Extract Stata metaregBase results and create corresponding metaregBase parcels
-mrb_run_r_base = function(mrb, just_pids=NULL, make_parcels=TRUE, continue_on_error=FALSE) {
-  restore.point("mrb_run_r")
+#' Replace file paths in cleaned Stata command lines
+#'
+#' @param cmdline Character vector of cleaned Stata commands one per line
+#' @param replacement String to insert in place of the file path
+#' @return Character vector of commands with paths replaced
+replace_stata_cmdline_path = function(cmdline, replacement = '"`r(my_custom_path)\'"', add_clear=TRUE) {
+  restore.point("replace_stata_cmdline_paths")
 
-
-  mrb$drf = drf_apply_loop_ignore(mrb$drf)
-
-  mrb$artid = basename(mrb$project_dir)
-  mrb$parcels = repboxDB::repdb_load_parcels(mrb$project_dir, c("reg_cmdpart", "xtvar"))
-
-  pids = mrb$drf$pids
-  if (length(pids) == 0) {
-    cat("\nNo pids to process.\n")
-    return(mrb)
+  if (length(replacement)>1 & length(replacement)!= length(cmdline)) {
+    stop("cmdline and replacement must have same length.")
   }
 
-  all_pids = pids
-  if (!is.null(just_pids)) {
-    pids = just_pids
-    mrb$is_partial_run = TRUE
-    mrb$partial_pids = just_pids
+  # Ensure replacement is correctly vectorized
+  replacement = rep(replacement, length.out = length(cmdline))
+
+  tab = repboxStata::repbox.re.cmdlines.to.tab(cmdline)
+
+  empty_ph = data.frame(ph = character(0), content = character(0))
+  res_paths = repboxStata::replace.files.and.paths.with.ph(tab, empty_ph)
+
+  if (nrow(res_paths$ph) == 0) {
+    final_cmds = cmdline
   } else {
-    mrb$is_partial_run = FALSE
+    fph = res_paths$ph
+    fph$content = replacement
+    final_cmds = replace.ph.keep.lines(res_paths$txt, fph)
   }
 
-  mrb = mrb_agg_stata(mrb, skip_if_has = TRUE)
+  # Fallback for commands where repboxStata static parsing didn't find the path
+  failed_to_replace = (final_cmds == cmdline)
+  if (any(failed_to_replace)) {
+    for (i in which(failed_to_replace)) {
+      cmd = final_cmds[i]
+      # Escape potential '$' symbols in file paths for regex engine
+      safe_repl = gsub("$", "\\$", replacement[i], fixed = TRUE)
 
-  all_step_parcels = list()
-
-  cat("\nmrb_r_base processing runids: ")
-  for (pid in pids) {
-    cat(paste0(pid," "))
-    step_parcels = mrb_run_r_base_step(mrb, pid, continue_on_error=continue_on_error)
-    all_step_parcels[[as.character(pid)]] = step_parcels
-  }
-  cat("\n")
-
-  mrb$all_step_parcels = all_step_parcels
-  if (make_parcels) {
-    mrb = mrb_make_r_base_parcels(mrb)
-  }
-
-  mrb
-}
-```
-!END_MODIFICATION mrb_run_r_base in metaregBase/R/mrb_r_base.R
-
-!MODIFICATION mrb_run_r_reg in metaregBase/R/mrb_r_reg.R
-scope = "function"
-file = "/home/rstudio/repbox/metaregBase/R/mrb_r_reg.R"
-function_name = "mrb_run_r_reg"
-description = "Fix unscoped drf variable"
----
-```r
-#' Run translated r regressions, store results and compare with Stata results
-#' uses the parcels already generated by mrb_run_r_base and regtranslate for
-#' regression translation
-mrb_run_r_reg = function(mrb, just_pids=NULL, continue_on_error=FALSE) {
-  restore.point("mrb_run_r_reg")
-
-  mrb$drf = drf_apply_loop_ignore(mrb$drf)
-
-  mrb$artid = basename(mrb$project_dir)
-  mrb$parcels = repboxDB::repdb_load_parcels(mrb$project_dir, c("reg_cmdpart", "reg","regvar","regxvar","regcoef", "regcoef_so"))
-
-  pids = mrb$drf$pids
-  if (length(pids) == 0) {
-    cat("\nNo pids to process.\n")
-    return(mrb)
-  }
-
-  all_pids = pids
-  if (!is.null(just_pids)) {
-    pids = just_pids
-    mrb$is_partial_run = TRUE
-    mrb$partial_pids = just_pids
-  } else {
-    mrb$is_partial_run = FALSE
-  }
-
-  all_step_parcels = list()
-
-  cat("\nmrb_r_reg processing runids: ")
-  for (pid in pids) {
-    cat(paste0(pid," "))
-    step_parcels = mrb_run_r_reg_step(mrb, pid, continue_on_error=continue_on_error)
-    all_step_parcels[[as.character(pid)]] = step_parcels
-  }
-  cat("\n")
-  mrb$all_step_parcels = all_step_parcels
-
-  mrb = mrb_make_r_reg_parcels(mrb)
-
-  mrb
-}
-```
-!END_MODIFICATION mrb_run_r_reg in metaregBase/R/mrb_r_reg.R
-
-!MODIFICATION drf_pids in repboxDRF/R/drf.R
-scope = "function"
-file = "/home/rstudio/repbox/repboxDRF/R/drf.R"
-function_name = "drf_pids"
-description = "Fix drf_pids to properly return drf$pids instead of silently evaluating it."
----
-```r
-drf_pids = function(drf, path_df=drf$path_df) {
-  if (!is.null(drf[["pids"]])) return(drf$pids)
-  if (!is.null(path_df)) return(unique(path_df$pid))
-  return(NULL)
-}
-```
-!END_MODIFICATION drf_pids in repboxDRF/R/drf.R
-
-!MODIFICATION drf_runids in repboxDRF/R/drf.R
-scope = "function"
-file = "/home/rstudio/repbox/repboxDRF/R/drf.R"
-function_name = "drf_runids"
-description = "Fix drf_runids to properly return drf$runids instead of silently evaluating it."
----
-```r
-drf_runids = function(drf, path_df=drf$path_df) {
-  if (!is.null(drf[["runids"]])) return(drf$runids)
-  if (!is.null(path_df)) return(unique(path_df$runid))
-  return(NULL)
-}
-```
-!END_MODIFICATION drf_runids in repboxDRF/R/drf.R
-
-!MODIFICATION drf_find_pid in repboxDRF/R/drf_create.R
-scope = "function"
-file = "/home/rstudio/repbox/repboxDRF/R/drf_create.R"
-function_name = "drf_find_pid"
-description = "Wrap logical condition in which() to drop NA values which cause NA pids."
----
-```r
-drf_find_pid = function(run_df,acmds = drf_acmds()) {
-  restore.point("drf_find_pid")
-  run_df$runid[which((run_df$cmd %in% acmds) & run_df$ok)]
-}
-```
-!END_MODIFICATION drf_find_pid in repboxDRF/R/drf_create.R
-
-!MODIFICATION drf_make_paths in repboxDRF/R/drf_paths.R
-scope = "function"
-file = "/home/rstudio/repbox/repboxDRF/R/drf_paths.R"
-function_name = "drf_make_paths"
-description = "Explicitly use drf$pids instead of drf$pid to avoid partial matching bugs."
----
-```r
-drf_make_paths = function(drf) {
-  restore.point("drf_make_paths")
-  run_df = drf$run_df; project_dir = drf$project_dir
-  pids = drf$pids
-  if (is.null(pids)) {
-    stop("Please specify drf$pids, the analyis runid of run_df.")
-  }
-
-  type_vec = drf_stata_cmd_types_vec()
-
-  run_df = run_df %>%
-    mutate(
-      cmd_type = type_vec[cmd]
-    )
-
-  dep_df = drf$dep_df
-
-  run_df = run_df %>%
-  mutate(
-    is_mod =  cmd %in% stata2r::stata_data_manip_cmds |
-      runid %in% dep_df$source_runid |
-      cmd_type %in% c("mod","load")
-  )
-  run_df$is_mod[run_df$cmd=="scalar"] = FALSE
-
-  # Split run_df by root_file_path and compute path_df
-  # Then merge path_df again for all run_df
-  srun_li = split(run_df,run_df$root_file_path)
-  path_li = lapply(srun_li, find_one_root_data_paths, pids=pids)
-  path_df = bind_rows(path_li)
-
-  if (NROW(path_df)==0) {
-    cat("\nNo regression command found.")
-    return(NULL)
-  }
-  return(path_df)
-}
-```
-!END_MODIFICATION drf_make_paths in repboxDRF/R/drf_paths.R
-
-!MODIFICATION find_one_root_data_paths in repboxDRF/R/drf_paths.R
-scope = "function"
-file = "/home/rstudio/repbox/repboxDRF/R/drf_paths.R"
-function_name = "find_one_root_data_paths"
-description = "Update argument name from pid to pids for clarity and consistency."
----
-```r
-find_one_root_data_paths = function(srun_df, pids) {
-  restore.point("find_one_root_data_paths")
-
-  srun_df$.ROW = seq_len(NROW(srun_df))
-  srun_df = add_load_blocks_to_run_df(srun_df)
-
-  # --- OPTIMIZATION: Compute data modification flags globally ONCE ---
-  # We check the entire run block to resolve dependencies accurately and quickly
-  # rather than doing this inside the loop for every path
-
-
-  #stata_code = gsub("\n", " ", srun_df$cmdline, fixed = TRUE)
-  #cmd_df = stata2r::s2r_check_mod(stata_code)
-  #srun_df$is_mod = cmd_df$is_mod
-  # -------------------------------------------------------------------
-
-  spid_rows = match(pids, srun_df$runid)
-  spid_rows = spid_rows[!is.na(spid_rows)]
-
-  path_df = bind_rows(lapply(spid_rows, find_data_run_path, srun_df = srun_df, pids=pids))
-
-  if (NROW(path_df)==0) return(NULL)
-  path_df
-}
-```
-!END_MODIFICATION find_one_root_data_paths in repboxDRF/R/drf_paths.R
-
-!MODIFICATION find_data_run_path in repboxDRF/R/drf_paths.R
-scope = "function"
-file = "/home/rstudio/repbox/repboxDRF/R/drf_paths.R"
-function_name = "find_data_run_path"
-description = "Update argument name from pid to pids for clarity and consistency."
----
-```r
-find_data_run_path = function(pid_row, srun_df, pids=NULL) {
-  restore.point("find_data_run_path")
-
-  # All runid in same load block until pid
-  path = which(srun_df$load_block == srun_df$load_block[pid_row] & srun_df$.ROW <= pid_row)
-
-  # If we start with a restore command then jump to previous preserve
-  # and then add all rows with the same load_block
-  while (TRUE) {
-    if (srun_df$cmd[path[1]] == "restore") {
-      pr_row = srun_df$preserve_row[path[1]]
-      new_path = which(srun_df$load_block == srun_df$load_block[pr_row] & srun_df$.ROW < pr_row)
-      path = c(new_path, path[-1])
-      next
+      # 1. Try to replace first quoted string, as import/use paths are typically quoted
+      if (stringi::stri_detect_regex(cmd, '"[^"]+"')) {
+        final_cmds[i] = stringi::stri_replace_first_regex(cmd, '"[^"]+"', safe_repl)
+      } 
+      # 2. Look for 'using <path>' unquoted
+      else if (stringi::stri_detect_regex(cmd, "\\busing\\s+([^\\s,]+)", case_insensitive=TRUE)) {
+        final_cmds[i] = stringi::stri_replace_first_regex(cmd, "(?i)\\b(using\\s+)([^\\s,]+)", paste0("$1", safe_repl))
+      } 
+      # 3. Look for bare command followed by unquoted path e.g. `import excel filename.xlsx, clear`
+      else if (stringi::stri_detect_regex(cmd, "^\\s*(import|use|insheet|infix|infile)\\b", case_insensitive=TRUE)) {
+        final_cmds[i] = stringi::stri_replace_first_regex(cmd, "(?i)^(\\s*(?:import|use|insheet|infix|infile)\\b(?:\\s+(?:excel|delimited|sas|spss))?\\s+)([^\\s,]+)", paste0("$1", safe_repl))
+      }
     }
-    break
   }
 
-  # Adapt path: Utilize the globally computed is_mod flag from srun_df
-  cmd_types = drf_stata_cmd_types()
-  allow = c(cmd_types$scalar, cmd_types$xtset)
+  add_clear = rep(add_clear, length.out = length(final_cmds))
 
-  keep = seq_along(path) %in% c(1, length(path)) |
-    ((srun_df$is_mod[path] | srun_df$cmd[path] %in% allow) & srun_df$ok[path]) |
-    srun_df$runid[path] %in% pids
+  if (any(add_clear)) {
+    final_cmds[add_clear] = drf_stata_ensure_use_clear(final_cmds[add_clear])
+  }
 
-  path = path[keep]
-
-  return( tibble(pid=srun_df$runid[pid_row], runid=srun_df$runid[path]))
+  final_cmds
 }
 ```
-!END_MODIFICATION find_data_run_path in repboxDRF/R/drf_paths.R
+!END_MODIFICATION replace_stata_cmdline_path in repboxDRF/R/drf_tools.R
+
+
+!MODIFICATION drf_stata_ensure_use_clear in repboxDRF/R/drf_tools.R
+scope = "function"
+file = "/home/rstudio/repbox/repboxDRF/R/drf_tools.R"
+function_name = "drf_stata_ensure_use_clear"
+description = "Ensure clear option is also appended for import, insheet, infix, and infile commands."
+---
+```r
+drf_stata_ensure_use_clear = function(cmdline) {
+  restore.point("drf_stata_ensure_use_clear")
+
+  if (length(cmdline) == 0) {
+    return(cmdline)
+  }
+
+  cmd = stringi::stri_trim_both(cmdline)
+
+  is_use_or_import = stringi::stri_detect_regex(
+    cmd,
+    "^(u|us|use|import|insheet|infix|infile)\\b",
+    case_insensitive = TRUE
+  )
+
+  if (!any(is_use_or_import)) {
+    return(cmdline)
+  }
+
+  has_clear = stringi::stri_detect_regex(
+    cmd,
+    "(^|[,[:space:]])clear([,[:space:]]|$)",
+    case_insensitive = TRUE
+  )
+
+  add = is_use_or_import & !has_clear
+  if (!any(add)) {
+    return(cmdline)
+  }
+
+  has_comma = stringi::stri_detect_fixed(cmd[add], ",")
+
+  cmd[add] = ifelse(
+    has_comma,
+    paste0(cmd[add], " clear"),
+    paste0(cmd[add], ", clear")
+  )
+
+  cmdline[add] = cmd[add]
+  cmdline
+}
+```
+!END_MODIFICATION drf_stata_ensure_use_clear in repboxDRF/R/drf_tools.R
