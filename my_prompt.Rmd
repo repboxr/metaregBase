@@ -554,7 +554,7 @@ stata_cmds_with_exp_coef = function() {
 }
 
 mrb_cmds_ignore_intercept_in_r = function() {
-  c("areg", "xtreg", "reghdfe", "ivreghdfe", "xtlogit", "xtprobit", "xtpoisson", "clogit")
+  c("areg", "xtreg", "reghdfe", "ivreghdfe", "xtlogit", "xtprobit", "xtpoisson", "clogit", "xtivreg", "xtivreg2")
 }
 ```
 # END OF FILE: /home/rstudio/repbox/metaregBase/R/mrb_cmd_types.R
@@ -1911,6 +1911,9 @@ mrb_make_regcheck_parcel = function(
 ) {
   restore.point("mrb_make_regcheck_parcel")
 
+  if (length(just_pids) == 0)
+    return(mrb)
+
   mrb$parcels = parcels = repboxDB::repdb_load_parcels(
     mrb$project_dir,
     c("reg", "reg_rb", "regcoef", "regcoef_so", "regcoef_rb"),
@@ -3149,11 +3152,21 @@ mrb_add_xtreg_fe_regvar = function(regvar, reg, opts_df, xtvar = NULL, dat = NUL
   }
 
   cmd = as.character(reg$cmd[1])
-  if (!identical(cmd, "xtreg")) {
+  if (!cmd %in% c("xtreg", "xtivreg", "xtivreg2")) {
     return(regvar)
   }
 
-  if (is.null(opts_df) || NROW(opts_df) == 0 || !any(opts_df$opt == "fe")) {
+  is_fe = FALSE
+  if (!is.null(opts_df) && NROW(opts_df) > 0 && any(opts_df$opt == "fe")) {
+    is_fe = TRUE
+  } else if (cmd == "xtivreg2") {
+    # For xtivreg2, fe is the default if no other model estimator option is provided
+    if (is.null(opts_df) || NROW(opts_df) == 0 || !any(opts_df$opt %in% c("fd", "sd", "re", "be"))) {
+      is_fe = TRUE
+    }
+  }
+
+  if (!is_fe) {
     return(regvar)
   }
 
@@ -3184,7 +3197,7 @@ mrb_add_xtreg_fe_regvar = function(regvar, reg, opts_df, xtvar = NULL, dat = NUL
 
   if (length(panelvar) == 0 || is.na(panelvar) || !nzchar(panelvar)) {
     msg = paste0(
-      "xtreg, fe was found but no panel variable is available from xtvar, ",
+      cmd, " with fe was found but no panel variable is available from xtvar, ",
       "reg$panelvar, or legacy i()/iis() options. Cannot add the fixed effect."
     )
     repbox_problem(type = "xtreg_panelvar_missing", msg = msg, fail_action = "warn")
@@ -3545,7 +3558,10 @@ mrb_repair_via_ignore = function(project_dir = mrb$project_dir, mrb = NULL, max_
       semi_join(cached_runid_df, by=c("runid", "cached_runid"))
     pids = setdiff(pids, regrepair$runid)
   }
-
+  if (length(pids) == 0) {
+    cat("\nNo failed runs that have not been alraey tried to be repaired via ignore.\n")
+    return(mrb)
+  }
 
   mrb = mrb_run_r_base(mrb = mrb, just_pids=pids,continue_on_error = TRUE)
   mrb = mrb_run_r_reg(mrb, just_pids=pids, continue_on_error=TRUE)
@@ -4292,9 +4308,9 @@ se_stata_to_repdb = function(cmd, opts_df = cmdpart_to_opts_df(cmdpart), cmdpart
     }
   }
 
-  if (cmd == "xtreg") {
+  if (cmd %in% c("xtreg", "xtivreg")) {
     if (se_type == "conventional") se_type = "iid"
-  } else if (cmd %in% c("reghdfe","ivreghdfe")) {
+  } else if (cmd %in% c("reghdfe", "ivreghdfe", "xtivreg2")) {
     if (startsWith(se_type,"un")) se_type = "iid"
   }
 
@@ -8686,9 +8702,9 @@ get_stata_to_r_cmd = function(cmd, prefer = NULL) {
 stata_to_r_cmds_df = function(cmd) {
   li = list(
     # If you add commands here make to sure that you update the to_r_fixest.R code
-    fixest.. = c("regress","reg", "ivregress","ivreg","ivreg2","reghdfe","xtreg","areg","ppmlhdfe","logit","xtlogit","probit","xtprobit","dprobit"),
+    fixest.. = c("regress","reg", "ivregress","ivreg","ivreg2","xtivreg", "xtivreg2", "reghdfe","ivreghdfe", "xtreg","areg","ppmlhdfe","logit","xtlogit","probit","xtprobit","dprobit"),
     lm.. = c("regress","reg"),
-    ivreg.. = c("ivregress","ivreg","ivreg2"),
+    ivreg.. = c("ivregress","ivreg","ivreg2", "xtivreg", "xtivreg2"),
     quantreg.. = c("qreg"),
     # Note that parmest does return coefficients not marginal
     # effects for dprobit. So we don't use mfx
@@ -9008,6 +9024,7 @@ is_negative = function(n) {
 # Your Task
 ##################################
 
+For some regressions like areg, xtreg often coefficients only differ in the intercept (see screenshot of a test report). I think it might be sensible to ignore for all Stata commands that use fixed effects a possible intercept in the regcheck comparision between sb and rb. In other words we don't compare intercepts for Stata and R translations, neither value nor existence of intercept.
 
-
+Discuss and propose the code change. Maybe for the implementation make a helper function that returns a string vector of cmds that are "fixed effects" Stata regression commands for which intercepts will be ignored.
 

@@ -62,7 +62,10 @@ mrb_repair_via_ignore = function(project_dir = mrb$project_dir, mrb = NULL, max_
       semi_join(cached_runid_df, by=c("runid", "cached_runid"))
     pids = setdiff(pids, regrepair$runid)
   }
-
+  if (length(pids) == 0) {
+    cat("\nNo failed runs that have not been alraey tried to be repaired via ignore.\n")
+    return(mrb)
+  }
 
   mrb = mrb_run_r_base(mrb = mrb, just_pids=pids,continue_on_error = TRUE)
   mrb = mrb_run_r_reg(mrb, just_pids=pids, continue_on_error=TRUE)

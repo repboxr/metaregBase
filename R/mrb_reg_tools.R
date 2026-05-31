@@ -452,11 +452,21 @@ mrb_add_xtreg_fe_regvar = function(regvar, reg, opts_df, xtvar = NULL, dat = NUL
   }
 
   cmd = as.character(reg$cmd[1])
-  if (!identical(cmd, "xtreg")) {
+  if (!cmd %in% c("xtreg", "xtivreg", "xtivreg2")) {
     return(regvar)
   }
 
-  if (is.null(opts_df) || NROW(opts_df) == 0 || !any(opts_df$opt == "fe")) {
+  is_fe = FALSE
+  if (!is.null(opts_df) && NROW(opts_df) > 0 && any(opts_df$opt == "fe")) {
+    is_fe = TRUE
+  } else if (cmd == "xtivreg2") {
+    # For xtivreg2, fe is the default if no other model estimator option is provided
+    if (is.null(opts_df) || NROW(opts_df) == 0 || !any(opts_df$opt %in% c("fd", "sd", "re", "be"))) {
+      is_fe = TRUE
+    }
+  }
+
+  if (!is_fe) {
     return(regvar)
   }
 
@@ -487,7 +497,7 @@ mrb_add_xtreg_fe_regvar = function(regvar, reg, opts_df, xtvar = NULL, dat = NUL
 
   if (length(panelvar) == 0 || is.na(panelvar) || !nzchar(panelvar)) {
     msg = paste0(
-      "xtreg, fe was found but no panel variable is available from xtvar, ",
+      cmd, " with fe was found but no panel variable is available from xtvar, ",
       "reg$panelvar, or legacy i()/iis() options. Cannot add the fixed effect."
     )
     repbox_problem(type = "xtreg_panelvar_missing", msg = msg, fail_action = "warn")

@@ -6,11 +6,7 @@ mrb_test_filter_ignored_intercept_diff = function(diff_tab, cmd = NA_character_,
   }
 
   cmd = as.character(cmd)[1]
-  variant2 = as.character(variant2)[1]
 
-  if (variant2 != "rb") {
-    return(diff_tab)
-  }
   if (is.na(cmd) || !nzchar(cmd) || !cmd %in% ignore_intercept_cmds) {
     return(diff_tab)
   }

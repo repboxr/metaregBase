@@ -68,9 +68,9 @@ se_stata_to_repdb = function(cmd, opts_df = cmdpart_to_opts_df(cmdpart), cmdpart
     }
   }
 
-  if (cmd == "xtreg") {
+  if (cmd %in% c("xtreg", "xtivreg")) {
     if (se_type == "conventional") se_type = "iid"
-  } else if (cmd %in% c("reghdfe","ivreghdfe")) {
+  } else if (cmd %in% c("reghdfe", "ivreghdfe", "xtivreg2")) {
     if (startsWith(se_type,"un")) se_type = "iid"
   }
 

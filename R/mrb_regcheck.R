@@ -15,6 +15,9 @@ mrb_make_regcheck_parcel = function(
 ) {
   restore.point("mrb_make_regcheck_parcel")
 
+  if (!is.null(just_pids) & length(just_pids) == 0)
+    return(mrb)
+
   mrb$parcels = parcels = repboxDB::repdb_load_parcels(
     mrb$project_dir,
     c("reg", "reg_rb", "regcoef", "regcoef_so", "regcoef_rb"),

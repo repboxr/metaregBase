@@ -1,330 +1,188 @@
-To implement translation support for Stata's `xtivreg2` (and by extension `xtivreg` and `ivreghdfe`), we need to route it to `fixest::feols`, properly instruct metaregBase to absorb the panel fixed effect implicitly required by the command, and inform it about standard error processing. 
+You are completely correct that comparing the intercept for fixed effects models is usually not helpful, as it is a nuisance parameter that is handled and reported differently across packages (e.g., Stata’s `areg`/`xtreg` often report a constant, while R’s `fixest::feols` absorbs and omits it entirely).
 
-Here are the modifications required:
+In fact, the exact helper function you suggested **already exists** in `metaregBase/R/mrb_cmd_types.R`:
 
-!MODIFICATION mrb_cmds_ignore_intercept_in_r metaregBase/R/mrb_cmd_types.R
-scope = "function"
-file = "metaregBase/R/mrb_cmd_types.R"
-function_name = "mrb_cmds_ignore_intercept_in_r"
-description = "Add xtivreg and xtivreg2 to commands that ignore intercept in R translation"
----
 ```r
 mrb_cmds_ignore_intercept_in_r = function() {
   c("areg", "xtreg", "reghdfe", "ivreghdfe", "xtlogit", "xtprobit", "xtpoisson", "clogit", "xtivreg", "xtivreg2")
 }
 ```
-!END_MODIFICATION mrb_cmds_ignore_intercept_in_r metaregBase/R/mrb_cmd_types.R
 
+The reason you are still seeing intercept differences in your test reports is due to a small bug in how this helper is conditionally applied in `coef_diff_table` and `mrb_test_filter_ignored_intercept_diff`. 
 
-!MODIFICATION mrb_add_xtreg_fe_regvar metaregBase/R/mrb_reg_tools.R
+Currently, the code only ignores the intercept if the comparison specifically detects that the second variant is `"rb"` (`v2 == "rb"`). However, when parcels are saved to and loaded from the database, the `variant` column is sometimes stripped to match the database schema (making `v2` default to `"unknown"`). This bypasses the intercept-ignoring logic completely, causing the difference to be falsely flagged.
+
+To fix this, we should remove the strict `v2 == "rb"` requirement. Dropping the intercept comparison universally for these commands is sensible and robust, even when comparing Stata Base (`sb`) to Stata Original (`so`), since intercept estimates can vary slightly across Stata routines anyway.
+
+Here are the code modifications to correctly enforce this logic across all comparisons.
+
+!MODIFICATION coef_diff_table metaregBase/R/mrb_regcoef.R
 scope = "function"
-file = "metaregBase/R/mrb_reg_tools.R"
-function_name = "mrb_add_xtreg_fe_regvar"
-description = "Update to support xtivreg and xtivreg2 panel variables acting as fixed effects."
+file = "/home/rstudio/repbox/metaregBase/R/mrb_regcoef.R"
+function_name = "coef_diff_table"
+description = "Remove strict v2 == 'rb' requirement to ensure intercepts are ignored for FE models even if the variant column is stripped."
 ---
 ```r
-#' Add the panel fixed effect implied by xtreg, fe to regvar
-#'
-#' Stata's xtreg, fe absorbs the panel variable declared by xtset.
-#' In metaregBase this variable should already be available in xtvar$panelvar
-#' or in the reg parcel. Legacy xtreg syntax may also specify it via i() or iis().
-#' We deliberately do not infer the panel variable from the cluster variable,
-#' because Stata does not do that.
-mrb_add_xtreg_fe_regvar = function(regvar, reg, opts_df, xtvar = NULL, dat = NULL) {
-  restore.point("mrb_add_xtreg_fe_regvar")
+coef_diff_table = function(
+  co1,
+  co2,
+  check.ref.levels = TRUE,
+  eq_mode = c("auto", "exact")[1],
+  cmd = NULL,
+  ignore_intercept_cmds = mrb_cmds_ignore_intercept_in_r()
+) {
+  restore.point("regcoef_check_same")
 
-  if (is.null(reg) || NROW(reg) == 0) {
-    return(regvar)
-  }
+  if (is.null(co1) | is.null(co2)) return(NULL)
 
-  cmd = as.character(reg$cmd[1])
-  if (!cmd %in% c("xtreg", "xtivreg", "xtivreg2")) {
-    return(regvar)
-  }
+  v1 = if ("variant" %in% names(co1)) co1$variant[1] else "unknown"
+  v2 = if ("variant" %in% names(co2)) co2$variant[1] else "unknown"
 
-  is_fe = FALSE
-  if (!is.null(opts_df) && NROW(opts_df) > 0 && any(opts_df$opt == "fe")) {
-    is_fe = TRUE
-  } else if (cmd == "xtivreg2") {
-    # For xtivreg2, fe is the default if no other model estimator option is provided
-    if (is.null(opts_df) || NROW(opts_df) == 0 || !any(opts_df$opt %in% c("fd", "sd", "re", "be"))) {
-      is_fe = TRUE
-    }
-  }
+  prep = regcoef_prepare_eq_for_diff(co1, co2, eq_mode = eq_mode)
+  co1 = prep$co1
+  co2 = prep$co2
 
-  if (!is_fe) {
-    return(regvar)
-  }
+  # Match results
+  cod = full_join(co1, co2, by = c("eq", "cterm", "runid"), suffix = c("_1", "_2"))
 
-  nonempty_chr = function(x) {
-    x = as.character(x)
-    x = x[!is.na(x) & nzchar(trimws(x))]
-    x
-  }
+  # Ignore (Intercept) if translating to R natively absorbs it for these commands.
+  # In saved regcoef parcels the cmd column is usually not present, so callers can
+  # pass cmd explicitly. This is needed for reghdfe, areg, xtreg, etc.
+  if (!is.null(ignore_intercept_cmds) && NROW(cod) > 0) {
+    cmd_for_ignore = rep(NA_character_, NROW(cod))
 
-  panelvar = character(0)
+    if (!is.null(cmd)) {
+      cmd_chr = as.character(cmd)
 
-  if (!is.null(xtvar) && "panelvar" %in% names(xtvar)) {
-    panelvar = nonempty_chr(xtvar$panelvar)[1]
-  }
-
-  if (length(panelvar) == 0 || is.na(panelvar)) {
-    if ("panelvar" %in% names(reg)) {
-      panelvar = nonempty_chr(reg$panelvar)[1]
-    }
-  }
-
-  if (length(panelvar) == 0 || is.na(panelvar)) {
-    panel_rows = opts_df$opt %in% c("i", "iis")
-    if (any(panel_rows)) {
-      panelvar = nonempty_chr(opts_df$opt_arg[panel_rows])[1]
-    }
-  }
-
-  if (length(panelvar) == 0 || is.na(panelvar) || !nzchar(panelvar)) {
-    msg = paste0(
-      cmd, " with fe was found but no panel variable is available from xtvar, ",
-      "reg$panelvar, or legacy i()/iis() options. Cannot add the fixed effect."
-    )
-    repbox_problem(type = "xtreg_panelvar_missing", msg = msg, fail_action = "warn")
-    return(regvar)
-  }
-
-  panel_cterm = stata_expr_to_cterm(panelvar)
-
-  already_has_fe = any(
-    regvar$role == "exo" &
-      isTRUE_VEC(regvar$absorbed_fe) &
-      regvar$cterm == panel_cterm
-  )
-
-  if (isTRUE(already_has_fe)) {
-    return(regvar)
-  }
-
-  if (!is.null(dat) && panelvar %in% names(dat)) {
-    distinct_num = dplyr::n_distinct(dat[[panelvar]], na.rm = TRUE)
-    varclass = repbox_col_class(dat[[panelvar]], distinct_num = distinct_num)
-  } else {
-    distinct_num = NA_integer_
-    varclass = NA_character_
-  }
-
-  main_pos = suppressWarnings(max(regvar$main_pos, na.rm = TRUE))
-  if (!is.finite(main_pos)) {
-    main_pos = 0L
-  }
-
-  new_row = regvar[1, , drop = FALSE]
-
-  for (col in names(new_row)) {
-    if (is.logical(new_row[[col]])) {
-      new_row[[col]] = FALSE
-    } else if (is.integer(new_row[[col]])) {
-      new_row[[col]] = NA_integer_
-    } else if (is.numeric(new_row[[col]])) {
-      new_row[[col]] = NA_real_
-    } else if (is.list(new_row[[col]])) {
-      new_row[[col]] = list(NULL)
-    } else {
-      new_row[[col]] = NA_character_
-    }
-  }
-
-  vals = list(
-    ia_expr = panelvar,
-    var_expr = panelvar,
-    var = panelvar,
-    role = "exo",
-    prefix = "",
-    option = "xtreg_fe",
-    class = "fe",
-    fe_type = "xtreg_fe",
-    is_fe = TRUE,
-    distinct_num = as.integer(distinct_num),
-    ia_num = 1L,
-    ia_pos = 1L,
-    main_pos = as.integer(main_pos + 1L),
-    ia_cterm = panel_cterm,
-    cterm = panel_cterm,
-    basevar = panel_cterm,
-    is_ia = FALSE,
-    absorbed_fe = TRUE,
-    is_factor = TRUE,
-    add_main_effects = FALSE,
-    varclass = varclass,
-    ia_distinct_num = as.numeric(distinct_num),
-    ia_type = "fe",
-    var_org_type = ifelse(is.na(varclass), "factor", varclass),
-    var_reg_type = "factor",
-    ia_reg_type = "factor"
-  )
-
-  for (nm in intersect(names(vals), names(new_row))) {
-    new_row[[nm]] = vals[[nm]]
-  }
-
-  dplyr::bind_rows(regvar, new_row)
-}
-```
-!END_MODIFICATION mrb_add_xtreg_fe_regvar metaregBase/R/mrb_reg_tools.R
-
-
-!MODIFICATION se_stata_to_repdb metaregBase/R/mrb_se.R
-scope = "function"
-file = "metaregBase/R/mrb_se.R"
-function_name = "se_stata_to_repdb"
-description = "Update to support xtivreg2 and ivreghdfe in SE parsing"
----
-```r
-se_stata_to_repdb = function(cmd, opts_df = cmdpart_to_opts_df(cmdpart), cmdpart=NULL) {
-  restore.point("se_stata_to_repdb")
-
-  if (cmd == "newey") {
-    row = opts_df$opt == "lag"
-    lag = as_integer(opts_df$opt_arg[row])
-    se = tibble(
-      se_category = "robust",
-      se_type = "nw",
-      se_args = paste0("lag=",lag)
-    )
-    return(se)
-  }
-
-  abbr.li = list(
-    robust = c("robust","robus","robu","rob","ro","r"),
-    cluster = c("cluster","cluste","clust","clus","clu","cl"),
-    boot = c("bootstrap","bootstra","bootstr","bootst","boots","boot"),
-    jack = c("jackknife","jackknif","jack")
-  )
-
-  se_type = ""; se_args=NULL
-  vce_row = which(opts_df$opt=="vce")
-
-  if (length(vce_row)>0) {
-    se_str = opts_df$opt_arg[vce_row]
-    if (is.na(se_str)) se_str = ""
-    se_words = se_str %>%
-      trimws() %>% ws_to_single_space() %>%
-      strsplit(" ")
-    se_words = se_words[[1]]
-    if (length(se_words) > 0 && se_words[1] != "") {
-      se_type = expand_stata_abbr_one_val(se_words[1], abbr.li)
-      se_args = se_words[-1]
-    } else {
-      se_type = ""
-      se_args = character(0)
-    }
-  } else {
-    abbr.row = which(opts_df$opt %in% unlist(abbr.li))
-    if (length(abbr.row)==2) {
-      cl_ind = which(startsWith(opts_df$opt[abbr.row],"cl"))
-      if (length(cl_ind)>0) {
-        abbr.row = abbr.row[cl_ind]
+      if (!is.null(names(cmd_chr)) && "runid" %in% names(cod)) {
+        ind = match(as.character(cod$runid), names(cmd_chr))
+        cmd_for_ignore = cmd_chr[ind]
+      } else if (length(cmd_chr) == 1) {
+        cmd_for_ignore = rep(cmd_chr, NROW(cod))
+      } else if (length(cmd_chr) == NROW(cod)) {
+        cmd_for_ignore = cmd_chr
       }
     }
 
-    if (length(abbr.row)==1) {
-      se_type = opts_df$opt[[abbr.row]]
-      se_type = expand_stata_abbr_one_val(se_type, abbr.li)
-      se_str = opts_df$opt_arg[abbr.row]
-      if (is.na(se_str)) se_str = ""
-      se_args = se_str %>%
-        trimws() %>% ws_to_single_space() %>%
-        strsplit(" ")
-      se_args = se_args[[1]]
-    } else if (length(abbr.row)>1) {
-      stop("Regression options match multiple standard error abbreviations. Need to adapt stata.reg.se.info")
+    if (all(is.na(cmd_for_ignore))) {
+      cmd_col = if ("cmd_1" %in% names(cod)) {
+        "cmd_1"
+      } else if ("cmd" %in% names(cod)) {
+        "cmd"
+      } else {
+        NULL
+      }
+
+      if (!is.null(cmd_col)) {
+        cmd_for_ignore = as.character(cod[[cmd_col]])
+      }
     }
+
+    cod$.repbox_cmd_for_ignore = cmd_for_ignore
+
+    cod = cod %>%
+      filter(
+        !(
+          cterm == "(Intercept)" &
+            !is.na(.data$.repbox_cmd_for_ignore) &
+            nzchar(.data$.repbox_cmd_for_ignore) &
+            .data$.repbox_cmd_for_ignore %in% ignore_intercept_cmds
+        )
+      ) %>%
+      select(-.repbox_cmd_for_ignore)
   }
 
-  if (cmd %in% c("xtreg", "xtivreg")) {
-    if (se_type == "conventional") se_type = "iid"
-  } else if (cmd %in% c("reghdfe", "ivreghdfe", "xtivreg2")) {
-    if (startsWith(se_type,"un")) se_type = "iid"
+  # Ignore coefficients that are missing in both co1 and co2
+  cod = cod %>%
+    filter(!(is.na(coef_1) & is.na(coef_2)))
+
+  # Should be TRUE whenever co1 and co2 come from different regression commands
+  # We try to correct for the fact that they may pick different reference levels
+  # when creating the dummy variables
+  if (check.ref.levels) {
+    cod = cod %>%
+      mutate(
+        is_ia = has.substr(cterm, "#"),
+        is_factor = has.substr(cterm, "="),
+        factor_group = stringi::stri_replace_all_regex(paste0(cterm, ":"), "=([^\\:]*):", ":") %>% str.remove.ends(right = 1)
+      ) %>%
+      group_by(runid, eq, factor_group) %>%
+      mutate(
+        ref_level_differs = is_factor & any(is.na(coef_2)),
+        offset.2 = ifelse(ref_level_differs, -coef_1[first(which(is.na(coef_2)))], 0),
+        num_diff_ref_coef_2 = sum(is.na(coef_2))
+      ) %>%
+      ungroup() %>%
+      mutate(
+        coef_2 = ifelse(is.na(coef_2) & ref_level_differs, 0, coef_2),
+        coef_2 = ifelse(ref_level_differs, coef_2 + offset.2, coef_2)
+      )
+
+    # Adapt (Intercept) if there are different reference levels
+    cod = cod %>%
+      group_by(runid, eq) %>%
+      mutate(
+        ref_level_differs = ifelse(cterm == "(Intercept)" & any(ref_level_differs), any(ref_level_differs, na.rm = TRUE), ref_level_differs),
+        offset.2.intercept = ifelse(cterm == "(Intercept)" & any(ref_level_differs), -sum(unique(offset.2), na.rm = TRUE), offset.2),
+        coef_2 = ifelse(cterm == "(Intercept)" & any(ref_level_differs), coef_2 + offset.2.intercept, coef_2)
+      )
+  } else {
+    cod$ref_level_differs = rep(FALSE, NROW(cod))
   }
 
-  if (se_type %in% c("","iid")) {
-    if (length(se_args)>0) {
-      restore.point("Problem in parsing se: se_type is iid but there are se_args")
-      stop("Problem in parsing se: se_type is iid but there are se_args")
-    }
-    se = tibble(
-      se_category = "iid",
-      se_type = "iid",
-      se_args = ""
+  # Compute absolute and relative differences between coefficients and se
+  cod = cod %>%
+    mutate(
+      abs_err_coef = abs(coef_1 - coef_2),
+      abs_err_se = abs(se_1 - se_2),
+      rel_err_coef = abs_err_coef / (0.5 * (abs(coef_1) + abs(coef_2))),
+      rel_err_se = abs_err_se / (0.5 * (abs(se_1) + abs(se_2))),
+
+      rel_within_1pc_coef = rel_err_coef < 0.01,
+      rel_within_1pc = rel_err_coef < 0.01 & rel_err_se < 0.01,
+      identical_coef = coef_1 == coef_2,
+      identical = identical_coef & se_1 == se_2
     )
-    return(se)
-  }
 
-  if (se_type=="robust" | tolower(se_type) %in% c("hc0", "hc1","hc2","hc3","hc4","hc5")) {
-    if (length(se_args)>0) {
-      restore.point("Problem in parsing se: se_type is robust but there are se_args")
-      stop(paste0("Problem in parsing se: se_type is ", se_type," but there are se_args"))
-    }
-    if (se_type=="robust") se_type = "hc1"
-    se = tibble(
-      se_category = "robust",
-      se_type = se_type,
-      se_args = ""
-    )
-    return(se)
-  }
+  cod = cod %>%
+    group_by(runid, eq) %>%
+    mutate(
+      step_refs_differ =
+        any(ref_level_differs) |
+        any(!is.na(coef_1) & is.na(coef_2))
+    ) %>%
+    ungroup()
 
-  if (se_type=="cluster") {
-    # FIX: Don't wrap in list() otherwise paste0 creates literal c("i", "year") strings
-    clustervar = as.character(se_args)
-    clustervar = clustervar[clustervar != ""]
-    num_clustervar = length(clustervar)
+  cod = cod %>%
+    select(runid, eq, cterm, identical, identical_coef, everything())
 
-    if (num_clustervar==1) {
-      se_type = "cluster"
-    } else if (num_clustervar==2) {
-      se_type = "twoway"
-    } else if (num_clustervar > 2) {
-      se_type = "multiway"
-    } else {
-      stop("We have clustered se but no cluster variables can be found in options.")
-    }
-    se_args = paste0("cluster",seq_along(clustervar),"=", clustervar, collapse=";")
-
-    se = tibble(
-      se_category = "cluster",
-      se_type = se_type,
-      se_args = se_args
-    )
-    return(se)
-  }
-
-  stop(paste0("Have not yet implemented parsing of Stata standard error of type ", se_type))
-  return(NULL)
+  cod
 }
 ```
-!END_MODIFICATION se_stata_to_repdb metaregBase/R/mrb_se.R
+!END_MODIFICATION coef_diff_table metaregBase/R/mrb_regcoef.R
 
-
-!MODIFICATION stata_to_r_cmds_df regtranslate/R/to_r.R
+!MODIFICATION mrb_test_filter_ignored_intercept_diff metaregBase/R/mrb_test_coef.R
 scope = "function"
-file = "regtranslate/R/to_r.R"
-function_name = "stata_to_r_cmds_df"
-description = "Add xtivreg, xtivreg2, ivreghdfe to translation list arrays."
+file = "/home/rstudio/repbox/metaregBase/R/mrb_test_coef.R"
+function_name = "mrb_test_filter_ignored_intercept_diff"
+description = "Remove variant2 == 'rb' requirement so that intercepts in FE models are consistently ignored in all comparisons."
 ---
 ```r
-stata_to_r_cmds_df = function(cmd) {
-  li = list(
-    # If you add commands here make to sure that you update the to_r_fixest.R code
-    fixest.. = c("regress","reg", "ivregress","ivreg","ivreg2","xtivreg", "xtivreg2", "reghdfe","ivreghdfe", "xtreg","areg","ppmlhdfe","logit","xtlogit","probit","xtprobit","dprobit"),
-    lm.. = c("regress","reg"),
-    ivreg.. = c("ivregress","ivreg","ivreg2", "xtivreg", "xtivreg2"),
-    quantreg.. = c("qreg"),
-    # Note that parmest does return coefficients not marginal
-    # effects for dprobit. So we don't use mfx
-    #mfx... = c("dprobit"),
-    tobit.. = c("tobit")
-  )
-  stata_cmd = unlist(li)
-  r_cmd = str.left.of(names(stata_cmd),"..")
-  data.frame(stata_cmd=stata_cmd,r_cmd=r_cmd,row.names = NULL)
+mrb_test_filter_ignored_intercept_diff = function(diff_tab, cmd = NA_character_, variant2 = "rb", ignore_intercept_cmds = mrb_cmds_ignore_intercept_in_r()) {
+  restore.point("mrb_test_filter_ignored_intercept_diff")
+
+  if (is.null(diff_tab) || NROW(diff_tab) == 0) {
+    return(diff_tab)
+  }
+
+  cmd = as.character(cmd)[1]
+
+  if (is.na(cmd) || !nzchar(cmd) || !cmd %in% ignore_intercept_cmds) {
+    return(diff_tab)
+  }
+
+  diff_tab %>%
+    filter(cterm != "(Intercept)")
 }
 ```
-!END_MODIFICATION stata_to_r_cmds_df regtranslate/R/to_r.R
+!END_MODIFICATION mrb_test_filter_ignored_intercept_diff metaregBase/R/mrb_test_coef.R

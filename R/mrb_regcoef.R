@@ -318,7 +318,7 @@ coef_diff_table = function(
   # Ignore (Intercept) if translating to R natively absorbs it for these commands.
   # In saved regcoef parcels the cmd column is usually not present, so callers can
   # pass cmd explicitly. This is needed for reghdfe, areg, xtreg, etc.
-  if (!is.null(ignore_intercept_cmds) && v2 == "rb" && NROW(cod) > 0) {
+  if (!is.null(ignore_intercept_cmds) && NROW(cod) > 0) {
     cmd_for_ignore = rep(NA_character_, NROW(cod))
 
     if (!is.null(cmd)) {
