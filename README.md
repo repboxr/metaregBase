@@ -211,3 +211,7 @@ xi: areg  Lprice199 i.consip i.goodid*Lquantity    i.year i.goodid*trend `contro
 ```
 
 Here the [] are used like (). This somehow works with the Stata parser but is not documented. Usually [] are used to index elements. Trying to duplicate this parser quirk seems too complicated as we don't want to corrupt by accident correct [] use.
+
+## Standard errors for iw, pw or fw weights
+
+The `regtranslate` translation for regressions with iw, pw or fw weights will often yield different standard errors than Stata. Details are in `weights_explained.md`. We keep this issue as it is, not trying to repair.
