@@ -214,6 +214,33 @@ mrb_run_r_base_step = function(mrb, pid, with_try = isTRUE(mrb$with_try), contin
   if (any(startsWith(tolower(opts_df$opt), "nocon"))) {
     flags_vec = c(flags_vec, "noconst")
   }
+
+  w_df = cmdpart %>% filter(part == "weight_var")
+  w_type_df = cmdpart %>% filter(part == "weight_type")
+  weights_val = NA_character_
+
+  if (nrow(w_df) > 0) {
+    weights_val = w_df$content[1]
+    w_type = if (nrow(w_type_df) > 0) tolower(w_type_df$content[1]) else ""
+
+    if (w_type %in% c("fw", "pw", "iw")) {
+      flags_vec = c(flags_vec, w_type)
+    }
+
+    # Fast regex check: If it contains anything non-alphanumeric, it is an expression.
+    is_expr = stringi::stri_detect_regex(weights_val, "[^A-Za-z0-9_]")
+
+    if (is_expr) {
+      vars = try(all.vars(parse(text = weights_val)), silent = TRUE)
+      if (inherits(vars, "try-error")) {
+        flags_vec = c(flags_vec, "weights_non_parseable")
+        repbox_problem(paste0("Cannot parse weight expression: ", weights_val), type = "weights_non_parseable", fail_action = "msg")
+      } else {
+        flags_vec = c(flags_vec, "weights_expr")
+      }
+    }
+  }
+
   flags_str = paste0(flags_vec, collapse = ", ")
 
   reg_dat = tibble(
@@ -235,6 +262,7 @@ mrb_run_r_base_step = function(mrb, pid, with_try = isTRUE(mrb$with_try), contin
     nobs = nobs_val,
     nobs_org = NROW(org_dat),
     r2 = r2_val,
+    weights = weights_val,
     flags = flags_str,
     error_in_r = FALSE
   )

@@ -276,7 +276,17 @@ cmdpart_to_regvar = function(cmdpart, dat, opts_df, se_info) {
   # Weights
   w_df = cmdpart %>% dplyr::filter(part == "weight_var")
   if (nrow(w_df) > 0) {
-    term_list[[2]] = dplyr::tibble(ia_expr = w_df$content, role = "weight", option = "")
+    w_expr = w_df$content[1]
+    is_expr = stringi::stri_detect_regex(w_expr, "[^A-Za-z0-9_]")
+
+    if (is_expr) {
+      vars = try(all.vars(parse(text = w_expr)), silent = TRUE)
+      if (!inherits(vars, "try-error") && length(vars) > 0) {
+        term_list[[2]] = dplyr::tibble(ia_expr = vars, role = "weight_comp", option = "")
+      }
+    } else {
+      term_list[[2]] = dplyr::tibble(ia_expr = w_expr, role = "weight_comp", option = "")
+    }
   }
 
   # Absorb (from reghdfe / areg)
