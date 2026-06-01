@@ -67,7 +67,10 @@ mrb_run_r_base_step = function(mrb, pid, with_try = isTRUE(mrb$with_try), contin
 
   # 4. Extract Options, SE, and build initial regvar
   opts_df = cmdpart_to_opts_df(cmdpart)
-  se_info = se_stata_to_repdb(cmd, opts_df)
+
+  panelvar = mrb_get_panelvar(run_obj, opts_df, xtvar)
+  se_info = se_stata_to_repdb(cmd, opts_df, panelvar = panelvar)
+
   regvar = cmdpart_to_regvar(cmdpart, dat, opts_df, se_info)
 
   # xtreg, fe absorbs the xtset panel variable. This variable is stored in

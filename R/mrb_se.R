@@ -7,7 +7,7 @@ get_se_parser_version = function() {
 
 
 
-se_stata_to_repdb = function(cmd, opts_df = cmdpart_to_opts_df(cmdpart), cmdpart=NULL) {
+se_stata_to_repdb = function(cmd, opts_df = cmdpart_to_opts_df(cmdpart), cmdpart=NULL, panelvar=NA_character_) {
   restore.point("se_stata_to_repdb")
 
   if (cmd == "newey") {
@@ -92,6 +92,19 @@ se_stata_to_repdb = function(cmd, opts_df = cmdpart_to_opts_df(cmdpart), cmdpart
       restore.point("Problem in parsing se: se_type is robust but there are se_args")
       stop(paste0("Problem in parsing se: se_type is ", se_type," but there are se_args"))
     }
+
+    # In Stata, xt commands (except xtivreg2) and clogit with robust standard errors
+    # implicitly cluster on the panel variable.
+    is_xt_cluster = (startsWith(cmd, "xt") && cmd != "xtivreg2") || cmd == "clogit"
+    if (is_xt_cluster && !is.na(panelvar) && nzchar(panelvar)) {
+      se = tibble(
+        se_category = "cluster",
+        se_type = "cluster",
+        se_args = paste0("cluster1=", panelvar)
+      )
+      return(se)
+    }
+
     if (se_type=="robust") se_type = "hc1"
     se = tibble(
       se_category = "robust",

@@ -447,6 +447,37 @@ cmdpart_to_regvar = function(cmdpart, dat, opts_df, se_info) {
   return(vi)
 }
 
+mrb_get_panelvar = function(reg, opts_df, xtvar = NULL) {
+  nonempty_chr = function(x) {
+    x = as.character(x)
+    x = x[!is.na(x) & nzchar(trimws(x))]
+    x
+  }
+
+  panelvar = character(0)
+
+  if (!is.null(xtvar) && "panelvar" %in% names(xtvar)) {
+    panelvar = nonempty_chr(xtvar$panelvar)[1]
+  }
+
+  if (length(panelvar) == 0 || is.na(panelvar)) {
+    if ("panelvar" %in% names(reg)) {
+      panelvar = nonempty_chr(reg$panelvar)[1]
+    }
+  }
+
+  if (length(panelvar) == 0 || is.na(panelvar)) {
+    panel_rows = opts_df$opt %in% c("i", "iis", "group")
+    if (any(panel_rows)) {
+      panelvar = nonempty_chr(opts_df$opt_arg[panel_rows])[1]
+    }
+  }
+
+  if (length(panelvar) == 0) return(NA_character_)
+  return(panelvar)
+}
+
+
 #' Add the panel fixed effect implied by xtreg, fe to regvar
 #'
 #' Stata's xtreg, fe absorbs the panel variable declared by xtset.
@@ -480,32 +511,9 @@ mrb_add_xtreg_fe_regvar = function(regvar, reg, opts_df, xtvar = NULL, dat = NUL
     return(regvar)
   }
 
-  nonempty_chr = function(x) {
-    x = as.character(x)
-    x = x[!is.na(x) & nzchar(trimws(x))]
-    x
-  }
+  panelvar = mrb_get_panelvar(reg, opts_df, xtvar)
 
-  panelvar = character(0)
-
-  if (!is.null(xtvar) && "panelvar" %in% names(xtvar)) {
-    panelvar = nonempty_chr(xtvar$panelvar)[1]
-  }
-
-  if (length(panelvar) == 0 || is.na(panelvar)) {
-    if ("panelvar" %in% names(reg)) {
-      panelvar = nonempty_chr(reg$panelvar)[1]
-    }
-  }
-
-  if (length(panelvar) == 0 || is.na(panelvar)) {
-    panel_rows = opts_df$opt %in% c("i", "iis")
-    if (any(panel_rows)) {
-      panelvar = nonempty_chr(opts_df$opt_arg[panel_rows])[1]
-    }
-  }
-
-  if (length(panelvar) == 0 || is.na(panelvar) || !nzchar(panelvar)) {
+  if (is.na(panelvar) || !nzchar(panelvar)) {
     msg = paste0(
       cmd, " with fe was found but no panel variable is available from xtvar, ",
       "reg$panelvar, or legacy i()/iis() options. Cannot add the fixed effect."
