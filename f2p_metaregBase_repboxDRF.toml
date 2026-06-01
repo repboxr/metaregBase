@@ -21,11 +21,6 @@ Below is code from selected R projects from my repbox / metareg toolbox.
 {{repboxDRF}}
 
 
-# Package repboxRun
-
-{{repboxRun}}
-
-
 ## Format of proposed changes to code or text files
 
 When you suggest changes to code or text files or completely new files, you MUST use the following format for each modification. Each change must be enclosed in a `!MODIFICATION` block.

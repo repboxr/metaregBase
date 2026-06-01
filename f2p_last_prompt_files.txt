@@ -1,4 +1,5 @@
 DESCRIPTION
+README.md
 R/colstat.R
 R/debug_tools.R
 R/mrb_agg_stata.R
@@ -24,4 +25,3 @@ R/mrb_test_source.R
 R/stata_util.R
 R/static_reg.R
 R/utils.R
-README.md
