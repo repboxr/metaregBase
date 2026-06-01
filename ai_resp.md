@@ -1,524 +1,591 @@
-To fix the issue, we need to correctly interpret the role of `cache_runid`. Previously, `mrb_cache_failed_runs_data` tried to look up `cache_runid` as if it were a regression `pid`, which caused `drf_stata_code_df` to return an empty data frame (leading to the `left_join` error you saw).
+I have investigated the Stata documentation regarding standard errors, particularly for the `xt` command suite. 
 
-I have rewritten `mrb_cache_failed_runs_data` as a new function `mrb_create_cache_at_runid`. It now takes a target `pid` to trace the Stata path and correctly stops and inserts the `save` command at the intermediate `cache_runid`.
+### Discussion of Stata Behavior
+When you specify `vce(robust)` (or simply `robust`) in a Stata regression, it typically implies that the variance-covariance estimator is robust to heteroskedasticity (e.g., HC1). However, Stata handles panel models differently. Specifically:
 
-Furthermore, to reduce code duplication and automatically apply ignore tactics, `mrb_repair_via_cache` will now directly reuse `mrb_repair_via_ignore(..., repair_code = "c")` for the subsequent execution steps after generating the cache.
+1. **`xt` commands:** For almost all `xt` commands (such as `xtreg`, `xtivreg`, `xtlogit`, `xtpoisson`, etc.), when the `robust` option is supplied, Stata implicitly calculates standard errors that are robust to clustering on the panel variable. An exception is the user-written `xtivreg2` command, which strictly calculates heteroskedasticity-robust standard errors unless a `cluster()` option is explicitly provided.
+2. **`clogit`:** For conditional logistic regression (`clogit`), specifying `vce(robust)` also explicitly means calculating cluster-robust standard errors, where the clustering takes place on the grouping variable supplied to the `group()` option.
 
-I also added safety guards in `drf_stata_code_df` so it gracefully returns an empty tibble instead of crashing if an empty path dataframe is encountered.
+### Code Changes
 
-!MODIFICATION mrb_repair.R modifications
-scope = "file"
-file = "/home/rstudio/repbox/metaregBase/R/mrb_repair.R"
-description = "Rewrite mrb_repair_via_ignore to accept repair_code and combine with cache repair, and replace mrb_cache_failed_runs_data with mrb_create_cache_at_runid"
----
-```r
-# TO DO:
+1. **Extraction Helper (`mrb_get_panelvar`)**: I extracted the panel variable parsing logic into a helper function `mrb_get_panelvar()` inside `metaregBase/R/mrb_reg_tools.R`. It looks for the panel variable in the `.dta` meta parcel, direct `reg` meta columns, and regression options like `i()`, `iis()`, and now specifically also `group()` (to cater for `clogit`). I used this new helper to simplify the previous `mrb_add_xtreg_fe_regvar()` implementation.
+2. **Inject the Pipeline Extraction (`mrb_run_r_base_step`)**: In `metaregBase/R/mrb_r_base.R`, I updated the `mrb_run_r_base_step()` function. It now runs the `mrb_get_panelvar()` resolution BEFORE querying `se_stata_to_repdb()`. Thus we can pass `panelvar` cleanly to the SE parsing step.
+3. **Implicit Panel Cluster Assignment (`se_stata_to_repdb`)**: In `metaregBase/R/mrb_se.R`, I updated `se_stata_to_repdb()` to accept `panelvar` as a parameter. It now detects if `se_type` resolves to `"robust"` (or HC variants). If the original command is an applicable `xt` command or `clogit`, and a non-empty `panelvar` was found, it upgrades the resulting standard error signature from `se_category = "robust"` into `se_category = "cluster"` with `se_args = paste0("cluster1=", panelvar)`. 
 
-# Perhaps: Cache for import statements does not need an R error in data preparation wrong rb results should suffice.
+The pipeline now guarantees properly aligned standard errors matching implicit Stata behaviour.
 
-# mrb_repair_via_caches shall automatically ignore errors. Ideally, we just build the caches and then re-run mrb_repair_via_ignore. We just need to update repair mode and re-run when original repair mode was just i.
-
-
-example = function() {
-  repboxRun::repbox_load_libs()
-  project_dir = rb_get_project_dir("~/repbox/projects_test/test")
-  mrb = mrb_init(project_dir)
-  mrb = mrb_repair_via_ignore(mrb=mrb)
-  rstudioapi::filesPaneNavigate(project_dir)
-}
-
-
-#' Automatically repair metaregBase R failures by continuing past R translation errors.
-#'
-#' Identifies regressions where sb ran successfully but rb failed.
-#' For each failed pid, attempts to re-run data preparation with
-#' continue_on_error=TRUE so that erroring data modification steps are skipped.
-#' Tracks results in the regrepair parcel.
-mrb_repair_via_ignore = function(project_dir = mrb$project_dir, mrb = NULL, max_reg = NULL, pids = NULL, rerun=FALSE, repair_code = "i") {
-  restore.point("mrb_repair_via_ignore")
-
-  if (is.null(mrb)) {
-    mrb = mrb_init(project_dir)
-    mrb = mrb_agg_stata(mrb, skip_if_has = TRUE)
-  }
-
-  drf_clear_mcache()
-
-  if (is.null(pids)) {
-    pids = mrb_get_to_repair_runids(mrb = mrb)
-  }
-  if (!is.null(max_reg)) {
-    pids = head(pids, max_reg)
-  }
-  if (length(pids) == 0) {
-    cat("\nNo failed runs to repair via ignore.\n")
-    return(mrb)
-  }
-
-  cat("\nRepair attempt (", repair_code, ") for runids: ", paste(pids, collapse = ", "), "\n", sep="")
-
-  # Ensure r_err_runids is loaded/synced
-  mrb$drf = repboxDRF:::drf_sync_r_err_runids(mrb$drf)
-
-  # Load existing regrepair parcel so we can detect previously failed ignore attempts
-  mrb$parcels = repboxDB::repdb_load_parcels(mrb$project_dir, "regrepair", mrb$parcels)
-
-  if (!rerun) {
-    regrepair = repboxDB::repdb_null_to_empty(mrb$parcels$regrepair,"regrepair")
-
-    # TO DO: ignore already performed repair attempts
-    #        if same cached runid was used
-    cached_runid_df = repboxDRF::drf_get_cached_runids_by_pid(mrb$drf, pids) %>% rename(runid=pid)
-
-
-    regrepair = regrepair %>%
-      filter(repair_code==!!repair_code) %>%
-      semi_join(cached_runid_df, by=c("runid", "cached_runid"))
-    pids = setdiff(pids, regrepair$runid)
-  }
-  if (length(pids) == 0) {
-    cat("\nNo failed runs that have not been already tried to be repaired with code ", repair_code, ".\n")
-    return(mrb)
-  }
-
-  mrb = mrb_run_r_base(mrb = mrb, just_pids=pids,continue_on_error = TRUE)
-  mrb = mrb_run_r_reg(mrb, just_pids=pids, continue_on_error=TRUE)
-
-  mrb = mrb_make_regcheck_parcel(mrb, just_pids=pids, repair_code=repair_code)
-  mrb = mrb_regcheck_to_regrepair(mrb, pids=pids)
-
-  mrb
-}
-
-mrb_regcheck_to_regrepair = function(mrb, pids) {
-  restore.point("mrb_regcheck_to_regrepair")
-  parcels = repboxDB::repdb_load_parcels(mrb$project_dir, c("regrepair", "regcheck"), parcels=mrb$parcels)
-
-  df = parcels$regcheck %>% filter(runid %in% pids)
-  regrepair = parcels$regrepair
-
-  if (!is.null(regrepair)) {
-    regrepair = regrepair %>%
-      anti_join(df, by=c("repair_code","runid","cached_runid"))
-  }
-
-  parcels$regrepair = bind_rows(regrepair, df)
-
-  res  = repboxDB::repdb_save_parcels( parcels["regrepair"], file.path(mrb$project_dir, "repdb"))
-
-  mrb$parcels = parcels
-  mrb
-}
-
-
-mrb_repair_paths_with_imports_via_cache = function(project_dir = mrb$project_dir, mrb = NULL, max_reg = Inf) {
-  mrb_repair_via_cache(project_dir, mrb, max_reg, only_paths_with_import = TRUE)
-}
-
-#' Cache-based repair: add strategic data caches, re-run failed regressions.
-#'
-#' For each failed pid that still needs repair after the ignore pass,
-#' determine the best cache position, generate it in Stata, and re-run.
-mrb_repair_via_cache = function(project_dir = mrb$project_dir, mrb = NULL, max_reg = 10, only_paths_with_import = FALSE) {
-  restore.point("mrb_repair_via_cache")
-
-  if (is.null(mrb)) {
-    mrb = mrb_init(project_dir)
-    mrb = mrb_agg_stata(mrb, skip_if_has = TRUE)
-  }
-
-  drf_clear_mcache()
-  failed_pids = mrb_get_to_repair_runids(mrb = mrb, only_paths_with_import = only_paths_with_import)
-
-  if (!is.null(max_reg)) {
-    failed_pids = head(failed_pids, max_reg)
-  }
-
-  if (length(failed_pids) == 0) {
-    cat("\nNo failed runs left to repair via cache.\n")
-    return(mrb)
-  }
-
-  cat("\nCache repair attempt for runids: ", paste(failed_pids, collapse = ", "), "\n")
-
-  mrb$drf = repboxDRF:::drf_sync_r_err_runids(mrb$drf)
-
-  while (length(failed_pids) > 0) {
-    cache_runid = mrb_determine_repair_cache_runid(mrb, failed_pids = failed_pids)
-
-    if (is.null(cache_runid)) {
-      cat(sprintf("\nCannot determine cache runid for remaining pids: %s. Stopping cache repair.\n", paste(failed_pids, collapse=", ")))
-      break
-    }
-
-    # Identify which failed pids are going to be repaired by this cache
-    pids_to_rerun = unique(mrb$drf$path_df$pid[mrb$drf$path_df$runid == cache_runid & mrb$drf$path_df$pid %in% failed_pids])
-
-    if (length(pids_to_rerun) == 0) {
-      cat(sprintf("\nError: Cache runid %d does not serve any failed pids. Stopping to avoid infinite loop.\n", cache_runid))
-      break
-    }
-
-    cat(sprintf("\nCaching at runid %d. This serves %d failed pid(s).\n", cache_runid, length(pids_to_rerun)))
-
-    mrb_create_cache_at_runid(mrb, cache_runid = cache_runid, pid = pids_to_rerun[1])
-
-    mrb$drf = repboxDRF:::drf_apply_caches(mrb$drf, just_pids = pids_to_rerun)
-
-    mrb = mrb_repair_via_ignore(mrb = mrb, pids = pids_to_rerun, rerun = TRUE, repair_code = "c")
-
-    # Remove the ones we just tried so we can find the next best cache for any remaining
-    failed_pids = setdiff(failed_pids, pids_to_rerun)
-  }
-
-  mrb
-}
-
-
-stata_reg_cmd_has_r_trans = function(cmd) {
-  sr_df = regtranslate::stata_to_r_cmds_df()
-  cmd %in% sr_df$stata_cmd
-}
-
-
-#' Determine the best cache runid for repairing failed pids.
-#'
-#' Evaluates downstream runids that bypass specific error checkpoints and calls
-#' the DRF cache scoring algorithm to find the sweet spot that serves the most failed pids.
-mrb_determine_repair_cache_runid = function(mrb, failed_pids, drf = mrb$drf) {
-  restore.point("mrb_determine_repair_cache_runid")
-
-  path_df = drf$path_df %>% filter(pid %in% failed_pids)
-  if (NROW(path_df) == 0) return(NULL)
-
-  # Ensure we bypass known error runids for each pid
-  valid_paths = lapply(failed_pids, function(p) {
-    pdf = path_df %>% filter(pid == p)
-    err_runids = intersect(pdf$runid, drf$r_err_runids)
-
-    first_runid = pdf$runid[1]
-    run_df_first = drf$run_df[drf$run_df$runid == first_runid, ]
-    if (NROW(run_df_first) > 0 && isTRUE(run_df_first$has_file_cache[1])) {
-      err_runids = setdiff(err_runids, first_runid)
-    }
-
-    if (length(err_runids) > 0) {
-      max_err = max(err_runids)
-      pdf = pdf %>% filter(runid >= max_err)
-    }
-    pdf
-  })
-
-  valid_path_df = bind_rows(valid_paths)
-  if (NROW(valid_path_df) == 0) return(NULL)
-
-  # Score the valid path segments to find the best cache
-  res = repboxDRF::drf_suggest_best_cache_runid(valid_path_df, must_include_pids = failed_pids)
-
-  if (is.null(res) || NROW(res) == 0) return(NULL)
-
-  res$runid
-}
-
-
-mrb_get_to_repair_runids = function(mrb, parcels = mrb$parcels, ignore_already_repaired = TRUE, only_paths_with_import = FALSE) {
-  restore.point("mrb_get_to_repair_runids")
-  parcels = repboxDB::repdb_load_parcels(mrb$project_dir, c("regcheck", "reg", "regrepair"), parcels)
-
-  regcheck = parcels$regcheck
-  if (is.null(regcheck)) {
-    cat("\nNo regcheck parcel found. Run mrb_make_regcheck_parcel() first.\n")
-    return(NULL)
-  }
-  reg = parcels$reg
-  if (!repboxUtils::has_col(regcheck, "cmd") & NROW(regcheck) > 0) {
-    if (!is.null(reg)) {
-      regcheck = left_join(regcheck, reg %>% select(cmd, runid), by = "runid")
-    } else {
-      regcheck$cmd = ""
-    }
-  }
-  regcheck$cmd = repboxUtils::na.val(regcheck$cmd, "")
-
-  regcheck = regcheck %>%
-    mutate(do_repair = (sb_raw_did_run) & (!rb_did_run)) %>%
-    mutate(do_repair = do_repair | repboxUtils::is.true(!rb_sb_coef_same & !(repboxUtils::has.substr(cmd, "logit") | repboxUtils::has.substr(cmd, "probit")))) %>%
-    mutate(do_repair = do_repair & (stata_reg_cmd_has_r_trans(cmd) | cmd == ""))
-
-  if (ignore_already_repaired) {
-    regrepair = parcels$regrepair
-    if (!is.null(regrepair) && NROW(regrepair) > 0) {
-      already_attempted = unique(regrepair$runid[metaregBase:::isTRUE_VEC(regrepair$repair_attempted)])
-      regcheck = mutate(regcheck, do_repair = do_repair & !runid %in% already_attempted)
-    }
-  }
-
-  failed_pids = regcheck$runid[regcheck$do_repair]
-
-  if (only_paths_with_import && length(failed_pids) > 0 && !is.null(mrb$drf$path_df)) {
-    first_runids = mrb$drf$path_df %>%
-      filter(pid %in% failed_pids) %>%
-      group_by(pid) %>%
-      summarize(first_runid = min(runid), .groups = "drop")
-
-    run_df_first = mrb$drf$run_df %>% filter(runid %in% first_runids$first_runid)
-
-    is_import = run_df_first$cmd %in% c("import", "insheet", "infix") & !run_df_first$has_file_cache
-    import_first_runids = run_df_first$runid[is_import]
-
-    failed_pids = first_runids$pid[first_runids$first_runid %in% import_first_runids]
-  }
-
-  failed_pids
-}
-
-#' Generate a Stata cache at a specific intermediate runid
-mrb_create_cache_at_runid = function(mrb, cache_runid, pid, overwrite = FALSE) {
-  restore.point("mrb_create_cache_at_runid")
-  project_dir = mrb$project_dir
-  cache_dir = file.path(project_dir, "drf/cached_dta")
-  
-  cache_file = file.path(cache_dir, paste0(cache_runid, "_cache.dta"))
-  if (!overwrite && file.exists(cache_file)) {
-    return(invisible(cache_runid))
-  }
-  
-  if (!dir.exists(cache_dir)) dir.create(cache_dir, recursive = TRUE)
-
-  # Get the Stata code path for this pid
-  sc_df = repboxDRF::drf_stata_code_df(mrb$drf, runids = pid, path_merge = "none", write_e_r = FALSE)
-  
-  # Subset up to cache_runid
-  rows = which(sc_df$runid <= cache_runid)
-  if (length(rows) == 0) return(invisible(cache_runid))
-  sc_df = sc_df[rows, , drop = FALSE]
-  
-  # Add save to the last row (which should be cache_runid)
-  last_row = length(rows)
-  new_code = paste0(sc_df$code[last_row], "\ncapture save \"", cache_file, "\", replace\n")
-  sc_df$code[last_row] = new_code
-  
-  script_file = file.path(mrb$project_dir, "metareg/base/stata_code/mrb_repair.do")
-  metaregBase:::drf_code_write(sc_df, script_file)
-  
-  cat("\nRunning Stata repair script to generate cache at runid", cache_runid, "...\n")
-  mrb_run_stata_script(mrb, do_file = script_file)
-}
-```
-!END_MODIFICATION mrb_repair.R modifications
-
-!MODIFICATION drf_stata_code.R empty sc_df fix
+!MODIFICATION se_stata_to_repdb metaregBase/R/mrb_se.R
 scope = "function"
-file = "/home/rstudio/repbox/repboxDRF/R/drf_stata_code.R"
-function_name = "drf_stata_code_df"
-description = "Handle case where sc_df has 0 rows so left_join does not crash"
+file = "/home/rstudio/repbox/metaregBase/R/mrb_se.R"
+function_name = "se_stata_to_repdb"
+description = "Update robust SE parsing to imply clustering on panelvar for xt commands and clogit."
 ---
 ```r
-drf_stata_code_df = function(drf,runids=NULL, path_merge = c("none", "load", "natural", "load_natural")[4], cache_after_runids = drf$cache_after_runids, cache_after_cmd=drf$cache_after_cmd, write_e_r = TRUE, overwrite_e_r = FALSE) {
-  restore.point("drf_stata_code_skel")
-  project_dir = drf$project_dir
-  pids = runids
-  path_df = drf$path_df
-  if (!is.null(pids)) {
-    path_df = path_df %>%
-      filter(pid %in% pids)
-  }
-  pids = unique(path_df$pid)
-  if (length(pids)<=1) path_merge = "none"
+se_stata_to_repdb = function(cmd, opts_df = cmdpart_to_opts_df(cmdpart), cmdpart=NULL, panelvar=NA_character_) {
+  restore.point("se_stata_to_repdb")
 
-  restore_code = function(data_path) {
-    paste0("* Restore previously loaded data set", basename(data_path), "\nframe copy cache_frame default, replace")
-  }
-  preserve_code = function() {
-    "\nframe copy default cache_frame, replace"
-  }
-  update_rdf_cache_code = function(rdf) {
-    rdf$pre = rep("", NROW(rdf))
-    if (isTRUE(rdf$has_file_cache[1]) & NROW(rdf) > 1) {
-         rdf$code[1] = paste0('use "', rdf$drf_cache_file[1], '", clear')
-    } else if (isTRUE(rdf$has_file_cache[1])) {
-      # load file cache and keep code that runs regression
-      rdf$pre[1] = paste0('use "', rdf$drf_cache_file[1], '", clear\n\n')
-    }
-    rdf
+  if (cmd == "newey") {
+    row = opts_df$opt == "lag"
+    lag = as_integer(opts_df$opt_arg[row])
+    se = tibble(
+      se_category = "robust",
+      se_type = "nw",
+      se_args = paste0("lag=",lag)
+    )
+    return(se)
   }
 
-  run_df = drf$run_df
-  run_df = run_df %>% semi_join(path_df, by="runid")
+  abbr.li = list(
+    robust = c("robust","robus","robu","rob","ro","r"),
+    cluster = c("cluster","cluste","clust","clus","clu","cl"),
+    boot = c("bootstrap","bootstra","bootstr","bootst","boots","boot"),
+    jack = c("jackknife","jackknif","jack")
+  )
 
-  if (!repboxUtils::has_col(run_df, "aux_cmd_type")) {
-    run_df$aux_cmd_type = rep("", NROW(run_df))
-  }
+  se_type = ""; se_args=NULL
+  vce_row = which(opts_df$opt=="vce")
 
-  run_df$code = ifelse(is.na(run_df$ok) | run_df$ok, run_df$cmdline, paste0("capture noisily ", run_df$cmdline))
-
-  run_df = drf_replace_run_df_code_data_path(run_df = run_df, drf=drf)
-
-  # Only relevant for 1st element in paths
-  run_df$data_path = ifelse(is.na(run_df$drf_cache_file) | run_df$drf_cache_file=="", run_df$org_data_path, run_df$drf_cache_file)
-
-  run_df = drf_code_stata_add_save_cache(project_dir = project_dir, run_df=run_df,cache_after_runids = cache_after_runids, cache_after_cmd = cache_after_cmd)
-
-  if (write_e_r) {
-    run_df = drf_add_code_store_e_r(run_df, drf$dep_df, project_dir, overwrite_e_r)
-  }
-
-  path_li = split(path_df, path_df$pid)
-  code_li = NULL
-  pid = pids[1]
-  if (path_merge == "none") {
-    code_li = lapply(pids, function(pid) {
-      pdf = path_li[[as.character(pid)]]
-      pdf = drf_remove_non_mod_reg_from_path_df(pdf, drf)
-
-      rdf = run_df[run_df$runid %in% pdf$runid, ]
-      rdf = update_rdf_cache_code(rdf)
-      rdf %>%
-        transmute(pid=pid,runid=runid, code=code, pre=pre, post="", cmd_type=cmd_type, cmd=cmd, is_target = runid==pid, aux_cmd_type=repboxUtils::na.val(aux_cmd_type,""))
-    })
-    sc_df = bind_rows(code_li)
-    if (NROW(sc_df) == 0) return(sc_df)
-    
-    # we now add scalar definitions from scalar map
-    sc_df = sc_df %>%
-      left_join(drf$scalar_code, by="runid") %>%
-      mutate(
-        scalar_stata_code = repboxUtils::na.val(scalar_stata_code,""),
-        scalar_r_code = repboxUtils::na.val(scalar_r_code,"")
-      )
-
-    return(sc_df)
-  }
-  ps_df = path_df %>%
-    group_by(pid) %>%
-    summarize(
-      first_runid = min(runid),
-      last_runid = max(runid),
-    ) %>%
-    left_join(run_df %>% select(first_runid=runid, data_path), by="first_runid")
-
-  data_df = ps_df %>%
-    group_by(data_path) %>%
-    summarize(
-      data_runid = min(first_runid),
-      data_num_paths = n()
-    ) %>%
-    arrange(data_runid)
-
-  ps_df = ps_df %>%
-    left_join(data_df, by="data_path")
-
-  merge_load = path_merge %in% c("load", "load_natural")
-  merge_natural = path_merge %in% c("natural", "load_natural")
-
-  if (merge_load) {
-    ps_df = ps_df %>%
-      ungroup() %>%
-      arrange(data_runid, first_runid, last_runid) %>%
-      mutate(
-        restore_data = repboxUtils::is.true(lag(data_runid)==data_runid),
-        preserve_data = !restore_data & data_num_paths > 1
-      )
-
-  } else {
-    ps_df = ps_df %>%
-      arrange(first_runid, last_runid) %>%
-      mutate(restore_data = FALSE, preserve_data=FALSE)
-  }
-
-  pids = ps_df$pid
-  if (!merge_natural) {
-    code_li = lapply(pids, function(pid) {
-      pdf = path_li[[as.character(pid)]]
-      pdf = drf_remove_non_mod_reg_from_path_df(pdf, drf)
-      rdf = run_df[run_df$runid %in% pdf$runid, ]
-      rdf = update_rdf_cache_code(rdf)
-
-      rdf = rdf %>%
-        transmute(pid=pid,runid=runid, code=code, pre=pre, post="", cmd_type=cmd_type, cmd=cmd, is_target = runid==pid, aux_cmd_type="", clear=FALSE)
-
-      ps = ps_df[ps_df$pid==pid,]
-      if (ps$preserve_data) {
-        rdf$code[1] = paste0(rdf$code[1],preserve_code())
-        rdf$aux_cmd_type[1] = paste0("load_preserve")
-      } else if (ps$restore_data) {
-        rdf$code[1] = restore_code(ps$data_path)
-        rdf$aux_cmd_type[1] = paste0("restore")
-      }
-      rdf
-    })
-    sc_df = bind_rows(code_li)
-    if (NROW(sc_df) == 0) return(sc_df)
-    
-    # we now add scalar definitions from scalar map
-    sc_df = sc_df %>%
-      left_join(drf$scalar_code, by="runid") %>%
-      mutate(
-        scalar_stata_code = repboxUtils::na.val(scalar_stata_code,""),
-        scalar_r_code = repboxUtils::na.val(scalar_r_code,"")
-      )
-
-    return(sc_df)
-  }
-
-  code_li = vector("list", length(pids))
-  opdf = NULL
-  counter = 0
-
-  while (counter < length(pids)) {
-    counter = counter+1
-    pid = pids[counter]
-    pdf = path_li[[as.character(pid)]]
-    if (is.null(opdf) | NROW(opdf)>=NROW(pdf)) {
-      restart = TRUE
+  if (length(vce_row)>0) {
+    se_str = opts_df$opt_arg[vce_row]
+    if (is.na(se_str)) se_str = ""
+    se_words = se_str %>%
+      trimws() %>% ws_to_single_space() %>%
+      strsplit(" ")
+    se_words = se_words[[1]]
+    if (length(se_words) > 0 && se_words[1] != "") {
+      se_type = expand_stata_abbr_one_val(se_words[1], abbr.li)
+      se_args = se_words[-1]
     } else {
-      restart = !all(opdf$runid == pdf$runid[1:NROW(opdf)])
+      se_type = ""
+      se_args = character(0)
     }
-
-    if (restart) {
-      rdf = run_df[run_df$runid %in% pdf$runid, ]
-      rdf = update_rdf_cache_code(rdf)
-
-      rdf = rdf %>%
-        transmute(pid=pid,runid=runid, code=code, pre=pre, post="", cmd_type=cmd_type, cmd=cmd, is_target = runid==pid, aux_cmd_type="", clear=FALSE)
-
-      ps = ps_df[ps_df$pid==pid,]
-
-      if (ps$preserve_data) {
-        rdf$code[1] = paste0(rdf$code[1],preserve_code())
-        rdf$aux_cmd_type[1] = paste0("load_preserve")
-      } else if (ps$restore_data) {
-        rdf$code[1] = restore_code(ps$data_path)
-        rdf$aux_cmd_type[1] = paste0("restore")
+  } else {
+    abbr.row = which(opts_df$opt %in% unlist(abbr.li))
+    if (length(abbr.row)==2) {
+      cl_ind = which(startsWith(opts_df$opt[abbr.row],"cl"))
+      if (length(cl_ind)>0) {
+        abbr.row = abbr.row[cl_ind]
       }
-      opdf = pdf
-
-    } else if (!restart) {
-      npdf = pdf %>% filter(runid > max(opdf$runid))
-      opdf = pdf
-      pdf = npdf
-
-      rdf = run_df[run_df$runid %in% pdf$runid, ]
-      rdf = update_rdf_cache_code(rdf)
-
-      rdf = rdf %>%
-        transmute(pid=pid,runid=runid, code=code, pre=pre, post="", cmd_type=cmd_type, cmd=cmd, is_target = runid==pid, aux_cmd_type="", clear=FALSE)
     }
-    code_li[[counter]] = rdf
-  }
-  sc_df = bind_rows(code_li)
-  if (NROW(sc_df) == 0) return(sc_df)
 
-  # we now add scalar definitions from scalar map
-  if (!is.null(drf$scalar_code)) {
-    sc_df = sc_df %>%
-      left_join(drf$scalar_code, by="runid") %>%
-      mutate(
-        scalar_stata_code = repboxUtils::na.val(scalar_stata_code,""),
-        scalar_r_code = repboxUtils::na.val(scalar_r_code,"")
-      )
+    if (length(abbr.row)==1) {
+      se_type = opts_df$opt[[abbr.row]]
+      se_type = expand_stata_abbr_one_val(se_type, abbr.li)
+      se_str = opts_df$opt_arg[abbr.row]
+      if (is.na(se_str)) se_str = ""
+      se_args = se_str %>%
+        trimws() %>% ws_to_single_space() %>%
+        strsplit(" ")
+      se_args = se_args[[1]]
+    } else if (length(abbr.row)>1) {
+      stop("Regression options match multiple standard error abbreviations. Need to adapt stata.reg.se.info")
+    }
   }
-  sc_df
+
+  if (cmd %in% c("xtreg", "xtivreg")) {
+    if (se_type == "conventional") se_type = "iid"
+  } else if (cmd %in% c("reghdfe", "ivreghdfe", "xtivreg2")) {
+    if (startsWith(se_type,"un")) se_type = "iid"
+  }
+
+  if (se_type %in% c("","iid")) {
+    if (length(se_args)>0) {
+      restore.point("Problem in parsing se: se_type is iid but there are se_args")
+      stop("Problem in parsing se: se_type is iid but there are se_args")
+    }
+    se = tibble(
+      se_category = "iid",
+      se_type = "iid",
+      se_args = ""
+    )
+    return(se)
+  }
+
+  if (se_type=="robust" | tolower(se_type) %in% c("hc0", "hc1","hc2","hc3","hc4","hc5")) {
+    if (length(se_args)>0) {
+      restore.point("Problem in parsing se: se_type is robust but there are se_args")
+      stop(paste0("Problem in parsing se: se_type is ", se_type," but there are se_args"))
+    }
+    
+    # In Stata, xt commands (except xtivreg2) and clogit with robust standard errors 
+    # implicitly cluster on the panel variable.
+    is_xt_cluster = (startsWith(cmd, "xt") && cmd != "xtivreg2") || cmd == "clogit"
+    if (is_xt_cluster && !is.na(panelvar) && nzchar(panelvar)) {
+      se = tibble(
+        se_category = "cluster",
+        se_type = "cluster",
+        se_args = paste0("cluster1=", panelvar)
+      )
+      return(se)
+    }
+
+    if (se_type=="robust") se_type = "hc1"
+    se = tibble(
+      se_category = "robust",
+      se_type = se_type,
+      se_args = ""
+    )
+    return(se)
+  }
+
+  if (se_type=="cluster") {
+    # FIX: Don't wrap in list() otherwise paste0 creates literal c("i", "year") strings
+    clustervar = as.character(se_args)
+    clustervar = clustervar[clustervar != ""]
+    num_clustervar = length(clustervar)
+
+    if (num_clustervar==1) {
+      se_type = "cluster"
+    } else if (num_clustervar==2) {
+      se_type = "twoway"
+    } else if (num_clustervar > 2) {
+      se_type = "multiway"
+    } else {
+      stop("We have clustered se but no cluster variables can be found in options.")
+    }
+    se_args = paste0("cluster",seq_along(clustervar),"=", clustervar, collapse=";")
+
+    se = tibble(
+      se_category = "cluster",
+      se_type = se_type,
+      se_args = se_args
+    )
+    return(se)
+  }
+
+  stop(paste0("Have not yet implemented parsing of Stata standard error of type ", se_type))
+  return(NULL)
 }
 ```
-!END_MODIFICATION drf_stata_code.R empty sc_df fix
+!END_MODIFICATION
+
+!MODIFICATION mrb_get_panelvar in metaregBase/R/mrb_reg_tools.R
+scope = "function"
+file = "/home/rstudio/repbox/metaregBase/R/mrb_reg_tools.R"
+insert_before_fun = "mrb_add_xtreg_fe_regvar"
+description = "Extract panel variable from regression metadata, options, or xtvar."
+---
+```r
+mrb_get_panelvar = function(reg, opts_df, xtvar = NULL) {
+  nonempty_chr = function(x) {
+    x = as.character(x)
+    x = x[!is.na(x) & nzchar(trimws(x))]
+    x
+  }
+
+  panelvar = character(0)
+
+  if (!is.null(xtvar) && "panelvar" %in% names(xtvar)) {
+    panelvar = nonempty_chr(xtvar$panelvar)[1]
+  }
+
+  if (length(panelvar) == 0 || is.na(panelvar)) {
+    if ("panelvar" %in% names(reg)) {
+      panelvar = nonempty_chr(reg$panelvar)[1]
+    }
+  }
+
+  if (length(panelvar) == 0 || is.na(panelvar)) {
+    panel_rows = opts_df$opt %in% c("i", "iis", "group")
+    if (any(panel_rows)) {
+      panelvar = nonempty_chr(opts_df$opt_arg[panel_rows])[1]
+    }
+  }
+
+  if (length(panelvar) == 0) return(NA_character_)
+  return(panelvar)
+}
+```
+!END_MODIFICATION mrb_get_panelvar in metaregBase/R/mrb_reg_tools.R
+
+!MODIFICATION mrb_add_xtreg_fe_regvar in metaregBase/R/mrb_reg_tools.R
+scope = "function"
+file = "/home/rstudio/repbox/metaregBase/R/mrb_reg_tools.R"
+function_name = "mrb_add_xtreg_fe_regvar"
+description = "Refactor panel variable determination to use mrb_get_panelvar."
+---
+```r
+#' Add the panel fixed effect implied by xtreg, fe to regvar
+#'
+#' Stata's xtreg, fe absorbs the panel variable declared by xtset.
+#' In metaregBase this variable should already be available in xtvar$panelvar
+#' or in the reg parcel. Legacy xtreg syntax may also specify it via i() or iis().
+#' We deliberately do not infer the panel variable from the cluster variable,
+#' because Stata does not do that.
+mrb_add_xtreg_fe_regvar = function(regvar, reg, opts_df, xtvar = NULL, dat = NULL) {
+  restore.point("mrb_add_xtreg_fe_regvar")
+
+  if (is.null(reg) || NROW(reg) == 0) {
+    return(regvar)
+  }
+
+  cmd = as.character(reg$cmd[1])
+  if (!cmd %in% c("xtreg", "xtivreg", "xtivreg2")) {
+    return(regvar)
+  }
+
+  is_fe = FALSE
+  if (!is.null(opts_df) && NROW(opts_df) > 0 && any(opts_df$opt == "fe")) {
+    is_fe = TRUE
+  } else if (cmd == "xtivreg2") {
+    # For xtivreg2, fe is the default if no other model estimator option is provided
+    if (is.null(opts_df) || NROW(opts_df) == 0 || !any(opts_df$opt %in% c("fd", "sd", "re", "be"))) {
+      is_fe = TRUE
+    }
+  }
+
+  if (!is_fe) {
+    return(regvar)
+  }
+
+  panelvar = mrb_get_panelvar(reg, opts_df, xtvar)
+
+  if (is.na(panelvar) || !nzchar(panelvar)) {
+    msg = paste0(
+      cmd, " with fe was found but no panel variable is available from xtvar, ",
+      "reg$panelvar, or legacy i()/iis() options. Cannot add the fixed effect."
+    )
+    repbox_problem(type = "xtreg_panelvar_missing", msg = msg, fail_action = "warn")
+    return(regvar)
+  }
+
+  panel_cterm = stata_expr_to_cterm(panelvar)
+
+  already_has_fe = any(
+    regvar$role == "exo" &
+      isTRUE_VEC(regvar$absorbed_fe) &
+      regvar$cterm == panel_cterm
+  )
+
+  if (isTRUE(already_has_fe)) {
+    return(regvar)
+  }
+
+  if (!is.null(dat) && panelvar %in% names(dat)) {
+    distinct_num = dplyr::n_distinct(dat[[panelvar]], na.rm = TRUE)
+    varclass = repbox_col_class(dat[[panelvar]], distinct_num = distinct_num)
+  } else {
+    distinct_num = NA_integer_
+    varclass = NA_character_
+  }
+
+  main_pos = suppressWarnings(max(regvar$main_pos, na.rm = TRUE))
+  if (!is.finite(main_pos)) {
+    main_pos = 0L
+  }
+
+  new_row = regvar[1, , drop = FALSE]
+
+  for (col in names(new_row)) {
+    if (is.logical(new_row[[col]])) {
+      new_row[[col]] = FALSE
+    } else if (is.integer(new_row[[col]])) {
+      new_row[[col]] = NA_integer_
+    } else if (is.numeric(new_row[[col]])) {
+      new_row[[col]] = NA_real_
+    } else if (is.list(new_row[[col]])) {
+      new_row[[col]] = list(NULL)
+    } else {
+      new_row[[col]] = NA_character_
+    }
+  }
+
+  vals = list(
+    ia_expr = panelvar,
+    var_expr = panelvar,
+    var = panelvar,
+    role = "exo",
+    prefix = "",
+    option = "xtreg_fe",
+    class = "fe",
+    fe_type = "xtreg_fe",
+    is_fe = TRUE,
+    distinct_num = as.integer(distinct_num),
+    ia_num = 1L,
+    ia_pos = 1L,
+    main_pos = as.integer(main_pos + 1L),
+    ia_cterm = panel_cterm,
+    cterm = panel_cterm,
+    basevar = panel_cterm,
+    is_ia = FALSE,
+    absorbed_fe = TRUE,
+    is_factor = TRUE,
+    add_main_effects = FALSE,
+    varclass = varclass,
+    ia_distinct_num = as.numeric(distinct_num),
+    ia_type = "fe",
+    var_org_type = ifelse(is.na(varclass), "factor", varclass),
+    var_reg_type = "factor",
+    ia_reg_type = "factor"
+  )
+
+  for (nm in intersect(names(vals), names(new_row))) {
+    new_row[[nm]] = vals[[nm]]
+  }
+
+  dplyr::bind_rows(regvar, new_row)
+}
+```
+!END_MODIFICATION mrb_add_xtreg_fe_regvar in metaregBase/R/mrb_reg_tools.R
+
+!MODIFICATION mrb_run_r_base_step metaregBase/R/mrb_r_base.R
+scope = "function"
+file = "/home/rstudio/repbox/metaregBase/R/mrb_r_base.R"
+function_name = "mrb_run_r_base_step"
+description = "Determine panelvar before parsing SE to correctly handle xt clustering."
+---
+```r
+#' Process a single regression, expand syntax, and format standard parcels
+mrb_run_r_base_step = function(mrb, pid, with_try = isTRUE(mrb$with_try), continue_on_error=FALSE) {
+  restore.point("mrb_run_r_base_step")
+  if (with_try) {
+    restore.point("mrb_run_r_base_step_with_try")
+    res = repboxUtils::try_catch_repbox_problems(mrb_run_r_base_step(mrb,pid, with_try=FALSE, continue_on_error = continue_on_error),project_dir = mrb$project_dir,runid = pid,msg_prefix = "mrb_run_r_base_step: ", err_val=NULL)
+    return(res$value)
+  }
+
+  project_dir = mrb$project_dir
+  runid = pid
+
+  xtvar = mrb$parcels$xtvar
+  xtvar = xtvar[xtvar$runid==pid,]
+  if (NROW(xtvar)==0) {
+    xtvar = list(timevar=NA, panelvar=NA, tdelta=NA_integer_)
+  }
+
+  # 0. Load Data & Expand Syntax
+  dat = repboxDRF::drf_get_data(pid, drf = mrb$drf,continue_on_error = continue_on_error)
+
+  # NULL means problem in data loading
+  if (is.null(dat)) return(list())
+
+
+  # 1. Base Components
+  run_obj = mrb$drf$run_df %>% filter(runid == pid)
+  cmd = run_obj$cmd[1]
+
+  all_cmdpart = mrb$parcels$reg_cmdpart
+  cmdpart = all_cmdpart %>% filter(runid == pid)
+  if (NROW(cmdpart) == 0) stop(paste0("No cmdpart stored for runid = ", pid))
+
+  # 2. Extract specific Stata outcomes for this step (metaregBase 'sb')
+  stata_ct = if (!is.null(mrb$stata_ct_sb)) mrb$stata_ct_sb %>% filter(runid == pid) else NULL
+  stata_scalars = if (!is.null(mrb$stata_scalars)) mrb$stata_scalars %>% filter(runid == pid) else NULL
+  stata_macros = if (!is.null(mrb$stata_macros)) mrb$stata_macros %>% filter(runid == pid) else NULL
+
+
+  org_dat = dat
+  cmdpart = cmdpart_expand_vars(cmdpart, colnames(dat))
+
+  # 4. Extract Options, SE, and build initial regvar
+  opts_df = cmdpart_to_opts_df(cmdpart)
+  
+  panelvar = mrb_get_panelvar(run_obj, opts_df, xtvar)
+  se_info = se_stata_to_repdb(cmd, opts_df, panelvar = panelvar)
+  
+  regvar = cmdpart_to_regvar(cmdpart, dat, opts_df, se_info)
+
+  # xtreg, fe absorbs the xtset panel variable. This variable is stored in
+  # xtvar/reg metadata, not in the command varlist. Add it to regvar as an
+  # absorbed fixed effect so regvar_to_formula_fixest() creates "| panelvar".
+  regvar = mrb_add_xtreg_fe_regvar(
+    regvar = regvar,
+    reg = run_obj,
+    opts_df = opts_df,
+    xtvar = xtvar,
+    dat = dat
+  )
+
+  depvar = regvar$cterm[regvar$role == "dep"]
+
+  # 5. Data Mutations & Stats
+  ct_cterms = unique(c(depvar, regvar$var, regvar$cterm, regvar$ia_cterm)) %>% setdiff(c("(Intercept)",""))
+
+  # Keep the full expanded dataset so make_regxvar can access generated
+  # time-series columns.
+  wide_dat_full = create_cterm_cols(dat, ct_cterms, timevar=xtvar$timevar, panelvar=xtvar$panelvar, tdelta=xtvar$tdelta)
+  wide_dat = wide_dat_full[, ct_cterms, drop=FALSE]
+
+  reg_types = bind_rows(
+    regvar %>% select(term = cterm, reg_type = var_reg_type),
+    regvar %>% select(term = ia_cterm, reg_type = ia_reg_type)
+  ) %>% unique()
+
+  colstats = make_colstats(ct_cterms, wide_dat, wide_dat, reg_types)
+
+  #####################
+  # Create step parcels
+  #####################
+
+  step_parcels = list()
+
+  # A. REGCOEF (Parsed Stata Coefficients from metaregBase runs)
+  if (!is.null(stata_ct) && nrow(stata_ct) > 0) {
+    co_all = ct_to_regcoef(stata_ct, artid = mrb$artid)
+    co_parcels = regcoef_split_variant_parcels(
+      co_all,
+      base_variant = "sb",
+      base_parcel = "regcoef"
+    )
+    step_parcels[names(co_parcels)] = co_parcels
+
+    regcoef_main = if (!is.null(step_parcels$regcoef)) {
+      regcoef_keep_default_eq(step_parcels$regcoef)
+    } else {
+      tibble()
+    }
+  } else {
+    step_parcels$regcoef = tibble()
+    regcoef_main = tibble()
+  }
+
+
+  # A2. REGCOEF_SO (Parsed Stata Coefficients from Original DRF run 'so')
+  step_parcels$regcoef_so = tibble()
+  if (!is.null(mrb$regtab_so)) {
+    rt_row = mrb$regtab_so %>% filter(runid == pid)
+    if (nrow(rt_row) > 0 && !is.null(rt_row$ct[[1]])) {
+      so_df = rt_row$ct[[1]]
+      if (nrow(so_df) > 0) {
+        so_df$runid = pid
+        step_parcels$regcoef_so = ct_to_regcoef(so_df, variant = "so", artid = mrb$artid)
+      }
+    }
+  }
+
+  # B. REGVAR (Variables with prefixes and dropping info)
+  dropped_cterms = if (nrow(regcoef_main) > 0) {
+    regcoef_main %>% filter(is.na(coef)) %>% pull(cterm)
+  } else {
+    character(0)
+  }
+
+  step_parcels$regvar = regvar %>%
+    mutate(
+      artid = mrb$artid,
+      runid = runid,
+      variant = "sb",
+      basevar = basevar,
+      ia_source_expr = ia_expr,
+      var_source_expr = var_expr,
+      prefix_type = tolower(substring(prefix, 1, 1)),
+      prefix_num = trimws(substring(prefix, 2)),
+      prefix_num = ifelse(prefix_num == "", 1, as_integer(prefix_num)),
+      transform = prefix_type,
+      transform_par = ifelse(transform %in% c("", "log"), "", change_val(prefix_num, "", "1")),
+      is_dropped = (cterm %in% dropped_cterms) & (role %in% c("exo", "endo"))
+    )
+
+  # C. REGXVAR
+  # Absorbed fixed effects, including xtreg panel FE, are excluded inside
+  # make_regxvar(). Explicit non-factor command variables are marked as
+  # in_regcoef unless Stata reports them as dropped.
+  step_parcels$regxvar = make_regxvar(step_parcels$regvar, wide_dat_full, regcoef_main)
+
+  # D. REGSCALAR & REGSTRING
+  if (!is.null(stata_scalars) && nrow(stata_scalars) > 0) {
+    step_parcels$regscalar = stata_scalars %>%
+      rename(scalar_name = var, scalar_val = val) %>%
+      mutate(variant = "sb", runid = runid)
+
+    stats_wide = stata_scalars %>% pivot_wider(names_from = var, values_from = val)
+  } else {
+    step_parcels$regscalar = tibble()
+    stats_wide = tibble()
+  }
+
+  if (!is.null(stata_macros) && nrow(stata_macros) > 0) {
+    step_parcels$regstring = stata_macros %>%
+      rename(string_name = var, string_val = val) %>%
+      mutate(variant = "sb", runid = runid)
+  } else {
+    step_parcels$regstring = tibble()
+  }
+
+  # E. COLSTAT
+  step_parcels$colstat_numeric = if (nrow(colstats$colstat_numeric) > 0) {
+    colstats$colstat_numeric %>% mutate(artid = mrb$artid, variant = "sb", runid = runid, cterm = col)
+  } else {
+    tibble()
+  }
+
+  step_parcels$colstat_dummy = if (nrow(colstats$colstat_dummy) > 0) {
+    colstats$colstat_dummy %>% mutate(artid = mrb$artid, variant = "sb", runid = runid, cterm = col)
+  } else {
+    tibble()
+  }
+
+  step_parcels$colstat_factor = if (nrow(colstats$colstat_factor) > 0) {
+    colstats$colstat_factor %>% mutate(artid = mrb$artid, variant = "sb", runid = runid, cterm = col)
+  } else {
+    tibble()
+  }
+
+  # F. REG & REGSOURCE
+  nobs_val = if ("N" %in% names(stats_wide)) as.numeric(stats_wide$N) else NA_real_
+  r2_val = if ("r2" %in% names(stats_wide)) as.numeric(stats_wide$r2) else if ("r2_p" %in% names(stats_wide)) as.numeric(stats_wide$r2_p) else NA_real_
+
+  flags_vec = character()
+  if (any(startsWith(tolower(opts_df$opt), "nocon"))) {
+    flags_vec = c(flags_vec, "noconst")
+  }
+
+  w_df = cmdpart %>% filter(part == "weight_var")
+  w_type_df = cmdpart %>% filter(part == "weight_type")
+  weights_val = NA_character_
+
+  if (nrow(w_df) > 0) {
+    weights_val = w_df$content[1]
+    w_type = if (nrow(w_type_df) > 0) tolower(w_type_df$content[1]) else ""
+
+    if (w_type %in% c("fw", "pw", "iw")) {
+      flags_vec = c(flags_vec, w_type)
+    }
+
+    # Fast regex check: If it contains anything non-alphanumeric, it is an expression.
+    is_expr = stringi::stri_detect_regex(weights_val, "[^A-Za-z0-9_]")
+
+    if (is_expr) {
+      vars = try(all.vars(parse(text = weights_val)), silent = TRUE)
+      if (inherits(vars, "try-error")) {
+        flags_vec = c(flags_vec, "weights_non_parseable")
+        repbox_problem(paste0("Cannot parse weight expression: ", weights_val), type = "weights_non_parseable", fail_action = "msg")
+      } else {
+        flags_vec = c(flags_vec, "weights_expr")
+      }
+    }
+  }
+
+  flags_str = paste0(flags_vec, collapse = ", ")
+
+  reg_dat = tibble(
+    runid = pid,
+    variant = "sb",
+    base_variant = "sb",
+    lang = "stata",
+    source_lang = "stata",
+    cmd = cmd,
+    cmdline = run_obj$cmdline[1],
+    timevar = xtvar$timevar,
+    panelvar = xtvar$panelvar,
+    tdelta = as_integer(xtvar$tdelta[1]),
+    se_category = se_info$se_category,
+    se_type = se_info$se_type,
+    se_args = se_info$se_args,
+    ncoef = if (nrow(step_parcels$regcoef) > 0) nrow(step_parcels$regcoef) else NA_integer_,
+    iv_code = any(step_parcels$regvar$role == "instr"),
+    nobs = nobs_val,
+    nobs_org = NROW(org_dat),
+    r2 = r2_val,
+    weights = weights_val,
+    flags = flags_str,
+    error_in_r = FALSE
+  )
+
+  step_parcels$reg = reg_dat
+  step_parcels$colinfo = repbox_compute_col_info(runid, project_dir, dat, org_dat, reg_dat)
+
+  return(step_parcels)
+}
+```
+!END_MODIFICATION mrb_run_r_base_step metaregBase/R/mrb_r_base.R
