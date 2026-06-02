@@ -13,6 +13,12 @@ mrb_runid_test_files = function(project_dir, runid, parcels = list(), drf = repb
   r_code = paste0('project_dir = "', project_dir, '"\n', r_code)
   file = paste0(outdir, "/test_runid_", runid, ".R")
   writeLines(r_code, file)
+
+
+  stata_code = mrb_test_stata_code(drf, runid)
+  file = paste0(outdir, "/test_runid_", runid, ".do")
+  writeLines(stata_code, file)
+
   invisible()
 }
 
@@ -125,3 +131,12 @@ mrb_test_code_path = function(project_dir, runid, parcels, drf, opts = mrb_test_
 
   paste0(txt_lines, collapse = "\n")
 }
+
+mrb_test_stata_code = function(drf, runid) {
+  restore.point("mrb_test_code_path")
+  sc = drf_stata_code_df(drf, runids=runid)$code
+
+}
+
+
+
