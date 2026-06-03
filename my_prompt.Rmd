@@ -1515,12 +1515,13 @@ mrb_run_r_base_step = function(mrb, pid, with_try = isTRUE(mrb$with_try), contin
     xtvar = list(timevar=NA, panelvar=NA, tdelta=NA_integer_)
   }
 
-  # 0. Load Data & Expand Syntax
-  dat = repboxDRF::drf_get_data(pid, drf = mrb$drf,continue_on_error = continue_on_error)
+  # 0. Load Data UNFILTERED to allow TS operators to look across time correctly
+  dat_full = repboxDRF::drf_get_data(pid, drf = mrb$drf, filtered = FALSE, continue_on_error = continue_on_error)
+  if (is.null(dat_full) || inherits(dat_full, "try-error")) return(list())
 
-  # NULL means problem in data loading
-  if (is.null(dat)) return(list())
-
+  # Protect against instances where dat_full is a list without matrix names
+  data_cols = names(dat_full)
+  if (is.null(data_cols)) data_cols = character(0)
 
   # 1. Base Components
   run_obj = mrb$drf$run_df %>% filter(runid == pid)
@@ -1530,41 +1531,44 @@ mrb_run_r_base_step = function(mrb, pid, with_try = isTRUE(mrb$with_try), contin
   cmdpart = all_cmdpart %>% filter(runid == pid)
   if (NROW(cmdpart) == 0) stop(paste0("No cmdpart stored for runid = ", pid))
 
-  # 2. Extract specific Stata outcomes for this step (metaregBase 'sb')
   stata_ct = if (!is.null(mrb$stata_ct_sb)) mrb$stata_ct_sb %>% filter(runid == pid) else NULL
   stata_scalars = if (!is.null(mrb$stata_scalars)) mrb$stata_scalars %>% filter(runid == pid) else NULL
   stata_macros = if (!is.null(mrb$stata_macros)) mrb$stata_macros %>% filter(runid == pid) else NULL
 
-
-  org_dat = dat
-  cmdpart = cmdpart_expand_vars(cmdpart, colnames(dat))
-
-  # 4. Extract Options, SE, and build initial regvar
+  cmdpart = cmdpart_expand_vars(cmdpart, data_cols)
   opts_df = cmdpart_to_opts_df(cmdpart)
-
   panelvar = mrb_get_panelvar(run_obj, opts_df, xtvar)
   se_info = se_stata_to_repdb(cmd, opts_df, panelvar = panelvar)
 
-  regvar = cmdpart_to_regvar(cmdpart, dat, opts_df, se_info)
+  # 3. Create TS columns on UNFILTERED data
+  # We build a lightweight, temporary regvar just to discover which cterms need evaluating.
+  regvar_tmp = cmdpart_to_regvar(cmdpart, dat_full, opts_df, se_info)
+  regvar_tmp = mrb_add_xtreg_fe_regvar(regvar_tmp, run_obj, opts_df, xtvar, dat_full)
 
-  # xtreg, fe absorbs the xtset panel variable. This variable is stored in
-  # xtvar/reg metadata, not in the command varlist. Add it to regvar as an
-  # absorbed fixed effect so regvar_to_formula_fixest() creates "| panelvar".
-  regvar = mrb_add_xtreg_fe_regvar(
-    regvar = regvar,
-    reg = run_obj,
-    opts_df = opts_df,
-    xtvar = xtvar,
-    dat = dat
-  )
+  tmp_depvar = regvar_tmp$cterm[regvar_tmp$role == "dep"]
+  ct_cterms_tmp = unique(c(tmp_depvar, regvar_tmp$var, regvar_tmp$cterm, regvar_tmp$ia_cterm)) %>% setdiff(c("(Intercept)",""))
+  dat_full = create_cterm_cols(dat_full, ct_cterms_tmp, timevar=xtvar$timevar, panelvar=xtvar$panelvar, tdelta=xtvar$tdelta)
+
+  # 4. Apply filter safely
+  data = dat_full # The evaluated filter code expects the variable to be named 'data'
+  filter_code = repboxDRF::drf_get_filter_code(pid, mrb$drf, parcels = mrb$parcels)
+  if (length(filter_code) > 0 && any(nzchar(filter_code))) {
+    for (code in filter_code) {
+      if (nzchar(code)) {
+        eval(parse(text = code))
+      }
+    }
+  }
+  dat = data
+  org_dat = data
+
+  # 5. Build proper regvar with correct metadata based on FILTERED data
+  regvar = cmdpart_to_regvar(cmdpart, dat, opts_df, se_info)
+  regvar = mrb_add_xtreg_fe_regvar(regvar, run_obj, opts_df, xtvar, dat)
 
   depvar = regvar$cterm[regvar$role == "dep"]
-
-  # 5. Data Mutations & Stats
   ct_cterms = unique(c(depvar, regvar$var, regvar$cterm, regvar$ia_cterm)) %>% setdiff(c("(Intercept)",""))
 
-  # Keep the full expanded dataset so make_regxvar can access generated
-  # time-series columns.
   wide_dat_full = create_cterm_cols(dat, ct_cterms, timevar=xtvar$timevar, panelvar=xtvar$panelvar, tdelta=xtvar$tdelta)
   wide_dat = wide_dat_full[, ct_cterms, drop=FALSE]
 
@@ -1578,10 +1582,8 @@ mrb_run_r_base_step = function(mrb, pid, with_try = isTRUE(mrb$with_try), contin
   #####################
   # Create step parcels
   #####################
-
   step_parcels = list()
 
-  # A. REGCOEF (Parsed Stata Coefficients from metaregBase runs)
   if (!is.null(stata_ct) && nrow(stata_ct) > 0) {
     co_all = ct_to_regcoef(stata_ct, artid = mrb$artid)
     co_parcels = regcoef_split_variant_parcels(
@@ -1601,8 +1603,6 @@ mrb_run_r_base_step = function(mrb, pid, with_try = isTRUE(mrb$with_try), contin
     regcoef_main = tibble()
   }
 
-
-  # A2. REGCOEF_SO (Parsed Stata Coefficients from Original DRF run 'so')
   step_parcels$regcoef_so = tibble()
   if (!is.null(mrb$regtab_so)) {
     rt_row = mrb$regtab_so %>% filter(runid == pid)
@@ -1615,7 +1615,6 @@ mrb_run_r_base_step = function(mrb, pid, with_try = isTRUE(mrb$with_try), contin
     }
   }
 
-  # B. REGVAR (Variables with prefixes and dropping info)
   dropped_cterms = if (nrow(regcoef_main) > 0) {
     regcoef_main %>% filter(is.na(coef)) %>% pull(cterm)
   } else {
@@ -1638,13 +1637,8 @@ mrb_run_r_base_step = function(mrb, pid, with_try = isTRUE(mrb$with_try), contin
       is_dropped = (cterm %in% dropped_cterms) & (role %in% c("exo", "endo"))
     )
 
-  # C. REGXVAR
-  # Absorbed fixed effects, including xtreg panel FE, are excluded inside
-  # make_regxvar(). Explicit non-factor command variables are marked as
-  # in_regcoef unless Stata reports them as dropped.
   step_parcels$regxvar = make_regxvar(step_parcels$regvar, wide_dat_full, regcoef_main)
 
-  # D. REGSCALAR & REGSTRING
   if (!is.null(stata_scalars) && nrow(stata_scalars) > 0) {
     step_parcels$regscalar = stata_scalars %>%
       rename(scalar_name = var, scalar_val = val) %>%
@@ -1664,7 +1658,6 @@ mrb_run_r_base_step = function(mrb, pid, with_try = isTRUE(mrb$with_try), contin
     step_parcels$regstring = tibble()
   }
 
-  # E. COLSTAT
   step_parcels$colstat_numeric = if (nrow(colstats$colstat_numeric) > 0) {
     colstats$colstat_numeric %>% mutate(artid = mrb$artid, variant = "sb", runid = runid, cterm = col)
   } else {
@@ -1683,7 +1676,6 @@ mrb_run_r_base_step = function(mrb, pid, with_try = isTRUE(mrb$with_try), contin
     tibble()
   }
 
-  # F. REG & REGSOURCE
   nobs_val = if ("N" %in% names(stats_wide)) as.numeric(stats_wide$N) else NA_real_
   r2_val = if ("r2" %in% names(stats_wide)) as.numeric(stats_wide$r2) else if ("r2_p" %in% names(stats_wide)) as.numeric(stats_wide$r2_p) else NA_real_
 
@@ -1704,9 +1696,7 @@ mrb_run_r_base_step = function(mrb, pid, with_try = isTRUE(mrb$with_try), contin
       flags_vec = c(flags_vec, w_type)
     }
 
-    # Fast regex check: If it contains anything non-alphanumeric, it is an expression.
     is_expr = stringi::stri_detect_regex(weights_val, "[^A-Za-z0-9_]")
-
     if (is_expr) {
       vars = try(all.vars(parse(text = weights_val)), silent = TRUE)
       if (inherits(vars, "try-error")) {
@@ -2742,6 +2732,8 @@ max_empty_na = function(x, na.rm=TRUE) {
 expand_stata_var_patterns = function(pattern, cols, unlist=TRUE, uses_xi=FALSE) {
   restore.point("expand_stata_var_patterns")
 
+  if (is.null(cols)) cols = character(0)
+
   # Helper to expand time series operators with ranges
   # e.g. L(0/3).x1 -> x1 L1.x1 L2.x1 L3.x1
   pattern = expand_stata_ts_ranges(pattern)
@@ -2781,23 +2773,19 @@ expand_stata_var_patterns = function(pattern, cols, unlist=TRUE, uses_xi=FALSE) 
   pattern_rhs = ifelse(is.na(last_dot), pattern, stringi::stri_sub(pattern, last_dot + 1))
   pattern_lhs = ifelse(is.na(last_dot), "", stringi::stri_sub(pattern, 1, last_dot))
 
-  # Old code
-  #pattern_rhs = str.right.of(pattern,".")
-  #pattern_lhs = str.left.of(pattern,".",not.found = rep("", length(pattern)))
-  #pattern_lhs = ifelse(pattern_lhs == "","", paste0(pattern_lhs, "."))
-
-
-
   # Abbreviation Matching
   no_match_rows = normal_rows[which(!(pattern_rhs[normal_rows] %in% cols))]
   if (length(no_match_rows)>0) {
     for (row in no_match_rows) {
-      mcols = which(startsWith(cols, pattern_rhs[row]))
+      pat_rhs = pattern_rhs[row]
+      if (is.na(pat_rhs)) next # Safely skip NA variables generated by complex parsing
+
+      mcols = which(startsWith(cols, pat_rhs))
       if (length(mcols)>1) {
-        cat("\nThe regression variable ", pattern_rhs[row], " matches multiple variables.\n")
+        cat("\nThe regression variable ", pat_rhs, " matches multiple variables.\n")
         pattern[row] = paste0(pattern_lhs[row] ,cols[mcols[1]])
       } else if (length(mcols)==0) {
-        msg = paste0("The regression variable ", pattern_rhs[row], " could not be matched with any variable in the data set.")
+        msg = paste0("The regression variable ", pat_rhs, " could not be matched with any variable in the data set.")
         repbox_problem(msg, "regvar_no_match", fail_action = "msg")
       } else {
         pattern[row] = paste0(pattern_lhs[row],cols[mcols[1]])
@@ -3978,7 +3966,7 @@ mrb_run_r_reg_step = function(mrb, pid, continue_on_error=FALSE) {
   }
 
   # Fetch and prepare the data using our new refactored helper function
-  dat = try(mrb_get_regression_data(runid, drf = mrb$drf, reg=reg, regvar = regvar, regxvar = regxvar, continue_on_error=continue_on_error), silent=TRUE)
+  dat = try(mrb_get_regression_data(runid, drf = mrb$drf, reg=reg, regvar = regvar, regxvar = regxvar, continue_on_error=continue_on_error, parcels=parcels), silent=TRUE)
   if (is(dat, "try-error")) {
      reg_rb$error_in_r = TRUE
      reg_rb$error_msg = "Error preparing regression data."
@@ -4063,12 +4051,14 @@ mrb_run_r_reg_step = function(mrb, pid, continue_on_error=FALSE) {
 
 
 #' Get and prepare regression data (creates cterms and regxvar columns)
-mrb_get_regression_data = function(runid, drf, reg=NULL, regvar, regxvar = NULL, continue_on_error=FALSE) {
+mrb_get_regression_data = function(runid, drf, reg=NULL, regvar, regxvar = NULL, continue_on_error=FALSE, parcels=NULL) {
   restore.point("mrb_get_regression_data")
 
-  dat = repboxDRF::drf_get_data(runid, drf = drf,continue_on_error = continue_on_error)
+  # Phase 1: Fetch UNFILTERED data to correctly evaluate time-series lags and leads
+  dat = repboxDRF::drf_get_data(runid, drf = drf, filtered = FALSE, continue_on_error = continue_on_error)
+  if (is.null(dat) || inherits(dat, "try-error")) return(dat)
 
-  # CHANGE: Extract panel/time variables if available
+  # Extract panel/time variables if available
   timevar = NA; panelvar = NA; tdelta = NA
   if (!is.null(reg) && nrow(reg) > 0) {
     timevar = reg$timevar[1]
@@ -4077,9 +4067,24 @@ mrb_get_regression_data = function(runid, drf, reg=NULL, regvar, regxvar = NULL,
   }
 
   if (!is.null(regvar) && nrow(regvar) > 0) {
-    dat = create_cterm_cols(dat, unique(regvar$cterm),timevar = timevar,panelvar = panelvar, tdelta = tdelta)
+    dat = create_cterm_cols(dat, unique(regvar$cterm), timevar = timevar, panelvar = panelvar, tdelta = tdelta)
   }
 
+  # Phase 2: Apply the regression filter AFTER generating the time-series variables
+  if (!is.null(parcels)) {
+    filter_code = repboxDRF::drf_get_filter_code(runid, drf, parcels = parcels)
+    if (length(filter_code) > 0 && any(nzchar(filter_code))) {
+      data = dat # The evaluated filter code safely acts on the local variable 'data'
+      for (code in filter_code) {
+        if (nzchar(code)) {
+          eval(parse(text = code))
+        }
+      }
+      dat = data # Map back to 'dat' to continue standard processing
+    }
+  }
+
+  # Phase 3: Build interactions / dummy variables ONLY on the filtered estimation sample
   if (!is.null(regxvar) && nrow(regxvar) > 0) {
     dat = make_regxvar_cols(dat, regxvar)
   }
@@ -4827,7 +4832,7 @@ mrb_test_reg_data_prep_code = function(project_dir, runid, parcels = list()) {
     "",
     "# dat is the regression-ready data, including the DRF path, filtering,",
     "# generated cterm columns, and regxvar columns",
-    "dat = metaregBase:::mrb_get_regression_data(runid = runid, drf = drf, reg = reg, regvar = regvar, regxvar = regxvar)"
+    "dat = metaregBase:::mrb_get_regression_data(runid = runid, drf = drf, reg = reg, regvar = regvar, regxvar = regxvar, parcels = parcels)"
   )
 
   paste0(lines, collapse = "\n")
@@ -5360,7 +5365,7 @@ mrb_test_data_preview_text = function(runid, drf, parcels, n = 5, opts=mrb_test_
     regvar = parcel_for_runid(parcels$regvar, runid)
     regxvar = if (!is.null(parcels$regxvar)) parcel_for_runid(parcels$regxvar, runid) else tibble()
     reg = parcel_for_runid(parcels$reg, runid)
-    dat = try(mrb_get_regression_data(runid, drf, reg=reg, regvar=regvar, regxvar=regxvar), silent = TRUE)
+    dat = try(mrb_get_regression_data(runid, drf, reg=reg, regvar=regvar, regxvar=regxvar, parcels=parcels), silent = TRUE)
     res = c(res, format_df_sample(dat, "## Regression Data (fully prepared)", put_reg_cols_first = TRUE), "")
   }
   if (opts$show_pre_reg_data) {
@@ -9336,9 +9341,12 @@ is_negative = function(n) {
 # Your Task
 ##################################
 
-I have an example where for all xtivreg2 commands like 
+Currently newey regressions are not translated to R. E.g.
 
-xi: xtivreg2  cashdef (F1.bailind=gbailind L1.gbailind)taxbt pop age015 age65 unemp bailind L1.debt gdebt i.year gtaxbt gpop gage015 gage65 gunemp leftmaj voteshareleft gleftmaj gvoteshareleft ugrant gugrant if year>1978,fe cl(code)
+newey lnflupneu post37 year_c post37Xyear_c, lag(2)
 
-All or a large share of coefficients of R translation and Stata original differ, often substantially. Do you see any issue in our pipeline that might be the culprit? First explain in detail the reason or multiple possible reasons, before suggesting a fix.
+Can you discuss how complex it would be to implement an R translation and then propose code changes?
+
+
+
 
