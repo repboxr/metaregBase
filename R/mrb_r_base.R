@@ -41,12 +41,13 @@ mrb_run_r_base_step = function(mrb, pid, with_try = isTRUE(mrb$with_try), contin
     xtvar = list(timevar=NA, panelvar=NA, tdelta=NA_integer_)
   }
 
-  # 0. Load Data & Expand Syntax
-  dat = repboxDRF::drf_get_data(pid, drf = mrb$drf,continue_on_error = continue_on_error)
+  # 0. Load Data UNFILTERED to allow TS operators to look across time correctly
+  dat_full = repboxDRF::drf_get_data(pid, drf = mrb$drf, filtered = FALSE, continue_on_error = continue_on_error)
+  if (is.null(dat_full) || inherits(dat_full, "try-error")) return(list())
 
-  # NULL means problem in data loading
-  if (is.null(dat)) return(list())
-
+  # Protect against instances where dat_full is a list without matrix names
+  data_cols = names(dat_full)
+  if (is.null(data_cols)) data_cols = character(0)
 
   # 1. Base Components
   run_obj = mrb$drf$run_df %>% filter(runid == pid)
@@ -56,41 +57,44 @@ mrb_run_r_base_step = function(mrb, pid, with_try = isTRUE(mrb$with_try), contin
   cmdpart = all_cmdpart %>% filter(runid == pid)
   if (NROW(cmdpart) == 0) stop(paste0("No cmdpart stored for runid = ", pid))
 
-  # 2. Extract specific Stata outcomes for this step (metaregBase 'sb')
   stata_ct = if (!is.null(mrb$stata_ct_sb)) mrb$stata_ct_sb %>% filter(runid == pid) else NULL
   stata_scalars = if (!is.null(mrb$stata_scalars)) mrb$stata_scalars %>% filter(runid == pid) else NULL
   stata_macros = if (!is.null(mrb$stata_macros)) mrb$stata_macros %>% filter(runid == pid) else NULL
 
-
-  org_dat = dat
-  cmdpart = cmdpart_expand_vars(cmdpart, colnames(dat))
-
-  # 4. Extract Options, SE, and build initial regvar
+  cmdpart = cmdpart_expand_vars(cmdpart, data_cols)
   opts_df = cmdpart_to_opts_df(cmdpart)
-
   panelvar = mrb_get_panelvar(run_obj, opts_df, xtvar)
   se_info = se_stata_to_repdb(cmd, opts_df, panelvar = panelvar)
 
-  regvar = cmdpart_to_regvar(cmdpart, dat, opts_df, se_info)
+  # 3. Create TS columns on UNFILTERED data
+  # We build a lightweight, temporary regvar just to discover which cterms need evaluating.
+  regvar_tmp = cmdpart_to_regvar(cmdpart, dat_full, opts_df, se_info)
+  regvar_tmp = mrb_add_xtreg_fe_regvar(regvar_tmp, run_obj, opts_df, xtvar, dat_full)
 
-  # xtreg, fe absorbs the xtset panel variable. This variable is stored in
-  # xtvar/reg metadata, not in the command varlist. Add it to regvar as an
-  # absorbed fixed effect so regvar_to_formula_fixest() creates "| panelvar".
-  regvar = mrb_add_xtreg_fe_regvar(
-    regvar = regvar,
-    reg = run_obj,
-    opts_df = opts_df,
-    xtvar = xtvar,
-    dat = dat
-  )
+  tmp_depvar = regvar_tmp$cterm[regvar_tmp$role == "dep"]
+  ct_cterms_tmp = unique(c(tmp_depvar, regvar_tmp$var, regvar_tmp$cterm, regvar_tmp$ia_cterm)) %>% setdiff(c("(Intercept)",""))
+  dat_full = create_cterm_cols(dat_full, ct_cterms_tmp, timevar=xtvar$timevar, panelvar=xtvar$panelvar, tdelta=xtvar$tdelta)
+
+  # 4. Apply filter safely
+  data = dat_full # The evaluated filter code expects the variable to be named 'data'
+  filter_code = repboxDRF::drf_get_filter_code(pid, mrb$drf, parcels = mrb$parcels)
+  if (length(filter_code) > 0 && any(nzchar(filter_code))) {
+    for (code in filter_code) {
+      if (nzchar(code)) {
+        eval(parse(text = code))
+      }
+    }
+  }
+  dat = data
+  org_dat = data
+
+  # 5. Build proper regvar with correct metadata based on FILTERED data
+  regvar = cmdpart_to_regvar(cmdpart, dat, opts_df, se_info)
+  regvar = mrb_add_xtreg_fe_regvar(regvar, run_obj, opts_df, xtvar, dat)
 
   depvar = regvar$cterm[regvar$role == "dep"]
-
-  # 5. Data Mutations & Stats
   ct_cterms = unique(c(depvar, regvar$var, regvar$cterm, regvar$ia_cterm)) %>% setdiff(c("(Intercept)",""))
 
-  # Keep the full expanded dataset so make_regxvar can access generated
-  # time-series columns.
   wide_dat_full = create_cterm_cols(dat, ct_cterms, timevar=xtvar$timevar, panelvar=xtvar$panelvar, tdelta=xtvar$tdelta)
   wide_dat = wide_dat_full[, ct_cterms, drop=FALSE]
 
@@ -104,10 +108,8 @@ mrb_run_r_base_step = function(mrb, pid, with_try = isTRUE(mrb$with_try), contin
   #####################
   # Create step parcels
   #####################
-
   step_parcels = list()
 
-  # A. REGCOEF (Parsed Stata Coefficients from metaregBase runs)
   if (!is.null(stata_ct) && nrow(stata_ct) > 0) {
     co_all = ct_to_regcoef(stata_ct, artid = mrb$artid)
     co_parcels = regcoef_split_variant_parcels(
@@ -127,8 +129,6 @@ mrb_run_r_base_step = function(mrb, pid, with_try = isTRUE(mrb$with_try), contin
     regcoef_main = tibble()
   }
 
-
-  # A2. REGCOEF_SO (Parsed Stata Coefficients from Original DRF run 'so')
   step_parcels$regcoef_so = tibble()
   if (!is.null(mrb$regtab_so)) {
     rt_row = mrb$regtab_so %>% filter(runid == pid)
@@ -141,7 +141,6 @@ mrb_run_r_base_step = function(mrb, pid, with_try = isTRUE(mrb$with_try), contin
     }
   }
 
-  # B. REGVAR (Variables with prefixes and dropping info)
   dropped_cterms = if (nrow(regcoef_main) > 0) {
     regcoef_main %>% filter(is.na(coef)) %>% pull(cterm)
   } else {
@@ -164,13 +163,8 @@ mrb_run_r_base_step = function(mrb, pid, with_try = isTRUE(mrb$with_try), contin
       is_dropped = (cterm %in% dropped_cterms) & (role %in% c("exo", "endo"))
     )
 
-  # C. REGXVAR
-  # Absorbed fixed effects, including xtreg panel FE, are excluded inside
-  # make_regxvar(). Explicit non-factor command variables are marked as
-  # in_regcoef unless Stata reports them as dropped.
   step_parcels$regxvar = make_regxvar(step_parcels$regvar, wide_dat_full, regcoef_main)
 
-  # D. REGSCALAR & REGSTRING
   if (!is.null(stata_scalars) && nrow(stata_scalars) > 0) {
     step_parcels$regscalar = stata_scalars %>%
       rename(scalar_name = var, scalar_val = val) %>%
@@ -190,7 +184,6 @@ mrb_run_r_base_step = function(mrb, pid, with_try = isTRUE(mrb$with_try), contin
     step_parcels$regstring = tibble()
   }
 
-  # E. COLSTAT
   step_parcels$colstat_numeric = if (nrow(colstats$colstat_numeric) > 0) {
     colstats$colstat_numeric %>% mutate(artid = mrb$artid, variant = "sb", runid = runid, cterm = col)
   } else {
@@ -209,7 +202,6 @@ mrb_run_r_base_step = function(mrb, pid, with_try = isTRUE(mrb$with_try), contin
     tibble()
   }
 
-  # F. REG & REGSOURCE
   nobs_val = if ("N" %in% names(stats_wide)) as.numeric(stats_wide$N) else NA_real_
   r2_val = if ("r2" %in% names(stats_wide)) as.numeric(stats_wide$r2) else if ("r2_p" %in% names(stats_wide)) as.numeric(stats_wide$r2_p) else NA_real_
 
@@ -230,9 +222,7 @@ mrb_run_r_base_step = function(mrb, pid, with_try = isTRUE(mrb$with_try), contin
       flags_vec = c(flags_vec, w_type)
     }
 
-    # Fast regex check: If it contains anything non-alphanumeric, it is an expression.
     is_expr = stringi::stri_detect_regex(weights_val, "[^A-Za-z0-9_]")
-
     if (is_expr) {
       vars = try(all.vars(parse(text = weights_val)), silent = TRUE)
       if (inherits(vars, "try-error")) {

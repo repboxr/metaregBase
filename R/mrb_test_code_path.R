@@ -50,7 +50,7 @@ mrb_test_reg_data_prep_code = function(project_dir, runid, parcels = list()) {
     "",
     "# dat is the regression-ready data, including the DRF path, filtering,",
     "# generated cterm columns, and regxvar columns",
-    "dat = metaregBase:::mrb_get_regression_data(runid = runid, drf = drf, reg = reg, regvar = regvar, regxvar = regxvar)"
+    "dat = metaregBase:::mrb_get_regression_data(runid = runid, drf = drf, reg = reg, regvar = regvar, regxvar = regxvar, parcels = parcels)"
   )
 
   paste0(lines, collapse = "\n")

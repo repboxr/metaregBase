@@ -132,7 +132,7 @@ mrb_run_r_reg_step = function(mrb, pid, continue_on_error=FALSE) {
   }
 
   # Fetch and prepare the data using our new refactored helper function
-  dat = try(mrb_get_regression_data(runid, drf = mrb$drf, reg=reg, regvar = regvar, regxvar = regxvar, continue_on_error=continue_on_error), silent=TRUE)
+  dat = try(mrb_get_regression_data(runid, drf = mrb$drf, reg=reg, regvar = regvar, regxvar = regxvar, continue_on_error=continue_on_error, parcels=parcels), silent=TRUE)
   if (is(dat, "try-error")) {
      reg_rb$error_in_r = TRUE
      reg_rb$error_msg = "Error preparing regression data."
@@ -217,12 +217,14 @@ mrb_run_r_reg_step = function(mrb, pid, continue_on_error=FALSE) {
 
 
 #' Get and prepare regression data (creates cterms and regxvar columns)
-mrb_get_regression_data = function(runid, drf, reg=NULL, regvar, regxvar = NULL, continue_on_error=FALSE) {
+mrb_get_regression_data = function(runid, drf, reg=NULL, regvar, regxvar = NULL, continue_on_error=FALSE, parcels=NULL) {
   restore.point("mrb_get_regression_data")
 
-  dat = repboxDRF::drf_get_data(runid, drf = drf,continue_on_error = continue_on_error)
+  # Phase 1: Fetch UNFILTERED data to correctly evaluate time-series lags and leads
+  dat = repboxDRF::drf_get_data(runid, drf = drf, filtered = FALSE, continue_on_error = continue_on_error)
+  if (is.null(dat) || inherits(dat, "try-error")) return(dat)
 
-  # CHANGE: Extract panel/time variables if available
+  # Extract panel/time variables if available
   timevar = NA; panelvar = NA; tdelta = NA
   if (!is.null(reg) && nrow(reg) > 0) {
     timevar = reg$timevar[1]
@@ -231,9 +233,24 @@ mrb_get_regression_data = function(runid, drf, reg=NULL, regvar, regxvar = NULL,
   }
 
   if (!is.null(regvar) && nrow(regvar) > 0) {
-    dat = create_cterm_cols(dat, unique(regvar$cterm),timevar = timevar,panelvar = panelvar, tdelta = tdelta)
+    dat = create_cterm_cols(dat, unique(regvar$cterm), timevar = timevar, panelvar = panelvar, tdelta = tdelta)
   }
 
+  # Phase 2: Apply the regression filter AFTER generating the time-series variables
+  if (!is.null(parcels)) {
+    filter_code = repboxDRF::drf_get_filter_code(runid, drf, parcels = parcels)
+    if (length(filter_code) > 0 && any(nzchar(filter_code))) {
+      data = dat # The evaluated filter code safely acts on the local variable 'data'
+      for (code in filter_code) {
+        if (nzchar(code)) {
+          eval(parse(text = code))
+        }
+      }
+      dat = data # Map back to 'dat' to continue standard processing
+    }
+  }
+
+  # Phase 3: Build interactions / dummy variables ONLY on the filtered estimation sample
   if (!is.null(regxvar) && nrow(regxvar) > 0) {
     dat = make_regxvar_cols(dat, regxvar)
   }

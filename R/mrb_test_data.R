@@ -88,7 +88,7 @@ mrb_test_data_preview_text = function(runid, drf, parcels, n = 5, opts=mrb_test_
     regvar = parcel_for_runid(parcels$regvar, runid)
     regxvar = if (!is.null(parcels$regxvar)) parcel_for_runid(parcels$regxvar, runid) else tibble()
     reg = parcel_for_runid(parcels$reg, runid)
-    dat = try(mrb_get_regression_data(runid, drf, reg=reg, regvar=regvar, regxvar=regxvar), silent = TRUE)
+    dat = try(mrb_get_regression_data(runid, drf, reg=reg, regvar=regvar, regxvar=regxvar, parcels=parcels), silent = TRUE)
     res = c(res, format_df_sample(dat, "## Regression Data (fully prepared)", put_reg_cols_first = TRUE), "")
   }
   if (opts$show_pre_reg_data) {
