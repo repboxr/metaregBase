@@ -111,7 +111,7 @@ mrb_run_r_reg_step = function(mrb, pid, continue_on_error=FALSE) {
 
   reg_rb = reg %>% mutate(variant = "rb", error_in_r = FALSE, error_msg = "")
 
-  if (is(code_df, "try-error") || any(grepl("# Stata command .* not fully translated", code_df$code)) || any(grepl("# Translation failed", code_df$code))) {
+  if (is(code_df, "try-error") || any(grepl("# Stata command .* not fully translated", code_df$code)) || any(grepl("# Translation failed", code_df$code)) | is.null(code_df)) {
      reg_rb$error_in_r = TRUE
      reg_rb$error_msg = "Stata regression could not be translated to R."
      step_parcels$reg_rb = reg_rb
@@ -125,7 +125,7 @@ mrb_run_r_reg_step = function(mrb, pid, continue_on_error=FALSE) {
   reg_fun = try(eval(parse(text=reg_fun_code)), silent=TRUE)
   if (is(reg_fun, "try-error")) {
      reg_rb$error_in_r = TRUE
-     reg_rb$error_msg = "Error parsing translated R code."
+     reg_rb$error_msg = "Error parsing translated R code for regression."
      step_parcels$reg_rb = reg_rb
      step_parcels$regcoef_diff = diff_sb_so
      return(step_parcels)
@@ -312,6 +312,8 @@ mrb_make_r_reg_parcels = function(mrb, save=TRUE,is_partial_run=mrb$is_partial_r
     if (NROW(new_data) > 0) {
       repdb_check_data(new_data, table=check_table)
     }
+
+    new_data = repboxDB::repdb_null_to_empty(new_data, check_table)
 
     new_data
   }

@@ -1,4 +1,4 @@
-# For a given runid=pid
+# For a given pid
 # create a text that shows the complete path including Stata data modification steps,
 # the filter code, and the translated R regression steps, formatted clearly.
 
@@ -6,24 +6,24 @@ example = function() {
 
 }
 
-mrb_runid_test_files = function(project_dir, runid, parcels = list(), drf = repboxDRF::drf_load(project_dir, parcels), outdir = paste0(project_dir, "/run/runid_", runid)) {
+mrb_pid_test_files = function(project_dir, pid, parcels = list(), drf = repboxDRF::drf_load(project_dir, parcels), outdir = paste0(project_dir, "/run/pid_", pid)) {
 
   if (!dir.exists(outdir)) dir.create(outdir)
-  r_code = mrb_test_code_path(project_dir, runid, parcels, drf)
+  r_code = mrb_test_code_path(project_dir, pid, parcels, drf)
   r_code = paste0('project_dir = "', project_dir, '"\n', r_code)
-  file = paste0(outdir, "/test_runid_", runid, ".R")
+  file = paste0(outdir, "/test_pid_", pid, ".R")
   writeLines(r_code, file)
 
 
-  stata_code = mrb_test_stata_code(drf, runid)
-  file = paste0(outdir, "/test_runid_", runid, ".do")
+  stata_code = mrb_test_stata_code(drf, pid)
+  file = paste0(outdir, "/test_pid_", pid, ".do")
   writeLines(stata_code, file)
 
   invisible()
 }
 
 
-mrb_test_reg_data_prep_code = function(project_dir, runid, parcels = list()) {
+mrb_test_reg_data_prep_code = function(project_dir, pid, parcels = list()) {
   restore.point("mrb_test_reg_data_prep_code")
 
   need = c("reg", "regvar", "regxvar")
@@ -40,30 +40,30 @@ mrb_test_reg_data_prep_code = function(project_dir, runid, parcels = list()) {
   }
 
   lines = c(
-    paste0("runid = ", runid),
+    paste0("pid = ", pid),
     "if (!exists(\"parcels\")) parcels = list()",
     load_call,
     "drf = repboxDRF::drf_load(project_dir, parcels = parcels)",
-    "reg = parcels$reg[parcels$reg$runid == runid, , drop = FALSE]",
-    "regvar = parcels$regvar[parcels$regvar$runid == runid, , drop = FALSE]",
-    "regxvar = if (!is.null(parcels$regxvar)) parcels$regxvar[parcels$regxvar$runid == runid, , drop = FALSE] else tibble::tibble()",
+    "reg = parcels$reg[parcels$reg$runid == pid, , drop = FALSE]",
+    "regvar = parcels$regvar[parcels$regvar$runid == pid, , drop = FALSE]",
+    "regxvar = if (!is.null(parcels$regxvar)) parcels$regxvar[parcels$regxvar$runid == pid, , drop = FALSE] else tibble::tibble()",
     "",
     "# dat is the regression-ready data, including the DRF path, filtering,",
     "# generated cterm columns, and regxvar columns",
-    "dat = metaregBase:::mrb_get_regression_data(runid = runid, drf = drf, reg = reg, regvar = regvar, regxvar = regxvar, parcels = parcels)"
+    "dat = metaregBase:::mrb_get_regression_data(runid = pid, drf = drf, reg = reg, regvar = regvar, regxvar = regxvar, parcels = parcels)"
   )
 
   paste0(lines, collapse = "\n")
 }
 
 
-mrb_test_code_path = function(project_dir, runid, parcels, drf, opts = mrb_test_opts()) {
+mrb_test_code_path = function(project_dir, pid, parcels, drf, opts = mrb_test_opts()) {
   restore.point("mrb_test_code_path")
 
-  path_df = drf$path_df %>% filter(pid == !!runid, runid <= !!runid) %>% arrange(runid)
+  path_df = drf$path_df %>% filter(pid == !!pid, runid <= !!pid) %>% arrange(runid)
 
   if (NROW(path_df) == 0) {
-    return(paste0("# No path found in drf$path_df for pid ", runid))
+    return(paste0("# No path found in drf$path_df for pid ", pid))
   }
 
   run_df = drf$run_df %>% filter(runid %in% path_df$runid) %>% arrange(runid)
@@ -78,7 +78,7 @@ mrb_test_code_path = function(project_dir, runid, parcels, drf, opts = mrb_test_
     stata_cmd_lines = strsplit(stata_cmd, "\n")[[1]]
     stata_cmd_comment = paste0("# Stata: ", paste0(stata_cmd_lines, collapse = "\n#        "))
 
-    if (r_id == runid) {
+    if (r_id == pid) {
       # This is the final analysis target / regression command.
 
       # Explicit dependency load logic and filter translation from drf_get_data()
@@ -132,9 +132,9 @@ mrb_test_code_path = function(project_dir, runid, parcels, drf, opts = mrb_test_
   paste0(txt_lines, collapse = "\n")
 }
 
-mrb_test_stata_code = function(drf, runid) {
+mrb_test_stata_code = function(drf, pid) {
   restore.point("mrb_test_code_path")
-  sc = drf_stata_code_df(drf, runids=runid)$code
+  sc = drf_stata_code_df(drf, runids=pid)$code
 
 }
 

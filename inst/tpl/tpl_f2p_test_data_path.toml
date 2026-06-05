@@ -1,5 +1,7 @@
 opt_prompt_file = "my_prompt.Rmd"
 
+
+
 include_files = '''
 pipeline.md
 '''
@@ -21,6 +23,12 @@ Below is code from selected R projects from my repbox / metareg toolbox.
 # Package repboxDRF
 
 {{repboxDRF}}
+
+
+# Package stata2r
+
+{{stata2r}}
+
 
 
 
@@ -178,6 +186,23 @@ is_negative = function(n) {
 # Your Task
 ##################################
 
+In the do file below the R translated of the regression yields different results
+than the Stata regression.
+
+{{pid_test_do}}
+
+We used the helper function mrb_test_data_path in metaregBase run a detailed
+step-by-step analysis to see after which data preparation command(s) the R translation
+yielded a different data set than the original Stata command. These are likely commands
+that are not yet perfectly translated by stata2r.
+
+The results are here:
+
+{{pid_test_log}}
+
+The complete R script that created the log above is:
+
+{{pir_test_r}}
 
 
 '''
@@ -193,6 +218,24 @@ file_template = '''
 # END OF FILE: {{filepath}}
 
 -----------------------------------------------------------
+'''
+
+[[pid_test_do]]
+
+{include_files = '''
+{{project_dir}}/run/pid_{{pid}}/tdp_{{pid}}.do
+'''
+
+[[pid_test_log]]
+
+{include_files = '''
+{{project_dir}}/run/pid_{{pid}}/tdp_{{pid}}_compare.log
+'''
+
+[[pid_test_r]]
+
+{include_files = '''
+{{project_dir}}/run/pid_{{pid}}/tdp_{{pid}}.R
 '''
 
 

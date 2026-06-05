@@ -1,207 +1,213 @@
-### Discussion on Complexity and Strategy
+An analysis of the problem reveals exactly why the interaction terms were missing from the R translation.
 
-Implementing R translation for the Stata `newey` command is remarkably straightforward because the `metaregBase` and `regtranslate` packages are structurally prepared for it.
+### The Cause
+In Stata, when variables are combined in an interaction using `#` or `##` (e.g., `duopoly##post_FDA`), Stata **implicitly treats all components as factor variables** (as if prefixed with `i.`) unless they are explicitly marked as continuous with the `c.` prefix (e.g., `c.duopoly##c.post_FDA`). 
 
-The primary estimation engine currently used in R, `fixest::feols()`, natively supports Newey-West standard errors through its `vcov = "NW"` (and `vcov = NW(lag) ~ panelid + timeid`) syntax. Moreover, `metaregBase::se_stata_to_repdb()` already extracts standard error arguments for `newey` into `se_type = "nw"` and parses the `lag(#)` argument successfully into `se_args = "lag=#"`. 
+However, when `metaregBase` parsed the `cmdpart` to create `regvar` (the variable index `vi`), it un-nested `duopoly##post_FDA` into `"duopoly"` and `"post_FDA"`. Since neither variable had an explicit `i.` prefix, the R pipeline analyzed their data types, saw they contained 0s and 1s, and typed them as `"dummy"`. 
 
-To complete the end-to-end translation, we only need a few localized code modifications:
+Because they were typed as `"dummy"` instead of `"factor"`, the expanded `regxvar` columns were generated as simply `"duopoly"` and `"post_FDA"` instead of `"duopoly=0"`, `"duopoly=1"`, `"post_FDA=0"`, `"post_FDA=1"`. 
+When the R pipeline compared these to Stata's baseline `regcoef` output (which contained `"duopoly=1"`, `"post_FDA=1"`, and `"duopoly=1#post_FDA=1"` due to Stata's implicit factor conversion), they didn't match. As a result, `in_regcoef` evaluated to `FALSE`, and the variables were entirely dropped from the translated `feols` formula!
 
-1.  **Command Registration:** Add `"newey"` to the registry of supported commands (`stata_to_r_cmds_df`) in `regtranslate/R/to_r.R` so the pipeline knows `newey` defaults to the `fixest` (or optionally `lm`) engine.
-2.  **Pass Metadata (`reg`):** In `stata_to_r_code_fixest()`, we need to pass the full regression parcel (`reg`) downwards to the covariance formula builder, because Newey-West standard errors require knowledge of the `timevar` and `panelvar` assigned during the `tsset`/`xtset` phase. 
-3.  **Construct NW vcov Formula:** Update `fixest_vcov_code_from_regdb()` to handle `vcov_type == "NW"`. We extract the `lag` value from `se_args` and correctly format the result. Since `fixest` accepts standard error specifications as unquoted R formulas (`NW(lag) ~ panelvar + timevar` or `NW(lag) ~ timevar`), we construct this dynamically based on the available metadata. 
+### The Fix
+We need to update the `cmdpart_to_regvar` function in `metaregBase/R/mrb_reg_tools.R`. When determining the `fe_type` (fixed effect / factor type), we must include a rule mirroring Stata's behavior: **if a variable is part of an interaction (`is_ia`) and its prefix does not indicate it is continuous (i.e. does not start with `"c"`), it must be treated as a factor (`"i"`)**.
 
-Here are the proposed code changes applying these modifications.
+Here is the modification to patch this issue:
 
----
-
-!MODIFICATION stata_to_r_cmds_df /home/rstudio/repbox/regtranslate/R/to_r.R
+!MODIFICATION cmdpart_to_regvar in metaregBase/R/mrb_reg_tools.R
 scope = "function"
-file = "/home/rstudio/repbox/regtranslate/R/to_r.R"
-function_name = "stata_to_r_cmds_df"
-description = "Add newey to the list of commands translated to fixest and lm"
+file = "/home/rstudio/repbox/metaregBase/R/mrb_reg_tools.R"
+function_name = "cmdpart_to_regvar"
+description = "Update fe_type logic to treat interaction components lacking c. as factors, mirroring Stata default."
 ---
 ```r
-stata_to_r_cmds_df = function(cmd) {
-  li = list(
-    # If you add commands here make to sure that you update the to_r_fixest.R code
-    fixest.. = c("regress","reg", "ivregress","ivreg","ivreg2","xtivreg", "xtivreg2", "reghdfe","ivreghdfe", "xtreg","areg","ppmlhdfe","logit","xtlogit","probit","xtprobit","dprobit", "newey"),
-    lm.. = c("regress","reg", "newey"),
-    ivreg.. = c("ivregress","ivreg","ivreg2", "xtivreg", "xtivreg2"),
-    quantreg.. = c("qreg"),
-    # Note that parmest does return coefficients not marginal
-    # effects for dprobit. So we don't use mfx
-    #mfx... = c("dprobit"),
-    tobit.. = c("tobit")
-  )
-  stata_cmd = unlist(li)
-  r_cmd = str.left.of(names(stata_cmd),"..")
-  data.frame(stata_cmd=stata_cmd,r_cmd=r_cmd,row.names = NULL)
-}
-```
-!END_MODIFICATION stata_to_r_cmds_df /home/rstudio/repbox/regtranslate/R/to_r.R
+#' Create the regvar (vi) table strictly from the expanded cmdpart, opts_df, and se_info
+cmdpart_to_regvar = function(cmdpart, dat, opts_df, se_info) {
+  restore.point("cmdpart_to_regvar")
 
----
+  # 1. Collect all terms mapped by role
+  term_list = list()
 
-!MODIFICATION stata_to_r_code_fixest /home/rstudio/repbox/regtranslate/R/to_r_fixest.R
-scope = "function"
-file = "/home/rstudio/repbox/regtranslate/R/to_r_fixest.R"
-function_name = "stata_to_r_code_fixest"
-description = "Pass the reg object to fixest_vcov_code_from_regdb to provide panel/time variables"
----
-```r
-stata_to_r_code_fixest = function(reg, regvar, regxvar, cmdpart, opts=code_options(), parts = list()) {
-  restore.point("stata_to_r_code_fixest")
-
-  org_depvars = regvar$cterm[regvar$role=="dep"]
-  mod_depvars = replace_cterm_special_symbols(org_depvars)
-
-  formula = regvar_to_formula_fixest(regvar, regxvar, cmdpart, reg = reg)
-
-  vcov_type = fixest_vcov_type_from_regdb(reg$se_type, reg$se_args)
-  ssc_expr = fixest_ssc_code_from_reg(reg, vcov_type = vcov_type)
-  use_ssc = !is.null(ssc_expr)
-
-  use_sandwich = (vcov_type == "sandwich") | opts$prefer_sandwich
-  use_summary = use_sandwich | opts$prefer_summary
-
-  if (use_sandwich) {
-    reg_vcov = "iid"
-    vcov = regdb_se_to_sandwich(reg$se_category, reg$se_type, reg$se_args)
-  } else {
-    reg_vcov = fixest_vcov_code_from_regdb(reg$se_type, reg$se_args, vcov_type, quote=FALSE, reg=reg)
-    if (use_summary) {
-      vcov = reg_vcov
-    }
+  # Standard variables (dep, exo, endo, instr)
+  v_df = cmdpart %>% dplyr::filter(part == "v")
+  if (nrow(v_df) > 0) {
+    # Replace tag names with role names (depvar -> dep, others stay same)
+    v_df$role = ifelse(v_df$tag == "depvar", "dep", v_df$tag)
+    term_list[[1]] = dplyr::tibble(ia_expr = v_df$content, role = v_df$role, option = "")
   }
 
-  command = "feols"
-  arg_str = NULL
-  if (reg$cmd == "ppmlhdfe") {
-    command = "fepos"
-  } else if (reg$cmd %in% c("logit","xtlogit")) {
-    command = "feglm"
-    arg_str = "family=binomial()"
-  } else if (reg$cmd %in% c("probit","xtprobit","dprobit")) {
-    command = "feglm"
-    arg_str = 'family=binomial(link = "probit")'
-  }
+  # Weights
+  w_df = cmdpart %>% dplyr::filter(part == "weight_var")
+  if (nrow(w_df) > 0) {
+    w_expr = w_df$content[1]
+    is_expr = stringi::stri_detect_regex(w_expr, "[^A-Za-z0-9_]")
 
-  arg_str = c(
-    paste0("fml = formula"),
-    paste0("data = dat"),
-    paste0("vcov = reg_vcov"),
-    arg_str
-  )
-
-  # Pass ssc to fixest natively when relevant.
-  if (use_ssc) {
-    arg_str = c(arg_str, "ssc = ssc")
-  }
-
-  library_code = "library(fixest)"
-  rcmd_code = paste0('rcmd = "',command,'"')
-  if (all(org_depvars==mod_depvars)) {
-    data_code = ""
-  } else {
-    data_code = paste0(
-      'dat[["', mod_depvars,'"]] = dat[["', org_depvars,'"]]',
-      collapse="\n"
-    )
-  }
-
-  # Apply dynamic weights via centralized helper
-  wt = r_weight_code(reg, template = "~ `%s`")
-  if (nzchar(wt$data_code)) {
-    data_code = if (nzchar(data_code)) paste0(data_code, "\n", wt$data_code) else wt$data_code
-  }
-  if (nzchar(wt$weight_arg)) {
-    arg_str = c(arg_str, wt$weight_arg)
-  }
-
-  ssc_code = if (use_ssc) paste0("ssc = ", ssc_expr) else NULL
-  formula_code = paste0("formula = ", formula)
-  reg_vcov_code = paste0("reg_vcov = ", quote_arg(reg_vcov))
-  reg_code = paste0("reg = ", command, "(", paste0(arg_str, collapse=","), ")")
-
-  code_df = tibble(
-    part = c("library", "rcmd", "data", "formula", if (use_ssc) "ssc", "reg_vcov", "reg"),
-    code = c(library_code, rcmd_code, data_code, formula_code, if (use_ssc) ssc_code, reg_vcov_code, reg_code)
-  )
-
-  if (use_summary) {
-    sum_vcov_code = paste0("sum_vcov = ", quote_arg(vcov))
-    sum_code = "sum = summary(reg, vcov = sum_vcov)"
-    code_df = bind_rows(
-      code_df,
-      tibble(part = c("sum_vcov","sum"), code = c(sum_vcov_code, sum_code))
-    )
-  }
-  if (opts$add_broom) {
-    code_df = add_reg_broom_code(code_df, use_summary=use_summary, use_conf_int=TRUE)
-  }
-  if (opts$add_function) {
-    code_df = add_reg_function_code(code_df)
-  }
-  code_df
-}
-```
-!END_MODIFICATION stata_to_r_code_fixest /home/rstudio/repbox/regtranslate/R/to_r_fixest.R
-
----
-
-!MODIFICATION fixest_vcov_code_from_regdb /home/rstudio/repbox/regtranslate/R/to_r_fixest.R
-scope = "function"
-file = "/home/rstudio/repbox/regtranslate/R/to_r_fixest.R"
-function_name = "fixest_vcov_code_from_regdb"
-description = "Implement proper formula formatting for NW and DK vcov in fixest based on timevar/panelvar from reg object and parsed lags."
----
-```r
-fixest_vcov_code_from_regdb = function(se_type, se_args, vcov_type=fixest_vcov_type_from_regdb(se_type,se_args), quote=TRUE, reg=NULL) {
-  restore.point("fixest_vcov_code_from_regdb")
-
-  if (vcov_type %in% c("cluster","twoway")) {
-    clustervar = extract_clustervar_from_se_args(se_args)
-    # Return as a formula (~ var1 + var2) natively supported by fixest
-    code = paste0("~ ", paste0("`", clustervar, "`", collapse = " + "))
-    return(code)
-  }
-  if (vcov_type %in% c("DK","NW")) {
-    lag = NA_character_
-    if (!is.na(se_args) && nzchar(se_args)) {
-      args = regdb_parse_se_args(se_args)
-      if ("lag" %in% names(args)) lag = args["lag"]
-    }
-    
-    timevar = if (!is.null(reg) && !is.na(reg$timevar[1]) && nzchar(reg$timevar[1])) reg$timevar[1] else ""
-    panelvar = if (!is.null(reg) && !is.na(reg$panelvar[1]) && nzchar(reg$panelvar[1])) reg$panelvar[1] else ""
-    
-    p_and_t = ""
-    if (panelvar != "" && timevar != "") {
-      p_and_t = paste0("`", panelvar, "` + `", timevar, "`")
-    } else if (timevar != "") {
-      p_and_t = paste0("`", timevar, "`")
-    } else if (panelvar != "") {
-      p_and_t = paste0("`", panelvar, "`")
-    }
-    
-    lag_str = ""
-    if (!is.na(lag) && lag != "") {
-      lag_str = paste0("(", lag, ")")
-    }
-    
-    if (p_and_t != "") {
-      return(paste0(vcov_type, lag_str, " ~ ", p_and_t))
-    } else {
-      if (lag_str == "") {
-        if (quote) return(paste0('"', vcov_type, '"'))
-        return(vcov_type)
-      } else {
-        return(paste0(vcov_type, lag_str))
+    if (is_expr) {
+      vars = try(all.vars(parse(text = w_expr)), silent = TRUE)
+      if (!inherits(vars, "try-error") && length(vars) > 0) {
+        term_list[[2]] = dplyr::tibble(ia_expr = vars, role = "weight_comp", option = "")
       }
+    } else {
+      term_list[[2]] = dplyr::tibble(ia_expr = w_expr, role = "weight_comp", option = "")
     }
   }
-  if (quote) return(paste0('"',vcov_type,'"'))
-  return(vcov_type)
+
+  # Absorb (from reghdfe / areg)
+  absorb_opts = opts_df %>% dplyr::filter(opt %in% c("absorb", "a", "ab", "abs", "abso", "absor"))
+  if (nrow(absorb_opts) > 0) {
+    abs_vars = strsplit(shorten.spaces(paste0(absorb_opts$opt_arg, collapse = " ")), " ", fixed = TRUE)[[1]]
+    term_list[[3]] = dplyr::tibble(ia_expr = abs_vars, role = "exo", option = "absorb")
+  }
+
+  # FE (from xtreg)
+  if (any(opts_df$opt == "fe")) {
+    # xtreg assumes panelvar is already set via xtset, we'll append it later if needed,
+    # or rely on the drf run_obj panelvar injection.
+  }
+
+  # Cluster / SE
+  if (!is.null(se_info$se_args) && se_info$se_args != "") {
+    se_args_parsed = repdb_parse_se_args(se_info$se_args, as_df = TRUE)
+    cluster_vars = se_args_parsed$arg_val[startsWith(se_args_parsed$arg_name, "cluster")]
+    if (length(cluster_vars) > 0) {
+      term_list[[4]] = dplyr::tibble(ia_expr = cluster_vars, role = "cluster", option = "se")
+    }
+  }
+
+  vi = dplyr::bind_rows(term_list) %>% dplyr::mutate(main_pos = seq_len(dplyr::n()))
+
+  # 2. Process Interaction Effects and Prefixes
+  vi$is_ia = grepl("(\\|)|(#)|(\\*)", vi$ia_expr)
+  vi$var_expr = as.list(vi$ia_expr)
+
+  # Unnest interactions
+  rows = which(vi$is_ia)
+  vi$var_expr[rows] = strsplit(vi$ia_expr[rows], "(##)|(#)|(\\|)|(\\*)")
+
+  vi = vi %>%
+    tidyr::unnest(var_expr) %>%
+    dplyr::group_by(ia_expr) %>%
+    dplyr::mutate(ia_num = dplyr::n(), ia_pos = seq_len(dplyr::n())) %>%
+    dplyr::ungroup()
+
+  # Extract Prefix (L1., F., i., c., etc.) - split at LAST dot
+  prefix_start = stringi::stri_locate_last_fixed(vi$var_expr, ".")[, 1]
+  vi$prefix = ifelse(
+    is.na(prefix_start),
+    "",
+    stringi::stri_sub(vi$var_expr, 1, prefix_start - 1) %>% stringi::stri_replace_all_fixed(".", "")
+  )
+  vi$var = ifelse(is.na(prefix_start), vi$var_expr, stringi::stri_sub(vi$var_expr, prefix_start + 1))
+
+  # Normalize specific prefixes
+  vi = vi %>%
+    dplyr::mutate(prefix = dplyr::case_when(
+      startsWith(tolower(prefix), "ib") ~ paste0("b", substring(prefix, 3)),
+      TRUE ~ prefix
+    ))
+
+  # 3. Incorporate column stats info
+  cols_info = make_cols_small_info(dat)
+  vi = vi %>% dplyr::left_join(cols_info, by = c("var" = "col"))
+
+  # 4. Determine Types and Classes
+  vi = vi %>%
+    dplyr::mutate(
+      is_factor = class %in% c("character", "factor"),
+      fe_type = dplyr::case_when(
+        startsWith(tolower(prefix), "c") ~ "",
+        startsWith(tolower(prefix), "b") ~ "b",
+        startsWith(tolower(prefix), "i") ~ "i",
+        is_ia ~ "i",
+        option %in% c("absorb", "fe") ~ option,
+        is_factor ~ class,
+        TRUE ~ ""
+      ),
+      absorbed_fe = option %in% c("absorb", "fe"),
+      is_fe = fe_type != "",
+      varclass = class,
+      class = ifelse(is_fe & !is_factor, "fe", class),
+      add_main_effects = is_ia & (has.substr(ia_expr, "##") | has.substr(ia_expr, "*"))
+    )
+
+  # 5. Build Canonical Terms
+  vi$ia_cterm = stata_expr_to_cterm(vi$ia_expr)
+  vi$cterm = stata_expr_to_cterm(vi$var_expr)
+  vi$basevar = stata_expr_to_cterm(vi$var)
+
+  # If a variable is xi-generated (_I...) and the cached data still carries the
+  # original Stata variable label, use that label to canonicalize the term.
+  # This keeps regvar/regxvar/R output aligned with Stata regcoef parcels.
+  var_labels = vapply(dat, function(v) {
+    lab = attr(v, "label")
+    if (is.null(lab) || length(lab) == 0 || is.na(lab[[1]])) {
+      return("")
+    }
+    as.character(lab[[1]])
+  }, character(1))
+
+  xi_rows = startsWith(vi$var, "_I")
+  if (any(xi_rows)) {
+    xi_labels = unname(var_labels[vi$var])
+    xi_has_label = xi_rows & !is.na(xi_labels) & stringi::stri_detect_fixed(xi_labels, "==")
+
+    if (any(xi_has_label)) {
+      vi$cterm[xi_has_label] = canonical.output.terms.stata.xi(
+        terms = vi$var[xi_has_label],
+        labels = xi_labels[xi_has_label]
+      )
+    }
+  }
+
+  # Rebuild ia_cterm from the updated component cterms so interactions with xi
+  # variables also become canonical.
+  vi = vi %>%
+    dplyr::group_by(main_pos) %>%
+    dplyr::mutate(
+      ia_cterm = {
+        if (dplyr::n() == 1) {
+          cterm
+        } else {
+          rep(
+            split_and_sort(
+              paste0(cterm, collapse = "#"),
+              split = "#",
+              k = dplyr::n()
+            )[[1]],
+            dplyr::n()
+          )
+        }
+      }
+    ) %>%
+    dplyr::ungroup()
+
+  # basevar should refer to the underlying source variable, not the raw _I name
+  vi$basevar = stringi::stri_replace_first_regex(vi$cterm, "^.*@", "")
+  vi$basevar = stringi::stri_replace_first_regex(vi$basevar, "=.*$", "")
+
+  vi$class = ifelse(has.substr(vi$cterm, "="), "dummy", vi$class)
+
+  # 6. Apply interaction types & Reg Types
+  vi = vi_add_ia_type(vi)
+
+  vi = vi %>% dplyr::mutate(
+    var_org_type = varclass %>% change_val(c("fe", "character"), "factor"),
+    var_reg_type = class %>% change_val(c("fe", "character"), "factor") %>% change_val("logical", "dummy"),
+    ia_reg_type = ia_type %>%
+      change_val("fe", "factor") %>%
+      change_val("fe_numeric", "factor_numeric") %>%
+      change_val("fe_logical", "factor_dummy")
+  ) %>% dplyr::mutate(
+    var_reg_type = ifelse(role == "cluster", "factor", var_reg_type),
+    ia_reg_type = ifelse(role == "cluster", "factor", ia_reg_type)
+  )
+
+  # Ensure column order is clean
+  vi = vi %>% dplyr::select(
+    ia_expr, var_expr, var, role, prefix, option, class, fe_type, is_fe,
+    distinct_num, ia_num, ia_pos, main_pos, ia_cterm, cterm, basevar, dplyr::everything()
+  )
+
+  return(vi)
 }
 ```
-!END_MODIFICATION fixest_vcov_code_from_regdb /home/rstudio/repbox/regtranslate/R/to_r_fixest.R
+!END_MODIFICATION cmdpart_to_regvar in metaregBase/R/mrb_reg_tools.R

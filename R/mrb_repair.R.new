@@ -49,29 +49,47 @@ mrb_repair_via_ignore = function(project_dir = mrb$project_dir, mrb = NULL, max_
   # Load existing regrepair parcel so we can detect previously failed ignore attempts
   mrb$parcels = repboxDB::repdb_load_parcels(mrb$project_dir, "regrepair", mrb$parcels)
 
+  skip_pids = integer(0)
   if (!rerun) {
     regrepair = repboxDB::repdb_null_to_empty(mrb$parcels$regrepair,"regrepair")
 
-    # TO DO: ignore already performed repair attempts
-    #        if same cached runid was used
+    # Ignore already performed repair attempts that FAILED,
+    # if same cached runid was used. We MUST NOT skip successful repairs,
+    # because their parcels were cleared in the main run and need to be regenerated.
     cached_runid_df = repboxDRF::drf_get_cached_runids_by_pid(mrb$drf, pids) %>% rename(runid=pid)
 
+    if ("reg_ok" %in% names(regrepair)) {
+      already_tried = regrepair %>%
+        filter(repair_code==!!repair_code, !dplyr::coalesce(reg_ok, FALSE)) %>%
+        semi_join(cached_runid_df, by=c("runid", "cached_runid"))
+    } else {
+      already_tried = regrepair %>%
+        filter(repair_code==!!repair_code) %>%
+        semi_join(cached_runid_df, by=c("runid", "cached_runid"))
+    }
 
-    regrepair = regrepair %>%
-      filter(repair_code==!!repair_code) %>%
-      semi_join(cached_runid_df, by=c("runid", "cached_runid"))
-    pids = setdiff(pids, regrepair$runid)
+    skip_pids = already_tried$runid
+    pids = setdiff(pids, skip_pids)
   }
-  if (length(pids) == 0) {
+
+  if (length(pids) > 0) {
+    mrb = mrb_run_r_base(mrb = mrb, just_pids=pids, continue_on_error = TRUE)
+    mrb = mrb_run_r_reg(mrb, just_pids=pids, continue_on_error=TRUE)
+
+    mrb = mrb_make_regcheck_parcel(mrb, just_pids=pids, repair_code=repair_code)
+    mrb = mrb_regcheck_to_regrepair(mrb, pids=pids)
+  }
+
+  # For skipped pids, we still want to document the repair attempt in the current regcheck.
+  # Calling mrb_make_regcheck_parcel will see they still fail and set repair_code.
+  if (length(skip_pids) > 0) {
+    mrb = mrb_make_regcheck_parcel(mrb, just_pids=skip_pids, repair_code=repair_code)
+    mrb = mrb_regcheck_to_regrepair(mrb, pids=skip_pids)
+  }
+
+  if (length(pids) == 0 && length(skip_pids) == 0) {
     cat("\nNo failed runs that have not been already tried to be repaired with code ", repair_code, ".\n")
-    return(mrb)
   }
-
-  mrb = mrb_run_r_base(mrb = mrb, just_pids=pids,continue_on_error = TRUE)
-  mrb = mrb_run_r_reg(mrb, just_pids=pids, continue_on_error=TRUE)
-
-  mrb = mrb_make_regcheck_parcel(mrb, just_pids=pids, repair_code=repair_code)
-  mrb = mrb_regcheck_to_regrepair(mrb, pids=pids)
 
   mrb
 }
@@ -207,7 +225,7 @@ mrb_determine_repair_cache_runid = function(mrb, failed_pids, drf = mrb$drf) {
 }
 
 
-mrb_get_to_repair_runids = function(mrb, parcels = mrb$parcels,  only_paths_with_import = FALSE) {
+mrb_get_to_repair_runids = function(mrb, parcels = mrb$parcels, ignore_already_repaired = TRUE, only_paths_with_import = FALSE) {
   restore.point("mrb_get_to_repair_runids")
   parcels = repboxDB::repdb_load_parcels(mrb$project_dir, c("regcheck", "reg", "regrepair"), parcels)
 
@@ -230,6 +248,10 @@ mrb_get_to_repair_runids = function(mrb, parcels = mrb$parcels,  only_paths_with
     mutate(do_repair = (sb_raw_did_run) & (!rb_did_run)) %>%
     mutate(do_repair = do_repair | repboxUtils::is.true(!rb_sb_coef_same & !(has.substr(cmd, "logit") | has.substr(cmd, "probit")))) %>%
     mutate(do_repair = do_repair & (stata_reg_cmd_has_r_trans(cmd) | cmd == ""))
+
+  # We no longer filter out already attempted repairs here.
+  # mrb_repair_via_ignore handles skipping failed attempts
+  # and ensures they are properly documented in the current regcheck.
 
   failed_pids = regcheck$runid[regcheck$do_repair]
 
