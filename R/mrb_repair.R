@@ -251,7 +251,7 @@ mrb_get_to_repair_runids = function(mrb, parcels = mrb$parcels,  only_paths_with
 }
 
 #' Generate a Stata cache at a specific intermediate runid
-mrb_create_cache_at_runid = function(mrb, cache_runid, pid, overwrite = FALSE) {
+mrb_create_cache_at_runid = function(mrb=mrb_init(project_dir), cache_runid, overwrite = FALSE, project_dir=NULL, pid=NULL) {
   restore.point("mrb_create_cache_at_runid")
   project_dir = mrb$project_dir
   cache_dir = file.path(project_dir, "drf/cached_dta")
@@ -262,6 +262,12 @@ mrb_create_cache_at_runid = function(mrb, cache_runid, pid, overwrite = FALSE) {
   }
 
   if (!dir.exists(cache_dir)) dir.create(cache_dir, recursive = TRUE)
+
+  if (is.null(pid)) {
+    path_df = mrb$drf$path_df
+    row = which(path_df$runid==cache_runid)
+    pid = first(path_df$pid[row])
+  }
 
   # Get the Stata code path for this pid
   sc_df = repboxDRF::drf_stata_code_df(mrb$drf, runids = pid, path_merge = "none", write_e_r = FALSE, cache_after_runids = cache_runid,keep_non_mod_reg = TRUE)

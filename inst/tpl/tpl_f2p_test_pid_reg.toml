@@ -187,23 +187,18 @@ is_negative = function(n) {
 ##################################
 
 In the do file below the R translated of the regression yields different results
-than the Stata regression.
+than the Stata regression. I thinkt the problem lies in the regression translation not
+the data preparation, but I am not 100% sure.
 
 {{pid_test_do}}
 
-We used the helper function mrb_test_data_path in metaregBase run a detailed
-step-by-step analysis to see after which data preparation command(s) the R translation
-yielded a different data set than the original Stata command. These are likely commands
-that are not yet perfectly translated by stata2r.
+Here is the R translated R code:
 
-The results are here:
+{{pid_test_r}}
 
-{{pid_test_log}}
+Here are some parcels for the pid={{pid}}
 
-The complete R script that created the log above is:
-
-{{pir_test_r}}
-
+{{pid_test_parcels}}
 
 '''
 
@@ -226,10 +221,10 @@ include_files = '''
 {{project_dir}}/run/pid_{{pid}}/tdp_{{pid}}.do
 '''
 
-[[pid_test_log]]
+[[pid_test_parcels]]
 
 include_files = '''
-{{project_dir}}/run/pid_{{pid}}/tdp_{{pid}}_compare.log
+{{project_dir}}/run/pid_{{pid}}/parcels_{{pid}}.txt
 '''
 
 [[pid_test_r]]

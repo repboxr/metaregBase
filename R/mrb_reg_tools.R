@@ -351,8 +351,9 @@ cmdpart_to_regvar = function(cmdpart, dat, opts_df, se_info) {
       is_factor = class %in% c("character", "factor"),
       fe_type = dplyr::case_when(
         startsWith(tolower(prefix), "c") ~ "",
-        startsWith(tolower(prefix), "i") ~ "i",
         startsWith(tolower(prefix), "b") ~ "b",
+        startsWith(tolower(prefix), "i") ~ "i",
+        is_ia ~ "i",
         option %in% c("absorb", "fe") ~ option,
         is_factor ~ class,
         TRUE ~ ""

@@ -19,6 +19,8 @@ mrb_pid_test_files = function(project_dir, pid, parcels = list(), drf = repboxDR
   file = paste0(outdir, "/test_pid_", pid, ".do")
   writeLines(stata_code, file)
 
+  mrb_deploy_test_pid_f2p_tomls(project_dir, pid, overwrite=FALSE)
+
   invisible()
 }
 

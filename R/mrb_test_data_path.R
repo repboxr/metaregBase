@@ -392,6 +392,9 @@ mrb_test_data_path = function(
   library(repboxDRF)
   library(metaregBase)
 
+  mrb_deploy_test_pid_f2p_tomls(project_dir, pid, overwrite=FALSE)
+  mrb_print_test_parcels(project_dir, pid)
+
   if (is.null(drf)) {
     drf = repboxDRF::drf_load(project_dir, parcels=parcels)
   }
@@ -474,5 +477,34 @@ mrb_tdp_load_dta = function(data, project_dir, pid, runid) {
   dta_data
 }
 
+mrb_deploy_test_pid_f2p_tomls = function(project_dir, pid, overwrite = FALSE) {
+  outdir = paste0(project_dir, "/run/pid_", pid)
 
+  tpl_dir = system.file("tpl", package = "metaregBase")
+
+  tpl_files = list.files(tpl_dir, glob2rx("tpl_f2p_test*.toml"), full.names = TRUE)
+
+  tpl_file = tpl_files[1]
+
+  for (tpl_file in tpl_files) {
+    outbase = basename(tpl_file) %>%
+      stri_replace_first_fixed("tpl_","") %>%
+      stri_replace_first_fixed(".toml",paste0("_",pid,".toml"))
+    outfile = file.path(outdir, outbase)
+    if (!overwrite & file.exists(outfile)) next
+
+    txt = read_utf8(tpl_file)
+    txt = stringi::stri_replace_all_fixed(txt, "{{pid}}", pid)
+    txt = stringi::stri_replace_all_fixed(txt, "{{project_dir}}", project_dir)
+    writeUtf8(txt,outfile)
+  }
+
+
+}
+
+mrb_print_test_parcels = function(project_dir, pid) {
+  outdir = paste0(project_dir, "/run/pid_", pid)
+
+  mrb_print_parcels(project_dir,runid = pid,outfile = file.path(outdir, paste0("parcels_", pid,".txt")))
+}
 
