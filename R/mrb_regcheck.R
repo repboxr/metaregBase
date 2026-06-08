@@ -182,6 +182,8 @@ mrb_make_regcheck_parcel = function(
       problem = "R replication rb metadata exists, but rb coefficients are missing."
     } else if (isTRUE(!rb_sb_coef_same)) {
       problem = "R and Stata base coefficients differ by > tolerance."
+    } else if (isTRUE(!rb_sb_se_same)) {
+      problem = "R and Stata base standard errors differ by > tolerance."
     } else if (isTRUE(!sb_so_identical)) {
       problem = "Stata base differs from Stata original."
     }

@@ -1,440 +1,459 @@
-An analysis of your coefficient comparison logic reveals a critical mathematical bug in how coefficients and intercepts are shifted when the Stata and R models select different reference levels for factor variables.
+### Diagnosis of the Discrepancy
 
-### The Bug
+Your suspicion is completely correct! The discrepancy arises from a fundamental difference in how Stata constructs the estimation sample (`e(sample)`) compared to how `feols` (or `lm`) drops missing values via formulas.
 
-In `/home/rstudio/repbox/metaregBase/R/mrb_regcoef.R` within `coef_diff_table()`, when a factor's reference level differs between models, the code attempts to align the models by shifting all `coef_2` values for that factor. 
+**What happens in Stata:**
+1. Stata identifies *all* variables requested in the original model (`logdiff`, `myavailratio`, and `older15`).
+2. It performs **listwise deletion** on the data, dropping any row that contains an `NA` (missing) for *any* of those variables.
+3. *After* the estimation sample is locked in, Stata evaluates the variables for collinearity and variance. If `year == 2012` restricted the data such that the remaining non-missing `older15` values are all `0`, Stata quietly omits `1.older15` from the estimation output. However, the rows where `older15` was `NA` remain dropped.
 
-However, there were three major flaws in the implementation:
-1. **Wrong offset sign:** It subtracted the reference level's coefficient `offset.2 = -coef_1[...]` instead of adding it. If the base model had a coefficient of `5` for the level that the R model dropped, we must *add* `5` to all R coefficients for that factor so they align. By subtracting it, the differences were massively amplified.
-2. **Incorrect intercept shifting:** The intercept offset was calculated using `-sum(unique(offset.2))`. If two different factor groups happened to require the exact same numerical offset (e.g., both need a shift of `5`), `unique()` would collapse them into a single `5`, and the intercept would only be shifted once. It must be summed exactly once *per factor group*.
-3. **Broken interaction grouping:** The `factor_group` was extracted using `=([^\\:]*):` after appending a `:`. For interaction terms like `X=A#Y=B`, this regex matched across the `#` and incorrectly stripped everything after the first `=`, grouping interactions incorrectly as main effects!
+**What happens in our R Translation Pipeline:**
+1. During `mrb_run_r_base`, we peek at Stata's results to see exactly which factor dummies were kept (to ensure reference groups match perfectly). 
+2. We see that `1.older15` was omitted by Stata, so we set `in_regcoef = FALSE` for it in `regxvar`.
+3. Our `regvar_to_formula_fixest()` function constructs the `feols` formula and deliberately leaves out `1.older15` because it was flagged as omitted. The R formula becomes simply `logdiff ~ myavailratio`.
+4. R's `feols` evaluates `logdiff ~ myavailratio`. Because `older15` is nowhere to be found in the formula, `feols` has absolutely no reason to drop rows where `older15` is `NA`. Thus, R runs the regression on more observations than Stata did, leading to mismatched coefficients and standard errors.
 
-### The Fix
-
-The modifications below fix the `factor_group` regex to cleanly strip `=LEVEL` portions without destroying interactions, correct the offset signs, and accurately sum the intercept offsets using `!duplicated(factor_group)`. I've also updated `mrb_regcheck.R` to explicitly log an issue when only Standard Errors differ, which improves diagnostic visibility.
-
-!MODIFICATION mrb_make_regcheck_parcel mrb_regcheck.R
-scope = "function"
-file = "/home/rstudio/repbox/metaregBase/R/mrb_regcheck.R"
-function_name = "mrb_make_regcheck_parcel"
-description = "Add explicit problem string when only standard errors differ between rb and sb"
 ---
-```r
-#' Assemble the 'regcheck' parcel checking cross-language replication success
-#'
-#' Evaluates the success of regression outputs and maps any mismatches
-#' to a standardized `regcheck` parcel.
-mrb_make_regcheck_parcel = function(
-  mrb,
-  save = TRUE,
-  just_pids = NULL,
-  repair_code = "",
-  max_rel_diff_tol = 1e-4,
-  max_deviation_tol = 1e-5,
-  rb_max_rel_diff_tol = 0.01,
-  rb_max_deviation_tol = 1e-5,
-  for_regrepair = FALSE
-) {
-  restore.point("mrb_make_regcheck_parcel")
 
-  if (!is.null(just_pids) & length(just_pids) == 0)
-    return(mrb)
+### Can this behavior be replicated?
 
-  mrb$parcels = parcels = repboxDB::repdb_load_parcels(
-    mrb$project_dir,
-    c("reg", "reg_rb", "regcoef", "regcoef_so", "regcoef_rb"),
-    mrb$parcels
+**Yes, very easily.** The pipeline already possesses all the necessary metadata to resolve this. 
+
+The `regvar` parcel contains the canonical representation of all the original variables called in the command (the *base* terms), regardless of whether they were expanded into dummies or later dropped. 
+
+We can replicate Stata's behavior precisely by generating a snippet of R code that explicitly performs listwise deletion (e.g., via `complete.cases()`) on all original `cterm`s found in `regvar` *before* the regression is executed.
+
+### Pros and Cons of doing it
+
+**Pros:**
+* **Exact Replication:** By exactly mirroring Stata's `e(sample)`, we guarantee that $N$, coefficients, and standard errors align perfectly.
+* **Pipeline Robustness:** It eliminates a major class of silent sample mismatches that cause downstream failures in `regcheck`.
+* **Zero Configuration:** We don't need to guess missingness logic; we just use the original base variables from the parsed Stata command.
+
+**Cons:**
+* **Slight code bloat:** The translated R scripts will contain an extra step to explicitly filter `NAs` (e.g., `dat = dat[complete.cases(...) , ]`). 
+* **Less "idiomatic" R:** A standard R user relies on the formula to automatically handle `na.action`. Explicitly filtering the data before regression feels slightly unnatural for human-written R code, but for a high-fidelity translation pipeline, this exactness is a necessary trade-off.
+
+---
+
+### Implementation
+
+I have provided modifications to `regtranslate` below. We add a small helper `r_listwise_deletion_code()` to `to_r.R`, and then we inject its output into the `data_code` section of every translator (`to_r_fixest.R`, `to_r_lm.R`, etc.).
+
+!MODIFICATION r_listwise_deletion_code in /home/rstudio/repbox/regtranslate/R/to_r.R
+scope = "function"
+file = "/home/rstudio/repbox/regtranslate/R/to_r.R"
+insert_bottom = true
+description = "Helper function to generate R code for Stata-like listwise deletion based on all original regression variables."
+---
+```R
+
+#' Generate R code to emulate Stata's listwise deletion (e(sample))
+#' 
+#' Stata drops missing values for all variables in the original varlist 
+#' *before* omitting collinear terms. Since our R translation explicitly 
+#' drops collinear terms from the formula, we need to manually drop NAs 
+#' across all original variables to match Stata's e(sample).
+r_listwise_deletion_code = function(regvar) {
+  all_base_cterms = unique(regvar$cterm)
+  all_base_cterms = setdiff(all_base_cterms, c("(Intercept)", ""))
+  
+  if (length(all_base_cterms) == 0) return("")
+  
+  paste0(
+    "cc_cols = c(", paste0('"', all_base_cterms, '"', collapse=", "), ")\n",
+    "cc_cols = intersect(cc_cols, colnames(dat))\n",
+    "dat = dat[complete.cases(dat[, cc_cols, drop=FALSE]), ]"
+  )
+}
+```
+!END_MODIFICATION r_listwise_deletion_code in /home/rstudio/repbox/regtranslate/R/to_r.R
+
+
+!MODIFICATION stata_to_r_code_fixest in /home/rstudio/repbox/regtranslate/R/to_r_fixest.R
+scope = "function"
+file = "/home/rstudio/repbox/regtranslate/R/to_r_fixest.R"
+function_name = "stata_to_r_code_fixest"
+description = "Add explicit listwise deletion to emulate Stata's e(sample) matching."
+---
+```R
+stata_to_r_code_fixest = function(reg, regvar, regxvar, cmdpart, opts=code_options(), parts = list()) {
+  restore.point("stata_to_r_code_fixest")
+
+  org_depvars = regvar$cterm[regvar$role=="dep"]
+  mod_depvars = replace_cterm_special_symbols(org_depvars)
+
+  formula = regvar_to_formula_fixest(regvar, regxvar, cmdpart, reg = reg)
+
+  vcov_type = fixest_vcov_type_from_regdb(reg$se_type, reg$se_args)
+  ssc_expr = fixest_ssc_code_from_reg(reg, vcov_type = vcov_type)
+  use_ssc = !is.null(ssc_expr)
+
+  use_sandwich = (vcov_type == "sandwich") | opts$prefer_sandwich
+  use_summary = use_sandwich | opts$prefer_summary
+
+  if (use_sandwich) {
+    reg_vcov = "iid"
+    vcov = regdb_se_to_sandwich(reg$se_category, reg$se_type, reg$se_args)
+  } else {
+    reg_vcov = fixest_vcov_code_from_regdb(reg$se_type, reg$se_args, vcov_type, quote=FALSE, reg=reg)
+    if (use_summary) {
+      vcov = reg_vcov
+    }
+  }
+
+  command = "feols"
+  arg_str = NULL
+  if (reg$cmd == "ppmlhdfe") {
+    command = "fepos"
+  } else if (reg$cmd %in% c("logit","xtlogit")) {
+    command = "feglm"
+    arg_str = "family=binomial()"
+  } else if (reg$cmd %in% c("probit","xtprobit","dprobit")) {
+    command = "feglm"
+    arg_str = 'family=binomial(link = "probit")'
+  }
+
+  arg_str = c(
+    paste0("fml = formula"),
+    paste0("data = dat"),
+    paste0("vcov = reg_vcov"),
+    arg_str
   )
 
-  pids = sort(unique(c(
-    if (!is.null(parcels$reg)) parcels$reg$runid else integer(),
-    if (!is.null(parcels$reg_rb)) parcels$reg_rb$runid else integer(),
-    if (!is.null(parcels$regcoef)) parcels$regcoef$runid else integer(),
-    if (!is.null(parcels$regcoef_so)) parcels$regcoef_so$runid else integer(),
-    if (!is.null(parcels$regcoef_rb)) parcels$regcoef_rb$runid else integer(),
-    if (!is.null(mrb$drf$pids)) mrb$drf$pids else integer()
-  )))
-
-  if (length(pids) == 0) {
-    if (for_regrepair) return(NULL)
-    return(mrb)
+  # Pass ssc to fixest natively when relevant.
+  if (use_ssc) {
+    arg_str = c(arg_str, "ssc = ssc")
   }
 
-  if (!is.null(just_pids)) {
-    pids = intersect(pids, just_pids)
-  }
-
-  run_df = mrb$drf$run_df
-
-  get_run_cmd = function(pid) {
-    cmd = ""
-
-    if (!is.null(parcels$reg) && "cmd" %in% names(parcels$reg) && pid %in% parcels$reg$runid) {
-      reg_row = parcels$reg[parcels$reg$runid == pid, , drop = FALSE][1, ]
-      cmd = as.character(reg_row$cmd[1])
-      if (!is.na(cmd) && nzchar(cmd)) {
-        return(cmd)
-      }
-    }
-
-    if (!is.null(parcels$reg_rb) && "cmd" %in% names(parcels$reg_rb) && pid %in% parcels$reg_rb$runid) {
-      reg_row = parcels$reg_rb[parcels$reg_rb$runid == pid, , drop = FALSE][1, ]
-      cmd = as.character(reg_row$cmd[1])
-      if (!is.na(cmd) && nzchar(cmd)) {
-        return(cmd)
-      }
-    }
-
-    if (!is.null(run_df) && "cmd" %in% names(run_df) && pid %in% run_df$runid) {
-      run_row = run_df[run_df$runid == pid, , drop = FALSE][1, ]
-      cmd = as.character(run_row$cmd[1])
-      if (!is.na(cmd) && nzchar(cmd)) {
-        return(cmd)
-      }
-    }
-
-    ""
-  }
-
-  res_li = lapply(pids, function(pid) {
-    so_did_run = !is.null(parcels$regcoef_so) && pid %in% parcels$regcoef_so$runid
-
-    has_sb_coef = !is.null(parcels$regcoef) && pid %in% parcels$regcoef$runid
-    has_sb_reg = !is.null(parcels$reg) && pid %in% parcels$reg$runid
-    sb_did_run = has_sb_coef || has_sb_reg
-
-    sb_num_coef = NA_integer_
-    if (has_sb_coef) {
-      sb_num_coef = as.integer(NROW(parcels$regcoef[parcels$regcoef$runid == pid, , drop = FALSE]))
-    }
-
-    run_cmd = get_run_cmd(pid)
-
-    rb_did_run = FALSE
-    error_msg = ""
-    if (!is.null(parcels$reg_rb) && pid %in% parcels$reg_rb$runid) {
-      rb_row = parcels$reg_rb[parcels$reg_rb$runid == pid, , drop = FALSE][1, ]
-      rb_did_run = !isTRUE(rb_row$error_in_r)
-
-      if ("error_msg" %in% names(rb_row) && !is.na(rb_row$error_msg[1])) {
-        error_msg = as.character(rb_row$error_msg[1])
-      }
-    }
-
-    has_rb_coef = !is.null(parcels$regcoef_rb) && pid %in% parcels$regcoef_rb$runid
-
-    sb_so_identical = NA
-    sb_so_coef_same = NA
-    sb_so_coef_max_dev = NA_real_
-    sb_so_coef_max_rel = NA_real_
-    sb_so_se_same = NA
-    sb_so_se_max_dev = NA_real_
-    sb_so_se_max_rel = NA_real_
-
-    rb_sb_coef_same = NA
-    rb_sb_share_coeff_same = NA_real_
-    rb_sb_coef_max_dev = NA_real_
-    rb_sb_coef_max_rel = NA_real_
-    rb_sb_se_same = NA
-    rb_sb_se_max_dev = NA_real_
-    rb_sb_se_max_rel = NA_real_
-
-    problem = ""
-    comment = ""
-
-    if (has_sb_coef && so_did_run) {
-      co_sb = parcels$regcoef[parcels$regcoef$runid == pid, , drop = FALSE]
-      co_so = parcels$regcoef_so[parcels$regcoef_so$runid == pid, , drop = FALSE]
-
-      diff_so = coef_diff_table(co_sb, co_so, cmd = run_cmd)
-      ev_so = mrb_regcheck_diff_eval(
-        diff_so,
-        max_rel_diff_tol = max_rel_diff_tol,
-        max_deviation_tol = max_deviation_tol
-      )
-
-      sb_so_identical = ev_so$all_same
-      sb_so_coef_same = ev_so$coef_same
-
-      # The regcheck parcel spec defines sb_so_coef_max_dev as the
-      # maximum relative coefficient deviation between sb and so.
-      sb_so_coef_max_dev = ev_so$coef_max_rel
-      sb_so_coef_max_rel = ev_so$coef_max_rel
-
-      sb_so_se_same = ev_so$se_same
-      sb_so_se_max_dev = ev_so$se_max_dev
-      sb_so_se_max_rel = ev_so$se_max_rel
-    }
-
-    if (has_sb_coef && rb_did_run && has_rb_coef) {
-      co_sb = parcels$regcoef[parcels$regcoef$runid == pid, , drop = FALSE]
-      co_rb = parcels$regcoef_rb[parcels$regcoef_rb$runid == pid, , drop = FALSE]
-
-      diff_rb = coef_diff_table(co_sb, co_rb, cmd = run_cmd)
-      ev_rb = mrb_regcheck_diff_eval(
-        diff_rb,
-        max_rel_diff_tol = rb_max_rel_diff_tol,
-        max_deviation_tol = rb_max_deviation_tol
-      )
-
-      rb_sb_coef_same = ev_rb$coef_same
-      rb_sb_share_coeff_same = ev_rb$coef_same_share
-      rb_sb_coef_max_dev = ev_rb$coef_max_dev
-      rb_sb_coef_max_rel = ev_rb$coef_max_rel
-      rb_sb_se_same = ev_rb$se_same
-      rb_sb_se_max_dev = ev_rb$se_max_dev
-      rb_sb_se_max_rel = ev_rb$se_max_rel
-    }
-
-    if (!rb_did_run & !sb_did_run & !so_did_run) {
-      problem = "All reproductions failed: so, sb and rb"
-    } else if (so_did_run & !sb_did_run & !rb_did_run) {
-      problem = "Original Stata reproduction succeeded, but metaregBase reproductions failed: sb and rb"
-    } else if (!sb_did_run & !rb_did_run) {
-      problem = "metaregBase reproductions failed: sb and rb"
-    } else if (!rb_did_run) {
-      problem = paste0("R replication rb failed: ", error_msg)
-    } else if (!sb_did_run) {
-      problem = "Stata base sb replication failed, but rb did run."
-    } else if (!so_did_run) {
-      problem = "Original Stata reproduction results missing."
-    } else if (sb_did_run & !has_sb_coef) {
-      problem = "Stata base sb metadata exists, but sb coefficients are missing."
-    } else if (rb_did_run & !has_rb_coef) {
-      problem = "R replication rb metadata exists, but rb coefficients are missing."
-    } else if (isTRUE(!rb_sb_coef_same)) {
-      problem = "R and Stata base coefficients differ by > tolerance."
-    } else if (isTRUE(!rb_sb_se_same)) {
-      problem = "R and Stata base standard errors differ by > tolerance."
-    } else if (isTRUE(!sb_so_identical)) {
-      problem = "Stata base differs from Stata original."
-    }
-
-    reg_ok = isTRUE(so_did_run) &&
-      isTRUE(sb_did_run) &&
-      isTRUE(rb_did_run) &&
-      isTRUE(has_sb_coef) &&
-      isTRUE(has_rb_coef) &&
-      isTRUE(sb_so_identical) &&
-      isTRUE(rb_sb_coef_same) &&
-      isTRUE(rb_sb_se_same)
-
-    dplyr::tibble(
-      runid = as.integer(pid),
-      cmd = run_cmd,
-      reg_ok = reg_ok,
-      so_did_run = so_did_run,
-      sb_did_run = sb_did_run,
-      rb_did_run = rb_did_run,
-
-      sb_num_coef = sb_num_coef,
-
-      sb_so_identical = sb_so_identical,
-      sb_so_coef_same = sb_so_coef_same,
-      sb_so_coef_max_dev = sb_so_coef_max_dev,
-      sb_so_coef_max_rel = sb_so_coef_max_rel,
-      sb_so_se_same = sb_so_se_same,
-      sb_so_se_max_dev = sb_so_se_max_dev,
-      sb_so_se_max_rel = sb_so_se_max_rel,
-
-      rb_sb_coef_same = rb_sb_coef_same,
-      rb_sb_share_coeff_same = rb_sb_share_coeff_same,
-      rb_sb_coef_max_dev = rb_sb_coef_max_dev,
-      rb_sb_coef_max_rel = rb_sb_coef_max_rel,
-      rb_sb_se_same = rb_sb_se_same,
-      rb_sb_se_max_dev = rb_sb_se_max_dev,
-      rb_sb_se_max_rel = rb_sb_se_max_rel,
-
-      repair_code = repair_code,
-      problem = problem,
-      comment = comment
-    )
-  })
-
-  regcheck = dplyr::bind_rows(res_li)
-
-  regcheck$so_raw_did_run = regcheck$so_did_run
-  if (!is.null(mrb$regtab_so) && "runid" %in% names(mrb$regtab_so)) {
-    regcheck$so_raw_did_run = regcheck$so_raw_did_run | regcheck$runid %in% mrb$regtab_so$runid
-  }
-
-  regcheck$sb_raw_did_run = regcheck$sb_did_run
-  if (!is.null(mrb$stata_ct_sb) && "runid" %in% names(mrb$stata_ct_sb)) {
-    regcheck$sb_raw_did_run = regcheck$sb_raw_did_run | regcheck$runid %in% mrb$stata_ct_sb$runid
-  }
-
-
-  if (!has_col(regcheck, "cached_runid"))
-    regcheck$cached_runid = rep(NA_integer_, NROW(regcheck))
-
-  cached_runid_df = drf_get_cached_runids_by_pid(drf=mrb$drf, pids=pids)
-  pos = match(cached_runid_df$pid, regcheck$runid)
-  regcheck$cached_runid[pos] = cached_runid_df$cached_runid
-
-  if (for_regrepair) return(regcheck)
-
-  if (!is.null(just_pids)) {
-    parcels = repboxDB::repdb_load_parcels(mrb$project_dir, "regcheck", parcels)
-    old_regcheck = parcels$regcheck %>% anti_join(regcheck, by = "runid")
-    regcheck = bind_rows(regcheck, old_regcheck) %>% arrange(runid)
-  }
-
-  if (save) {
-    repboxDB::repdb_save_parcels(
-      list(regcheck = regcheck),
-      file.path(mrb$project_dir, "repdb"),
-      check = FALSE
-    )
-  }
-
-  mrb$parcels$regcheck = regcheck
-  return(mrb)
-}
-```
-!END_MODIFICATION mrb_make_regcheck_parcel mrb_regcheck.R
-
-!MODIFICATION coef_diff_table mrb_regcoef.R
-scope = "function"
-file = "/home/rstudio/repbox/metaregBase/R/mrb_regcoef.R"
-function_name = "coef_diff_table"
-description = "Fix offset sign for different reference levels, properly sum intercept offset per factor group, and fix factor_group extraction for interactions"
----
-```r
-coef_diff_table = function(
-  co1,
-  co2,
-  check.ref.levels = TRUE,
-  eq_mode = c("auto", "exact")[1],
-  cmd = NULL,
-  ignore_intercept_cmds = mrb_cmds_ignore_intercept_in_r()
-) {
-  restore.point("regcoef_check_same")
-
-  if (is.null(co1) | is.null(co2)) return(NULL)
-
-  v1 = if ("variant" %in% names(co1)) co1$variant[1] else "unknown"
-  v2 = if ("variant" %in% names(co2)) co2$variant[1] else "unknown"
-
-  prep = regcoef_prepare_eq_for_diff(co1, co2, eq_mode = eq_mode)
-  co1 = prep$co1
-  co2 = prep$co2
-
-  # Match results
-  cod = full_join(co1, co2, by = c("eq", "cterm", "runid"), suffix = c("_1", "_2"))
-
-  # Ignore (Intercept) if translating to R natively absorbs it for these commands.
-  if (!is.null(ignore_intercept_cmds) && NROW(cod) > 0) {
-    cmd_for_ignore = rep(NA_character_, NROW(cod))
-
-    if (!is.null(cmd)) {
-      cmd_chr = as.character(cmd)
-
-      if (!is.null(names(cmd_chr)) && "runid" %in% names(cod)) {
-        ind = match(as.character(cod$runid), names(cmd_chr))
-        cmd_for_ignore = cmd_chr[ind]
-      } else if (length(cmd_chr) == 1) {
-        cmd_for_ignore = rep(cmd_chr, NROW(cod))
-      } else if (length(cmd_chr) == NROW(cod)) {
-        cmd_for_ignore = cmd_chr
-      }
-    }
-
-    if (all(is.na(cmd_for_ignore))) {
-      cmd_col = if ("cmd_1" %in% names(cod)) {
-        "cmd_1"
-      } else if ("cmd" %in% names(cod)) {
-        "cmd"
-      } else {
-        NULL
-      }
-
-      if (!is.null(cmd_col)) {
-        cmd_for_ignore = as.character(cod[[cmd_col]])
-      }
-    }
-
-    cod$.repbox_cmd_for_ignore = cmd_for_ignore
-
-    cod = cod %>%
-      filter(
-        !(
-          cterm == "(Intercept)" &
-            !is.na(.data$.repbox_cmd_for_ignore) &
-            nzchar(.data$.repbox_cmd_for_ignore) &
-            .data$.repbox_cmd_for_ignore %in% ignore_intercept_cmds
-        )
-      ) %>%
-      select(-.repbox_cmd_for_ignore)
-  }
-
-  # Ignore coefficients that are missing in both co1 and co2
-  cod = cod %>%
-    filter(!(is.na(coef_1) & is.na(coef_2)))
-
-  if (check.ref.levels) {
-    cod = cod %>%
-      mutate(
-        is_ia = has.substr(cterm, "#"),
-        is_factor = has.substr(cterm, "="),
-        # Fixed: accurately strip the =LEVEL suffix even for interactions (X=A#Y=B becomes X#Y)
-        factor_group = stringi::stri_replace_all_regex(cterm, "=[^#]+", "")
-      ) %>%
-      group_by(runid, eq, factor_group) %>%
-      mutate(
-        ref_level_differs = is_factor & any(is.na(coef_2)),
-        # Fixed: offset.2 should ADD coef_1[ref] to shift the coef_2 reference level
-        offset.2 = ifelse(ref_level_differs, coef_1[first(which(is.na(coef_2)))], 0),
-        num_diff_ref_coef_2 = sum(is.na(coef_2))
-      ) %>%
-      ungroup() %>%
-      mutate(
-        coef_2 = ifelse(is.na(coef_2) & ref_level_differs, 0, coef_2),
-        coef_2 = ifelse(ref_level_differs, coef_2 + offset.2, coef_2)
-      )
-
-    # Adapt (Intercept) if there are different reference levels
-    cod = cod %>%
-      group_by(runid, eq) %>%
-      mutate(
-        # Fixed: accurately sum exactly one offset.2 per factor_group safely
-        offset.2.intercept = ifelse(cterm == "(Intercept)" & any(ref_level_differs), 
-                                    -sum(offset.2[!duplicated(factor_group)], na.rm = TRUE), 
-                                    offset.2),
-        ref_level_differs = ifelse(cterm == "(Intercept)" & any(ref_level_differs), any(ref_level_differs, na.rm = TRUE), ref_level_differs),
-        coef_2 = ifelse(cterm == "(Intercept)" & ref_level_differs, coef_2 + offset.2.intercept, coef_2)
-      ) %>%
-      ungroup()
+  library_code = "library(fixest)"
+  rcmd_code = paste0('rcmd = "',command,'"')
+  if (all(org_depvars==mod_depvars)) {
+    data_code = ""
   } else {
-    cod$ref_level_differs = rep(FALSE, NROW(cod))
+    data_code = paste0(
+      'dat[["', mod_depvars,'"]] = dat[["', org_depvars,'"]]',
+      collapse="\n"
+    )
+  }
+  
+  # Apply explicit listwise deletion to emulate Stata's e(sample)
+  lw_code = r_listwise_deletion_code(regvar)
+  if (nzchar(lw_code)) {
+    data_code = if (nzchar(data_code)) paste0(data_code, "\n", lw_code) else lw_code
   }
 
-  # Compute absolute and relative differences between coefficients and se
-  cod = cod %>%
-    mutate(
-      abs_err_coef = abs(coef_1 - coef_2),
-      abs_err_se = abs(se_1 - se_2),
-      rel_err_coef = abs_err_coef / (0.5 * (abs(coef_1) + abs(coef_2))),
-      rel_err_se = abs_err_se / (0.5 * (abs(se_1) + abs(se_2))),
+  # Apply dynamic weights via centralized helper
+  wt = r_weight_code(reg, template = "~ `%s`")
+  if (nzchar(wt$data_code)) {
+    data_code = if (nzchar(data_code)) paste0(data_code, "\n", wt$data_code) else wt$data_code
+  }
+  if (nzchar(wt$weight_arg)) {
+    arg_str = c(arg_str, wt$weight_arg)
+  }
 
-      rel_within_1pc_coef = rel_err_coef < 0.01,
-      rel_within_1pc = rel_err_coef < 0.01 & rel_err_se < 0.01,
-      identical_coef = coef_1 == coef_2,
-      identical = identical_coef & se_1 == se_2
+  ssc_code = if (use_ssc) paste0("ssc = ", ssc_expr) else NULL
+  formula_code = paste0("formula = ", formula)
+  reg_vcov_code = paste0("reg_vcov = ", quote_arg(reg_vcov))
+  reg_code = paste0("reg = ", command, "(", paste0(arg_str, collapse=","), ")")
+
+  code_df = tibble(
+    part = c("library", "rcmd", "data", "formula", if (use_ssc) "ssc", "reg_vcov", "reg"),
+    code = c(library_code, rcmd_code, data_code, formula_code, if (use_ssc) ssc_code, reg_vcov_code, reg_code)
+  )
+
+  if (use_summary) {
+    sum_vcov_code = paste0("sum_vcov = ", quote_arg(vcov))
+    sum_code = "sum = summary(reg, vcov = sum_vcov)"
+    code_df = bind_rows(
+      code_df,
+      tibble(part = c("sum_vcov","sum"), code = c(sum_vcov_code, sum_code))
     )
-
-  cod = cod %>%
-    group_by(runid, eq) %>%
-    mutate(
-      step_refs_differ =
-        any(ref_level_differs) |
-        any(!is.na(coef_1) & is.na(coef_2))
-    ) %>%
-    ungroup()
-
-  cod = cod %>%
-    select(runid, eq, cterm, identical, identical_coef, everything())
-
-  cod
+  }
+  if (opts$add_broom) {
+    code_df = add_reg_broom_code(code_df, use_summary=use_summary, use_conf_int=TRUE)
+  }
+  if (opts$add_function) {
+    code_df = add_reg_function_code(code_df)
+  }
+  code_df
 }
 ```
-!END_MODIFICATION coef_diff_table mrb_regcoef.R
+!END_MODIFICATION stata_to_r_code_fixest in /home/rstudio/repbox/regtranslate/R/to_r_fixest.R
+
+
+!MODIFICATION stata_to_r_code_lm in /home/rstudio/repbox/regtranslate/R/to_r_lm.R
+scope = "function"
+file = "/home/rstudio/repbox/regtranslate/R/to_r_lm.R"
+function_name = "stata_to_r_code_lm"
+description = "Add explicit listwise deletion to emulate Stata's e(sample) matching."
+---
+```R
+stata_to_r_code_lm = function(reg, regvar, regxvar, cmdpart, opts=code_options(), parts = list()) {
+  restore.point("stata_to_r_code_lm")
+
+  org_depvars = regvar$cterm[regvar$role=="dep"]
+  mod_depvars = replace_cterm_special_symbols(org_depvars)
+
+  formula = regvar_to_formula_fixest(regvar, regxvar, cmdpart, reg = reg)
+
+  command = "lm"
+  arg_str = c(
+    paste0("formula = formula"),
+    paste0('data = dat')
+  )
+
+  rcmd_code = paste0('rcmd = "',command,'"')
+  # We use the default ssc arguments since they are closest to the
+  # Stata defaults
+  if (all(org_depvars==mod_depvars)) {
+    data_code = ""
+  } else {
+    data_code = paste0(
+      'dat[["', mod_depvars,'"]] = dat[["', org_depvars,'"]]',
+      collapse="\n"
+    )
+  }
+  
+  # Apply explicit listwise deletion to emulate Stata's e(sample)
+  lw_code = r_listwise_deletion_code(regvar)
+  if (nzchar(lw_code)) {
+    data_code = if (nzchar(data_code)) paste0(data_code, "\n", lw_code) else lw_code
+  }
+
+  # Apply dynamic weights via centralized helper
+  wt = r_weight_code(reg, template = "dat[['%s']]")
+  if (nzchar(wt$data_code)) {
+    data_code = if (nzchar(data_code)) paste0(data_code, "\n", wt$data_code) else wt$data_code
+  }
+  if (nzchar(wt$weight_arg)) {
+    arg_str = c(arg_str, wt$weight_arg)
+  }
+
+  formula_code = paste0('formula = ', formula)
+  reg_code = paste0('reg = ', command, "(", paste0(arg_str, collapse=","),")")
+
+  code_df = tibble(part = c("rcmd","data","formula", "reg"), code = c(rcmd_code,data_code, formula_code, reg_code))
+
+
+  use_summary=FALSE
+  if (opts$add_broom) {
+    code_df = add_reg_broom_code(code_df, use_summary=use_summary, use_conf_int=TRUE)
+  }
+  if (opts$add_function) {
+    code_df = add_reg_function_code(code_df)
+  }
+  code_df
+}
+```
+!END_MODIFICATION stata_to_r_code_lm in /home/rstudio/repbox/regtranslate/R/to_r_lm.R
+
+
+!MODIFICATION stata_to_r_code_mfx in /home/rstudio/repbox/regtranslate/R/to_r_mfx.R
+scope = "function"
+file = "/home/rstudio/repbox/regtranslate/R/to_r_mfx.R"
+function_name = "stata_to_r_code_mfx"
+description = "Add explicit listwise deletion to emulate Stata's e(sample) matching."
+---
+```R
+stata_to_r_code_mfx = function(reg, regvar, regxvar, cmdpart, opts=code_options(), parts = list()) {
+  restore.point("stata_to_r_code_mfx")
+
+  # Ignore dropped regvars (if they are nor part of an interaction)
+  #regvar = filter(regvar, !is_dropped | ia_cterm != cterm)
+
+  # Currently we just use the fixest formula
+  formula = regvar_to_formula_fixest(regvar,regxvar, cmdpart, reg = reg)
+
+  cmd = reg$cmd
+  if (cmd=="dprobit") {
+    rcmd = "probitmfx"
+  } else {
+    stop("Cannot yet translate Stata command ", cmd)
+  }
+
+  # The exclude='select' arguments avoids overwriting
+  # of dplyr's select function
+  library_code = "library(MASS, exclude='select')\nlibrary(mfx)\n  "
+  rcmd_code = paste0('rcmd = "',rcmd,'"')
+  # We use the default ssc arguments since they are closest to the
+  # Stata defaults
+  formula_code = paste0('formula = ', formula)
+  
+  data_code = r_listwise_deletion_code(regvar)
+
+  # mfx
+  arg_str = NULL
+  if (reg$se_category == "robust") {
+    arg_str = "robust = true"
+  } else if (reg$se_category == "cluster") {
+    clustervar = extract_clustervar_from_se_args(reg$se_args)
+    arg_str = paste0('clustervar1 = "', clustervar[1],'"')
+    if (reg$se_type == "twoway") {
+      arg_str = c(arg_str, paste0('clustervar2 = "', clustervar[2],'"'))
+    }
+  }
+  arg_str = c(
+    paste0("formula = formula"),
+    paste0('data = dat'),
+    arg_str
+  )
+
+  reg_code = paste0('reg = ', rcmd,'(', paste0(arg_str, collapse=","),")")
+  code_df = tibble(part = c("library", "rcmd","data","formula","reg"), code = c(library_code, rcmd_code,data_code,formula_code,reg_code))
+  code_df = code_df[code_df$code != "", ]
+
+  if (opts$add_broom) {
+    code_df = add_reg_broom_code(code_df, use_summary=FALSE, use_conf_int=TRUE)
+  }
+  if (opts$add_function) {
+    code_df = add_reg_function_code(code_df)
+  }
+  code_df
+}
+```
+!END_MODIFICATION stata_to_r_code_mfx in /home/rstudio/repbox/regtranslate/R/to_r_mfx.R
+
+
+!MODIFICATION stata_to_r_code_quantreg in /home/rstudio/repbox/regtranslate/R/to_r_quantreg.R
+scope = "function"
+file = "/home/rstudio/repbox/regtranslate/R/to_r_quantreg.R"
+function_name = "stata_to_r_code_quantreg"
+description = "Add explicit listwise deletion to emulate Stata's e(sample) matching."
+---
+```R
+stata_to_r_code_quantreg = function(reg, regvar,regxvar, cmdpart, opts=code_options(), parts = list()) {
+  restore.point("stata_to_r_code_quantreg")
+
+  # Ignore dropped regvars (if they are nor part of an interaction)
+  #regvar = filter(regvar, !is_dropped | ia_cterm != cterm)
+
+
+  # Currently we just use the fixest formula
+  formula = regvar_to_formula_fixest(regvar, regxvar, cmdpart, reg = reg)
+
+  rcmd = "rq"
+
+  library_code = paste0("library(quantreg)")
+  rcmd_code = paste0('rcmd = "',rcmd,'"')
+  # We use the default ssc arguments since they are closest to the
+  # Stata defaults
+  formula_code = paste0('formula = ', formula)
+
+  arg_str = NULL
+  if (reg$se_category != "iid") {
+    stop("Currently stata_to_r_code_quantreg is only implemented for iid standard errors. ")
+  }
+  arg_str = c(
+    paste0("formula = formula"),
+    paste0('data = dat'),
+    arg_str
+  )
+
+  data_code = r_listwise_deletion_code(regvar)
+
+  # Apply dynamic weights via centralized helper
+  wt = r_weight_code(reg, template = "dat[['%s']]")
+  if (nzchar(wt$data_code)) {
+    data_code = if (nzchar(data_code)) paste0(data_code, "\n", wt$data_code) else wt$data_code
+  }
+  if (nzchar(wt$weight_arg)) {
+    arg_str = c(arg_str, wt$weight_arg)
+  }
+
+  opts_df = cmdpart_to_opts_df(cmdpart)
+  opt_row = which(opts_df$opt=="quantile")
+  if (length(opt_row)>0) {
+    arg_str = c(arg_str, paste0("tau = ", opts_df$opt_arg[opt_row]))
+  }
+
+
+  reg_code = paste0('reg = suppressWarnings(', rcmd,'(', paste0(arg_str, collapse=","),"))")
+
+  code_df = tibble(part = c("library", "rcmd","data","formula","reg"), code = c(library_code, rcmd_code,data_code,formula_code,reg_code))
+  code_df = code_df[code_df$code != "", ]
+
+  if (opts$add_broom) {
+    code_df = add_reg_broom_code(code_df, use_summary=FALSE, use_conf_int=TRUE)
+    code_df = bind_rows(code_df, tibble(part="ct_mod",code='
+ct = mutate(ct, std.error=NA_real_, statistic= NA_real_,  p.value = NA_real_)
+if ("logLik" %in% names(glance)) {
+  glance$logLik = as.numeric(glance$logLik)
+}
+'))
+  }
+  if (opts$add_function) {
+    code_df = add_reg_function_code(code_df)
+  }
+  code_df
+}
+```
+!END_MODIFICATION stata_to_r_code_quantreg in /home/rstudio/repbox/regtranslate/R/to_r_quantreg.R
+
+
+!MODIFICATION stata_to_r_code_tobit in /home/rstudio/repbox/regtranslate/R/to_r_tobit.R
+scope = "function"
+file = "/home/rstudio/repbox/regtranslate/R/to_r_tobit.R"
+function_name = "stata_to_r_code_tobit"
+description = "Add explicit listwise deletion to emulate Stata's e(sample) matching."
+---
+```R
+stata_to_r_code_tobit = function(reg, regvar, regxvar, cmdpart, opts=code_options(), parts = list()) {
+  restore.point("stata_to_r_code_mfx")
+
+  # Ignore dropped regvars (if they are nor part of an interaction)
+  #regvar = filter(regvar, !is_dropped | ia_cterm != cterm)
+
+  # Currently we just use the fixest formula
+  formula = regvar_to_formula_fixest(regvar, regxvar, cmdpart, reg = reg)
+
+  rcmd = "tobit"
+
+  library_code = paste0("library(AER)")
+  rcmd_code = paste0('rcmd = "',rcmd,'"')
+  # We use the default ssc arguments since they are closest to the
+  # Stata defaults
+  formula_code = paste0('formula = ', formula)
+
+  arg_str = NULL
+  if (reg$se_category == "robust") {
+    arg_str = "robust = true"
+  } else if (reg$se_category == "cluster") {
+    clustervar = extract_clustervar_from_se_args(reg$se_args)
+    arg_str = paste0('cluster = "', clustervar[1],'"')
+    if (reg$se_type == "twoway") {
+      stop("Two way clusters not yet implemented for tobit in R")
+    }
+  }
+  arg_str = c(
+    paste0("formula = formula"),
+    paste0('data = dat'),
+    arg_str
+  )
+
+  data_code = r_listwise_deletion_code(regvar)
+
+  # Apply dynamic weights via centralized helper
+  wt = r_weight_code(reg, template = "dat[['%s']]")
+  if (nzchar(wt$data_code)) {
+    data_code = if (nzchar(data_code)) paste0(data_code, "\n", wt$data_code) else wt$data_code
+  }
+  if (nzchar(wt$weight_arg)) {
+    arg_str = c(arg_str, wt$weight_arg)
+  }
+
+  reg_code = paste0('reg = ', rcmd,'(', paste0(arg_str, collapse=","),")\nclass(reg) = 'survreg'")
+
+  code_df = tibble(part = c("library", "rcmd","data","formula","reg"), code = c(library_code, rcmd_code,data_code,formula_code,reg_code))
+  code_df = code_df[code_df$code != "", ]
+
+  if (opts$add_broom) {
+    code_df = add_reg_broom_code(code_df, use_summary=FALSE, use_conf_int=TRUE)
+  }
+  if (opts$add_function) {
+    code_df = add_reg_function_code(code_df)
+  }
+  code_df
+}
+```
+!END_MODIFICATION stata_to_r_code_tobit in /home/rstudio/repbox/regtranslate/R/to_r_tobit.R

@@ -292,7 +292,6 @@ coef_diff_summary = function(diff_tab, compare_what=c("all","coef"), problem="")
 
   sum
 }
-
 coef_diff_table = function(
   co1,
   co2,
@@ -316,8 +315,6 @@ coef_diff_table = function(
   cod = full_join(co1, co2, by = c("eq", "cterm", "runid"), suffix = c("_1", "_2"))
 
   # Ignore (Intercept) if translating to R natively absorbs it for these commands.
-  # In saved regcoef parcels the cmd column is usually not present, so callers can
-  # pass cmd explicitly. This is needed for reghdfe, areg, xtreg, etc.
   if (!is.null(ignore_intercept_cmds) && NROW(cod) > 0) {
     cmd_for_ignore = rep(NA_character_, NROW(cod))
 
@@ -366,20 +363,19 @@ coef_diff_table = function(
   cod = cod %>%
     filter(!(is.na(coef_1) & is.na(coef_2)))
 
-  # Should be TRUE whenever co1 and co2 come from different regression commands
-  # We try to correct for the fact that they may pick different reference levels
-  # when creating the dummy variables
   if (check.ref.levels) {
     cod = cod %>%
       mutate(
         is_ia = has.substr(cterm, "#"),
         is_factor = has.substr(cterm, "="),
-        factor_group = stringi::stri_replace_all_regex(paste0(cterm, ":"), "=([^\\:]*):", ":") %>% str.remove.ends(right = 1)
+        # Fixed: accurately strip the =LEVEL suffix even for interactions (X=A#Y=B becomes X#Y)
+        factor_group = stringi::stri_replace_all_regex(cterm, "=[^#]+", "")
       ) %>%
       group_by(runid, eq, factor_group) %>%
       mutate(
         ref_level_differs = is_factor & any(is.na(coef_2)),
-        offset.2 = ifelse(ref_level_differs, -coef_1[first(which(is.na(coef_2)))], 0),
+        # Fixed: offset.2 should ADD coef_1[ref] to shift the coef_2 reference level
+        offset.2 = ifelse(ref_level_differs, coef_1[first(which(is.na(coef_2)))], 0),
         num_diff_ref_coef_2 = sum(is.na(coef_2))
       ) %>%
       ungroup() %>%
@@ -392,10 +388,14 @@ coef_diff_table = function(
     cod = cod %>%
       group_by(runid, eq) %>%
       mutate(
+        # Fixed: accurately sum exactly one offset.2 per factor_group safely
+        offset.2.intercept = ifelse(cterm == "(Intercept)" & any(ref_level_differs),
+                                    -sum(offset.2[!duplicated(factor_group)], na.rm = TRUE),
+                                    offset.2),
         ref_level_differs = ifelse(cterm == "(Intercept)" & any(ref_level_differs), any(ref_level_differs, na.rm = TRUE), ref_level_differs),
-        offset.2.intercept = ifelse(cterm == "(Intercept)" & any(ref_level_differs), -sum(unique(offset.2), na.rm = TRUE), offset.2),
-        coef_2 = ifelse(cterm == "(Intercept)" & any(ref_level_differs), coef_2 + offset.2.intercept, coef_2)
-      )
+        coef_2 = ifelse(cterm == "(Intercept)" & ref_level_differs, coef_2 + offset.2.intercept, coef_2)
+      ) %>%
+      ungroup()
   } else {
     cod$ref_level_differs = rep(FALSE, NROW(cod))
   }

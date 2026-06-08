@@ -59,7 +59,7 @@ mrb_test_reg_data_prep_code = function(project_dir, pid, parcels = list()) {
 }
 
 
-mrb_test_code_path = function(project_dir, pid, parcels, drf, opts = mrb_test_opts()) {
+mrb_test_code_path = function(project_dir, pid, parcels, drf=drf_load(project_dir), opts = mrb_test_opts()) {
   restore.point("mrb_test_code_path")
 
   path_df = drf$path_df %>% filter(pid == !!pid, runid <= !!pid) %>% arrange(runid)

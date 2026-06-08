@@ -508,3 +508,35 @@ mrb_print_test_parcels = function(project_dir, pid) {
   mrb_print_parcels(project_dir,runid = pid,outfile = file.path(outdir, paste0("parcels_", pid,".txt")))
 }
 
+mrb_copy_cached_runid_to_test_project = function(project_dir, runid) {
+
+  project_dir = "~/repbox/projects/ms_67_4_18"
+  runid = 128
+
+
+  cache_file = paste0(project_dir, "/drf/cached_dta/",runid, "_cache.dta")
+
+  if (!file.exists(cache_file)) {
+    stop("No cache file exists")
+  }
+
+
+  artid = basename(project_dir)
+
+  dest_dir = "~/repbox/projects_test/test/org/code"
+  dest_data_file = file.path(dest_dir, paste0(artid, "_", runid, ".dta"))
+  file.copy(cache_file, dest_data_file)
+
+
+  dest_do_file = file.path(dest_dir, paste0(artid, "_", runid, ".do"))
+  parcels = repdb_load_parcels(project_dir, "stata_run_cmd")
+  run_df = parcels$stata_run_cmd
+
+  code = c(
+    paste0('use "', basename(dest_data_file),'", clear'),
+    run_df$cmdline[run_df$runid==runid]
+  )
+  writeLines(code, dest_do_file)
+
+}
+
