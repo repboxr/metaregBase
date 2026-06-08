@@ -1,459 +1,935 @@
-### Diagnosis of the Discrepancy
+I have added support for the `carryforward` package to both `repboxDRF` and `stata2r`.
 
-Your suspicion is completely correct! The discrepancy arises from a fundamental difference in how Stata constructs the estimation sample (`e(sample)`) compared to how `feols` (or `lm`) drops missing values via formulas.
+Since `carryforward` is not a standard data manipulation command natively known by `stata2r`, it was indeed completely ignored. Here is how I fixed it:
 
-**What happens in Stata:**
-1. Stata identifies *all* variables requested in the original model (`logdiff`, `myavailratio`, and `older15`).
-2. It performs **listwise deletion** on the data, dropping any row that contains an `NA` (missing) for *any* of those variables.
-3. *After* the estimation sample is locked in, Stata evaluates the variables for collinearity and variance. If `year == 2012` restricted the data such that the remaining non-missing `older15` values are all `0`, Stata quietly omits `1.older15` from the estimation output. However, the rows where `older15` was `NA` remain dropped.
+1.  **Added `carryforward` to `repboxDRF`'s internal tracking:** This will make `repboxDRF` include the command in the code path (it will be considered a `mod` command).
+2.  **Added `carryforward` to `stata2r`'s data manipulation list:** This ensures `stata2r` translates it when generating the R code.
+3.  **Wrote a full `carryforward` translation for R:** Created `t_carryforward.R` which parses options (`replace`, `gen()`, `backwards`, `if`, `in`) and executes a robust, grouped, direction-aware `tidyr::fill` operation via a new runtime helper `scmd_carryforward`.
+4.  **Registered the new translation:** Linked `t_carryforward` correctly into `do_cmd_to_r.R`.
 
-**What happens in our R Translation Pipeline:**
-1. During `mrb_run_r_base`, we peek at Stata's results to see exactly which factor dummies were kept (to ensure reference groups match perfectly). 
-2. We see that `1.older15` was omitted by Stata, so we set `in_regcoef = FALSE` for it in `regxvar`.
-3. Our `regvar_to_formula_fixest()` function constructs the `feols` formula and deliberately leaves out `1.older15` because it was flagged as omitted. The R formula becomes simply `logdiff ~ myavailratio`.
-4. R's `feols` evaluates `logdiff ~ myavailratio`. Because `older15` is nowhere to be found in the formula, `feols` has absolutely no reason to drop rows where `older15` is `NA`. Thus, R runs the regression on more observations than Stata did, leading to mismatched coefficients and standard errors.
+Here are the necessary modifications:
 
----
-
-### Can this behavior be replicated?
-
-**Yes, very easily.** The pipeline already possesses all the necessary metadata to resolve this. 
-
-The `regvar` parcel contains the canonical representation of all the original variables called in the command (the *base* terms), regardless of whether they were expanded into dummies or later dropped. 
-
-We can replicate Stata's behavior precisely by generating a snippet of R code that explicitly performs listwise deletion (e.g., via `complete.cases()`) on all original `cterm`s found in `regvar` *before* the regression is executed.
-
-### Pros and Cons of doing it
-
-**Pros:**
-* **Exact Replication:** By exactly mirroring Stata's `e(sample)`, we guarantee that $N$, coefficients, and standard errors align perfectly.
-* **Pipeline Robustness:** It eliminates a major class of silent sample mismatches that cause downstream failures in `regcheck`.
-* **Zero Configuration:** We don't need to guess missingness logic; we just use the original base variables from the parsed Stata command.
-
-**Cons:**
-* **Slight code bloat:** The translated R scripts will contain an extra step to explicitly filter `NAs` (e.g., `dat = dat[complete.cases(...) , ]`). 
-* **Less "idiomatic" R:** A standard R user relies on the formula to automatically handle `na.action`. Explicitly filtering the data before regression feels slightly unnatural for human-written R code, but for a high-fidelity translation pipeline, this exactness is a necessary trade-off.
-
----
-
-### Implementation
-
-I have provided modifications to `regtranslate` below. We add a small helper `r_listwise_deletion_code()` to `to_r.R`, and then we inject its output into the `data_code` section of every translator (`to_r_fixest.R`, `to_r_lm.R`, etc.).
-
-!MODIFICATION r_listwise_deletion_code in /home/rstudio/repbox/regtranslate/R/to_r.R
+!MODIFICATION cmd_types.R
 scope = "function"
-file = "/home/rstudio/repbox/regtranslate/R/to_r.R"
-insert_bottom = true
-description = "Helper function to generate R code for Stata-like listwise deletion based on all original regression variables."
+file = "/home/rstudio/repbox/repboxDRF/R/cmd_types.R"
+function_name = "drf_stata_cmd_types"
+description = "Add carryforward to mod commands"
 ---
-```R
+```r
+drf_stata_cmd_types = function() {
+  #
+  # IMPORTANT: IF YOU ADD A COMMAND HERE
+  # ALSO ADD IT IN stata.data.cmd.types.vec
+  # Otherwise strange errors occur
+  #
+  list(
+    load = c("u","us", "use","insheet","infix","import","sysuse","guse","gzuse"),
+    preserve = c("preserve"),
+    restore = c("restore"),
+    # Commands that modify data and can be translated to R
+    mod = c("g","ge","gen","generate","replace","drop","keep","rename","ren","rena","renam","merge","egen","xtset","tsset","iis", "xtile","pctile","append","tabulate","tabul","tabu", "tab","ta","encode","predict","xi", "collapse", "sort","so","tab1", "winsor", "tostring", "destring", "recode", "expand", "reshape", "contract", "carryforward"),
+    #scalar = c("scalar"),
 
-#' Generate R code to emulate Stata's listwise deletion (e(sample))
-#' 
-#' Stata drops missing values for all variables in the original varlist 
-#' *before* omitting collinear terms. Since our R translation explicitly 
-#' drops collinear terms from the formula, we need to manually drop NAs 
-#' across all original variables to match Stata's e(sample).
-r_listwise_deletion_code = function(regvar) {
-  all_base_cterms = unique(regvar$cterm)
-  all_base_cterms = setdiff(all_base_cterms, c("(Intercept)", ""))
-  
-  if (length(all_base_cterms) == 0) return("")
-  
-  paste0(
-    "cc_cols = c(", paste0('"', all_base_cterms, '"', collapse=", "), ")\n",
-    "cc_cols = intersect(cc_cols, colnames(dat))\n",
-    "dat = dat[complete.cases(dat[, cc_cols, drop=FALSE]), ]"
+    # Commands that modify data but cannot be translated to R
+    # predict also needs cache because it may use
+    # results from previous regression
+    #need_cache = c("merge","xtile","pctile","append","tabulate","tabul","tabu", "tab","ta","encode","predict","xi","collapse","sort","so","tab1", "winsor"),
+
+    # Commands that under certain conditions modify the data
+    # tabulate creates vpidiables if called with the gen option
+    possible_mod = c("tabulate","tabul","tabu", "tab","ta","tab1"),
+    xtset = c("xtset","tsset","iis"),
+    reg = repboxStata::stata_cmds_reg(),
+    quasi_reg = repboxStata::stata_cmds_quasireg(),
+    post_reg = repboxStata::stata_cmds_postreg()
+
   )
 }
 ```
-!END_MODIFICATION r_listwise_deletion_code in /home/rstudio/repbox/regtranslate/R/to_r.R
+!END_MODIFICATION cmd_types.R
 
-
-!MODIFICATION stata_to_r_code_fixest in /home/rstudio/repbox/regtranslate/R/to_r_fixest.R
+!MODIFICATION drf_stata_cmd_types_vec cmd_types.R
 scope = "function"
-file = "/home/rstudio/repbox/regtranslate/R/to_r_fixest.R"
-function_name = "stata_to_r_code_fixest"
-description = "Add explicit listwise deletion to emulate Stata's e(sample) matching."
+file = "/home/rstudio/repbox/repboxDRF/R/cmd_types.R"
+function_name = "drf_stata_cmd_types_vec"
+description = "Add carryforward to vec"
 ---
-```R
-stata_to_r_code_fixest = function(reg, regvar, regxvar, cmdpart, opts=code_options(), parts = list()) {
-  restore.point("stata_to_r_code_fixest")
+```r
+drf_stata_cmd_types_vec = function() {
+  return(c(
+u="load", us="load", use="load", insheet="load", infix="load", import="load", sysuse="load", guse="load", gzuse="load", preserve="preserve", restore="restore", g="mod", ge="mod", gen="mod", generate="mod", replace="mod", drop="mod", keep="mod", rename="mod",ren="mod", rena="mod",renam="mod", merge="mod", egen="mod", xtset="mod", tsset="mod", xtile="mod", pctile="mod", append="mod", tabulate="mod", tabul="mod", tabu="mod", tab="mod", ta="mod", encode="mod", predict="mod", xi="mod", collapse="mod", sort="mod", so="mod", tab1="mod", winsor="mod", tostring="mod", destring="mod", recode="mod", expand="mod", reshape="mod", contract="mod", carryforward="mod", tabulate="mod", tabul="mod", tabu="mod", tab="mod", ta="mod", tab1="mod", reg="reg", areg="reg", ivregress="reg", ivreg="reg", ivreg2="reg", sureg="reg", reghdfe="reg", reg2hdfe="reg", xtreg="reg", xtivreg2="reg", xtlogit="reg", xtprobit="reg", xttobit="reg", regress="reg", cgmreg="reg", intreg="reg", boxcox="reg", qreg="reg", truncreg="reg", cnsreg="reg", eivreg="reg", nl="reg", rreg="reg", bsqreg="reg", sqreg="reg", iqreg="reg", vwls="reg", sem="reg", gsem="reg", glm="reg", cloglog="reg", logit="reg", logistic="reg", blogit="reg", glogit="reg", binreg="reg", scobit="reg", probit="reg", dprobit="reg", ivprobit="reg", bprobit="reg", gprobit="reg", hetprobit="reg", heckprobit="reg", biprobit="reg", tobit="reg", ivtobit="reg", clogit="reg", oprobit="reg", ologit="reg", heckoprobit="reg", rologit="reg", asroprobit="reg", slogit="reg", mlogit="reg", asclogit="reg", nlogit="reg", asmprobit="reg", mprobit="reg", poisson="reg", ivpoisson="reg", nbreg="reg", gnbreg="reg", tpoisson="reg", tnbreg="reg", zip="reg", zinb="reg", exlogistic="reg", expoisson="reg", arch="reg", frontier="reg", reg3="reg", heckman="reg", etregress="reg", etpoisson="reg", arima="reg", arfima="reg", newey="reg", var="reg", svar="reg", vec="reg", dfactor="reg", ppmlhdfe="reg", svyreg="reg", ppml="reg", rd="quasi_reg", rdrobust="quasi_reg", psmatch2="quasi_reg", leebounds="quasi_reg", a2reg="quasi_reg", xtabond2="quasi_reg", altrdrobust="quasi_reg", hausman="quasi_reg", stcox="quasi_reg", xtivreg="quasi_reg", ivreghdfe="quasi_reg", condivreg="quasi_reg", xtpoisson="quasi_reg", newey2="quasi_reg", hetprob="quasi_reg", reg2hdfespatial="quasi_reg", outreg2="post_reg", estadd="post_reg", estimates="post_reg", predict="post_reg", test="post_reg", matrix="post_reg", est="post_reg", outreg="post_reg", eststo="post_reg", testparm="post_reg", lincom="post_reg", esttab="post_reg", margins="post_reg", estout="post_reg", estat="post_reg", nlcom="post_reg", plotcoeffs="post_reg", mfx="post_reg", boottest="post_reg", regsave="post_reg", center_estimates="post_reg", estimate="post_reg", est2vec="post_reg", suest="post_reg", fitstat="post_reg", parmest="post_reg", post="post_reg", estpost="post_reg", savereg="post_reg", wild="post_reg", rivtest="post_reg", sigstar2="post_reg", modl="post_reg", svmat="post_reg", sig_p="post_reg", ttest="post_reg", lincomestadd="post_reg", coefplot="post_reg", eret2="post_reg", get_coef="post_reg", cgmwildboot="post_reg", vareffects="post_reg", bootwildct="post_reg", post_param="post_reg", avplot="post_reg", addtotable="post_reg", margin="post_reg", vce2way="post_reg", save_results="post_reg", ivstack="post_reg", predictnl="post_reg", spatdiag="post_reg", parmby="post_reg", testnl="post_reg", b_xt="post_reg", V_xt="post_reg", p_vals="post_reg", inteff="post_reg", est2tex="post_reg", meff="post_reg", marginsplot="post_reg", iv_stack="post_reg", dfuller="post_reg", ivhettest="post_reg", pValueFormatting="post_reg", estwrite="post_reg", dfbeta="post_reg", margeff="post_reg", modltbl="post_reg", outsheet="post_reg", outtex="post_reg", lincomest="post_reg", mfx2="post_reg", addstars="post_reg",
+    xtset="xtset",tsset="xtset",iis="xtset"
+    ))
+}
+```
+!END_MODIFICATION drf_stata_cmd_types_vec cmd_types.R
 
-  org_depvars = regvar$cterm[regvar$role=="dep"]
-  mod_depvars = replace_cterm_special_symbols(org_depvars)
+!MODIFICATION t_carryforward.R
+scope = "file"
+file = "/home/rstudio/aicoder/stata2r/R/t_carryforward.R"
+description = "Create t_carryforward.R to translate Stata carryforward command."
+---
+```r
+# FILE: R/t_carryforward.R
 
-  formula = regvar_to_formula_fixest(regvar, regxvar, cmdpart, reg = reg)
+# 1. Parsing Phase: Extract Stata syntax components
+s2r_p_carryforward = function(rest_of_cmd) {
+  restore.point("s2r_p_carryforward")
+  parsed = s2r_parse_if_in(rest_of_cmd)
+  
+  options_match = stringi::stri_match_first_regex(parsed$base_str, ",\\s*(.*)$")
+  options_str = NA_character_
+  varlist = parsed$base_str
+  
+  if (!is.na(options_match[1,1])) {
+    options_str = stringi::stri_trim_both(options_match[1,2])
+    varlist = stringi::stri_trim_both(stringi::stri_replace_last_regex(parsed$base_str, ",\\s*(.*)$", ""))
+  }
+  
+  gen_vars = NA_character_
+  is_replace = FALSE
+  backwards = FALSE
+  
+  if (!is.na(options_str)) {
+    gen_opt = stringi::stri_match_first_regex(options_str, "\\b(?:gen|generate)\\s*\\(([^)]+)\\)")
+    if (!is.na(gen_opt[1,1])) gen_vars = stringi::stri_trim_both(gen_opt[1,2])
+    
+    if (fast_coalesce(stringi::stri_detect_regex(options_str, "\\breplace\\b"), FALSE)) {
+      is_replace = TRUE
+    }
+    if (fast_coalesce(stringi::stri_detect_regex(options_str, "\\bbackwards\\b"), FALSE)) {
+      backwards = TRUE
+    }
+  }
+  
+  list(varlist = varlist, if_str = parsed$if_str, in_str = parsed$in_str, 
+       gen_vars = gen_vars, is_replace = is_replace, backwards = backwards)
+}
 
-  vcov_type = fixest_vcov_type_from_regdb(reg$se_type, reg$se_args)
-  ssc_expr = fixest_ssc_code_from_reg(reg, vcov_type = vcov_type)
-  use_ssc = !is.null(ssc_expr)
+# 2. Code Generation Phase: Emit R code
+t_carryforward = function(rest_of_cmd, cmd_obj, cmd_df, line_num, context) {
+  restore.point("t_carryforward")
+  parsed = s2r_p_carryforward(rest_of_cmd)
+  
+  if (is.na(parsed$varlist) || parsed$varlist == "") return("# Failed to parse carryforward command")
+  
+  r_if_cond = NA_character_
+  if (!is.na(parsed$if_str)) r_if_cond = translate_stata_expression_with_r_values(parsed$if_str, line_num, cmd_df, list(is_by_group = FALSE))
+  r_in_range = s2r_in_str_to_r_range_str(parsed$in_str)
+  
+  group_vars_list_bare = character(0)
+  if (isTRUE(cmd_obj$is_by_prefix) && !is.na(cmd_obj$by_group_vars) && cmd_obj$by_group_vars != "") {
+    group_vars_list = stringi::stri_split_fixed(cmd_obj$by_group_vars, ",")[[1]]
+    group_vars_list_bare = group_vars_list[!is.na(group_vars_list) & group_vars_list != ""]
+  }
+  
+  args = c("data = data", paste0("varlist_str = ", quote_for_r_literal(parsed$varlist)), paste0("is_replace = ", parsed$is_replace))
+  if (!is.na(parsed$gen_vars)) args = c(args, paste0("gen_vars_str = ", quote_for_r_literal(parsed$gen_vars)))
+  args = c(args, paste0("backwards = ", parsed$backwards))
+  if (!is.na(r_if_cond)) args = c(args, paste0("r_if_cond = ", quote_for_r_literal(r_if_cond)))
+  if (!is.na(r_in_range)) args = c(args, paste0("r_in_range = ", quote_for_r_literal(r_in_range)))
+  if (length(group_vars_list_bare) > 0) args = c(args, paste0("group_vars = c('", paste(group_vars_list_bare, collapse = "','"), "')"))
+  
+  r_code = paste0("data = scmd_carryforward(", paste(args, collapse = ", "), ")")
+  return(r_code)
+}
 
-  use_sandwich = (vcov_type == "sandwich") | opts$prefer_sandwich
-  use_summary = use_sandwich | opts$prefer_summary
+# 3. Runtime Execution Phase: Evaluate against actual data
+scmd_carryforward = function(data, varlist_str, is_replace, gen_vars_str = NA_character_, backwards = FALSE, r_if_cond = NA_character_, r_in_range = NA_character_, group_vars = character(0)) {
+  restore.point("scmd_carryforward")
+  
+  vars_actual = expand_varlist(varlist_str, names(data))
+  if (length(vars_actual) == 0) stop("scmd_carryforward: no variables matched.")
+  
+  new_vars = vars_actual
+  if (!is_replace) {
+    if (is.na(gen_vars_str)) stop("scmd_carryforward: must specify gen() or replace.")
+    new_vars = stringi::stri_split_regex(gen_vars_str, "\\s+")[[1]]
+    new_vars = new_vars[new_vars != ""]
+    if (length(new_vars) != length(vars_actual)) {
+      stop("scmd_carryforward: generate() requires same number of new variables as old variables.")
+    }
+  }
+  
+  mask = rep(TRUE, nrow(data))
+  if (!is.na(r_if_cond) && r_if_cond != "") {
+    r_if_cond = resolve_abbrevs_in_expr(r_if_cond, names(data))
+    mask = mask & s2r_eval_cond(data, r_if_cond, envir = parent.frame())
+  }
+  if (!is.na(r_in_range) && r_in_range != "") {
+    idx = s2r_eval_range(data, r_in_range)
+    in_mask = rep(FALSE, nrow(data))
+    in_mask[idx] = TRUE
+    mask = mask & in_mask
+  }
+  data$.stata_temp_mask = mask
+  
+  direction = if (backwards) "up" else "down"
+  
+  group_vars_actual = expand_varlist(paste(group_vars, collapse=" "), names(data))
+  
+  pipe_el = c("data")
+  if (length(group_vars_actual) > 0) {
+    pipe_el = c(pipe_el, paste0("dplyr::group_by(!!!dplyr::syms(c('", paste(group_vars_actual, collapse="','"), "')))"))
+  }
+  
+  for (i in seq_along(vars_actual)) {
+    old_var = vars_actual[i]
+    new_var = new_vars[i]
+    
+    if (!is_replace) {
+      pipe_el = c(pipe_el, paste0("dplyr::mutate(`", new_var, "` = `", old_var, "`)"))
+    }
+    
+    pipe_el = c(pipe_el, paste0("dplyr::mutate(`", new_var, "` = if(is.character(`", new_var, "`)) dplyr::if_else(`", new_var, "` == '', NA_character_, `", new_var, "`) else `", new_var, "`)"))
+    
+    fill_cmd = paste0("tidyr::fill(`", new_var, "`, .direction = '", direction, "')")
+    pipe_el = c(pipe_el, fill_cmd)
+    
+    pipe_el = c(pipe_el, paste0("dplyr::mutate(`", new_var, "` = dplyr::if_else(.stata_temp_mask, `", new_var, "`, `", old_var, "`))"))
+    
+    pipe_el = c(pipe_el, paste0("dplyr::mutate(`", new_var, "` = if(is.character(`", new_var, "`)) dplyr::if_else(is.na(`", new_var, "`), '', `", new_var, "`) else `", new_var, "`)"))
+  }
+  
+  if (length(group_vars_actual) > 0) pipe_el = c(pipe_el, "dplyr::ungroup()")
+  
+  data = eval(parse(text = paste(pipe_el, collapse = " %>% ")), envir = list(data = data), enclos = parent.frame())
+  data$.stata_temp_mask = NULL
+  
+  return(data)
+}
+```
+!END_MODIFICATION t_carryforward.R
 
-  if (use_sandwich) {
-    reg_vcov = "iid"
-    vcov = regdb_se_to_sandwich(reg$se_category, reg$se_type, reg$se_args)
-  } else {
-    reg_vcov = fixest_vcov_code_from_regdb(reg$se_type, reg$se_args, vcov_type, quote=FALSE, reg=reg)
-    if (use_summary) {
-      vcov = reg_vcov
+!MODIFICATION do_cmd_to_r
+scope = "function"
+file = "/home/rstudio/aicoder/stata2r/R/do_cmd_to_r.R"
+function_name = "do_cmd_to_r"
+description = "Add carryforward to switch statement"
+---
+```r
+# r_obj will be a single row tibble
+# at least with the field r_code
+do_cmd_to_r = function(cmd_obj, line, cmd_df) {
+  restore.point("do_cmd_to_r")
+
+  if (!cmd_obj$do_translate || is.na(cmd_obj$stata_cmd)) {
+    return(data.frame(
+      line = line,
+      r_code = NA_character_,
+      do_code = cmd_obj$do_code,
+      stata_translation_error = NA_character_,
+      ignore_row_order_for_comparison = cmd_obj$will_ignore_row_order_for_comparison,
+      stringsAsFactors = FALSE
+    ))
+  }
+
+  r_code = NA_character_
+  stata_translation_error = NA_character_
+
+  translation_context = list(
+    is_by_group = cmd_obj$is_by_prefix,
+    is_quietly_prefix = cmd_obj$is_quietly_prefix,
+    is_capture_prefix = cmd_obj$is_capture_prefix,
+    is_xi_prefix = cmd_obj$is_xi_prefix,
+    is_bysort_prefix = if ("is_bysort_prefix" %in% names(cmd_obj)) cmd_obj$is_bysort_prefix else FALSE
+  )
+
+  rest_of_cmd_clean = ifelse(is.na(cmd_obj$rest_of_cmd), "", cmd_obj$rest_of_cmd)
+  stata_command = cmd_obj$stata_cmd
+
+  res = tryCatch({
+    r_code_translated = switch(stata_command,
+      "use" = t_use(rest_of_cmd_clean, cmd_obj, cmd_df, line),
+      "generate" = t_generate(rest_of_cmd_clean, cmd_obj, cmd_df, line, translation_context),
+      "gen" = t_generate(rest_of_cmd_clean, cmd_obj, cmd_df, line, translation_context),
+      "replace" = t_replace(rest_of_cmd_clean, cmd_obj, cmd_df, line, translation_context),
+      "summarize" = t_summarize(rest_of_cmd_clean, cmd_obj, cmd_df, line, translation_context),
+      "su" = t_summarize(rest_of_cmd_clean, cmd_obj, cmd_df, line, translation_context),
+      "tabulate" = t_tabulate(rest_of_cmd_clean, cmd_obj, cmd_df, line, translation_context),
+      "tab" = t_tabulate(rest_of_cmd_clean, cmd_obj, cmd_df, line, translation_context),
+      "egen" = t_egen(rest_of_cmd_clean, cmd_obj, cmd_df, line, translation_context),
+      "sort" = t_sort(rest_of_cmd_clean, cmd_obj, cmd_df, line, type = "sort"),
+      "gsort" = t_sort(rest_of_cmd_clean, cmd_obj, cmd_df, line, type = "gsort"),
+      "drop" = t_drop(rest_of_cmd_clean, cmd_obj, cmd_df, line, translation_context),
+      "keep" = t_keep(rest_of_cmd_clean, cmd_obj, cmd_df, line, translation_context),
+      "collapse" = t_collapse(rest_of_cmd_clean, cmd_obj, cmd_df, line, translation_context),
+      "rename" = t_rename(rest_of_cmd_clean, cmd_obj, cmd_df, line),
+      "save" = t_save(rest_of_cmd_clean, cmd_obj, cmd_df, line),
+      "tempfile" = t_tempfile(rest_of_cmd_clean, cmd_obj, cmd_df, line),
+      "merge" = t_merge(rest_of_cmd_clean, cmd_obj, cmd_df, line, translation_context),
+      "append" = t_append(rest_of_cmd_clean, cmd_obj, cmd_df, line),
+      "reshape" = t_reshape(rest_of_cmd_clean, cmd_obj, cmd_df, line),
+      "recode" = t_recode(rest_of_cmd_clean, cmd_obj, cmd_df, line, translation_context),
+      "order" = t_order(rest_of_cmd_clean, cmd_obj, cmd_df, line),
+      "expand" = t_expand(rest_of_cmd_clean, cmd_obj, cmd_df, line, translation_context),
+      "duplicates" = t_duplicates(rest_of_cmd_clean, cmd_obj, cmd_df, line),
+      "encode" = t_encode(rest_of_cmd_clean, cmd_obj, cmd_df, line, translation_context),
+      "decode" = t_decode(rest_of_cmd_clean, cmd_obj, cmd_df, line, translation_context),
+      "destring" = t_destring(rest_of_cmd_clean, cmd_obj, cmd_df, line, translation_context),
+      "preserve" = t_preserve_restore(cmd_obj, type = "preserve"),
+      "restore" = t_preserve_restore(cmd_obj, type = "restore"),
+      "format" = t_format(rest_of_cmd_clean, cmd_obj, cmd_df, line),
+      "label" = t_label(rest_of_cmd_clean, cmd_obj, cmd_df, line),
+      "compress" = t_compress(rest_of_cmd_clean, cmd_obj, cmd_df, line),
+      "regress" = t_regress(rest_of_cmd_clean, cmd_obj, cmd_df, line, translation_context),
+      "areg" = t_areg(rest_of_cmd_clean, cmd_obj, cmd_df, line, translation_context),
+      "xtreg" = t_xtreg(rest_of_cmd_clean, cmd_obj, cmd_df, line, translation_context),
+      "probit" = t_probit(rest_of_cmd_clean, cmd_obj, cmd_df, line, translation_context),
+      "reghdfe" = t_reghdfe(rest_of_cmd_clean, cmd_obj, cmd_df, line, translation_context),
+      "logit" = t_logit(rest_of_cmd_clean, cmd_obj, cmd_df, line, translation_context),
+      "ivregress" = t_ivregress(rest_of_cmd_clean, cmd_obj, cmd_df, line, translation_context),
+      "xi" = t_xi(rest_of_cmd_clean, cmd_obj, cmd_df, line, translation_context),
+      "scalar" = t_scalar(rest_of_cmd_clean, cmd_obj, cmd_df, line),
+      "sc" = t_scalar(rest_of_cmd_clean, cmd_obj, cmd_df, line),
+      "for" = t_for(rest_of_cmd_clean, cmd_obj, cmd_df, line),
+      "carryforward" = t_carryforward(rest_of_cmd_clean, cmd_obj, cmd_df, line, translation_context),
+      paste0("# Stata command '", cmd_obj$stata_cmd_original, " ", rest_of_cmd_clean, "' not yet fully translated.")
+    )
+
+    if (is.null(r_code_translated)) {
+      r_code_translated = paste0("# Stata command '", cmd_obj$stata_cmd_original, " ", rest_of_cmd_clean, "' (", stata_command, ") translation not implemented.")
+    }
+
+    if (isTRUE(translation_context$is_bysort_prefix)) {
+      sort_vars = character(0)
+
+      if (!is.na(cmd_obj$by_group_vars) && cmd_obj$by_group_vars != "") {
+        sort_vars = c(sort_vars, stringi::stri_split_fixed(cmd_obj$by_group_vars, ",")[[1]])
+      }
+      if (!is.na(cmd_obj$by_sort_vars) && cmd_obj$by_sort_vars != "") {
+        sort_vars = c(sort_vars, stringi::stri_split_fixed(cmd_obj$by_sort_vars, ",")[[1]])
+      }
+
+      sort_vars = stringi::stri_trim_both(sort_vars)
+      sort_vars = sort_vars[sort_vars != "" & !is.na(sort_vars)]
+
+      if (length(sort_vars) > 0) {
+        sort_code = paste0(
+          "data = scmd_sort(data = data, varlist_str = ",
+          quote_for_r_literal(paste(sort_vars, collapse = " ")),
+          ", type = \"sort\")\nif (isTRUE(stata2r_env$has_original_order_idx)) { data = dplyr::mutate(data, stata2r_original_order_idx = dplyr::row_number()) }"
+        )
+        r_code_translated = paste(sort_code, r_code_translated, sep = "\n")
+      }
+    }
+
+    list(r_code = r_code_translated, stata_translation_error = NA_character_)
+  }, error = function(e) {
+    list(
+      r_code = paste0("# Translation failed for: ", cmd_obj$do_code, "\n# Error: ", e$message),
+      stata_translation_error = e$message
+    )
+  })
+
+  r_obj = data.frame(
+    line = line,
+    r_code = res$r_code,
+    do_code = cmd_obj$do_code,
+    stata_translation_error = res$stata_translation_error,
+    ignore_row_order_for_comparison = cmd_obj$will_ignore_row_order_for_comparison,
+    stringsAsFactors = FALSE
+  )
+  return(r_obj)
+}
+```
+!END_MODIFICATION do_cmd_to_r
+
+!MODIFICATION stata_cmd_utils.R
+scope = "file"
+file = "/home/rstudio/aicoder/stata2r/R/stata_cmd_utils.R"
+description = "Update stata_data_manip_cmds to include carryforward"
+---
+```r
+# Stata command utilities
+
+# Main Stata commands and their abbreviations
+# This list is not exhaustive but covers many common commands.
+stata_cmd_abbreviations = list(
+  "a" = "append",
+  "br" = "browse",
+  "by" = "bysort",
+  "bys" = "bysort",
+  "cap" = "capture",
+  "cd" = "cd",
+  "cl" = "clear",
+  "co" = "collapse",
+  "comp" = "compress",
+  "conf" = "confirm",
+  "cons" = "constraint",
+  "contr" = "contrast",
+  "cop" = "copy",
+  "cor" = "correlate",
+  "cou" = "count",
+  "d" = "describe",
+  "de" = "decode",
+  "dest" = "destring",
+  "di" = "display",
+  "dir" = "dir",
+  "do" = "do",
+  "dr" = "drop",
+  "du" = "duplicates",
+  "e" = "edit",
+  "eg" = "egen",
+  "en" = "encode",
+  "er" = "erase",
+  "est" = "estimates",
+  "ex" = "expand",
+  "f" = "fillin",
+  "for" = "for",
+  "g" = "generate",
+  "gr" = "graph",
+  "gs" = "gsort",
+  "h" = "help",
+  "i" = "inspect",
+  "ins" = "insheet",
+  "k" = "keep",
+  "l" = "list",
+  "la" = "label",
+  "logi" = "logit",
+  "m" = "merge",
+  "mark" = "marksample",
+  "markout" = "markout",
+  "mat" = "matrix",
+  "mem" = "memory",
+  "mkdir" = "mkdir",
+  "mo" = "more",
+  "mov" = "move",
+  "mv" = "mvdecode",
+  "n" = "notes",
+  "o" = "order",
+  "ou" = "outsheet",
+  "p" = "predict",
+  "pres" = "preserve",
+  "q" = "quietly",
+  "r" = "recode",
+  "reg" = "regress",
+  "ren" = "rename",
+  "res" = "reshape",
+  "rest" = "restore",
+  "ret" = "return",
+  "rm" = "rmdir",
+  "ru" = "run",
+  "sa" = "save",
+  "sc" = "scalar",
+  "se" = "set",
+  "sh" = "shell",
+  "sig" = "signestim",
+  "so" = "sort",
+  "st" = "stata",
+  "su" = "summarize",
+  "sy" = "sysuse",
+  "t" = "tabulate",
+  "te" = "test",
+  "temp" = "tempfile",
+  "ty" = "type",
+  "u" = "use",
+  "v" = "version",
+  "w" = "which",
+  "xi" = "xi"
+)
+
+
+# Function to get the full Stata command name from a token (could be an abbreviation)
+get_stata_full_cmd_name = function(cmd_token) {
+  restore.point("get_stata_full_cmd_name")
+  if (is.na(cmd_token) || cmd_token == "") {
+    return(NA_character_)
+  }
+  cmd_token_lower = tolower(cmd_token)
+  if (isTRUE(cmd_token_lower %in% names(stata_cmd_abbreviations))) {
+    return(stata_cmd_abbreviations[[cmd_token_lower]])
+  }
+
+  # Check if it matches a prefix of a known full command,
+  # AND is longer than the minimum abbreviation
+  for (abbr in names(stata_cmd_abbreviations)) {
+    full_cmd = stata_cmd_abbreviations[[abbr]]
+    if (startsWith(full_cmd, cmd_token_lower) && startsWith(cmd_token_lower, abbr)) {
+      return(full_cmd)
     }
   }
 
-  command = "feols"
-  arg_str = NULL
-  if (reg$cmd == "ppmlhdfe") {
-    command = "fepos"
-  } else if (reg$cmd %in% c("logit","xtlogit")) {
-    command = "feglm"
-    arg_str = "family=binomial()"
-  } else if (reg$cmd %in% c("probit","xtprobit","dprobit")) {
-    command = "feglm"
-    arg_str = 'family=binomial(link = "probit")'
-  }
-
-  arg_str = c(
-    paste0("fml = formula"),
-    paste0("data = dat"),
-    paste0("vcov = reg_vcov"),
-    arg_str
-  )
-
-  # Pass ssc to fixest natively when relevant.
-  if (use_ssc) {
-    arg_str = c(arg_str, "ssc = ssc")
-  }
-
-  library_code = "library(fixest)"
-  rcmd_code = paste0('rcmd = "',command,'"')
-  if (all(org_depvars==mod_depvars)) {
-    data_code = ""
-  } else {
-    data_code = paste0(
-      'dat[["', mod_depvars,'"]] = dat[["', org_depvars,'"]]',
-      collapse="\n"
-    )
-  }
-  
-  # Apply explicit listwise deletion to emulate Stata's e(sample)
-  lw_code = r_listwise_deletion_code(regvar)
-  if (nzchar(lw_code)) {
-    data_code = if (nzchar(data_code)) paste0(data_code, "\n", lw_code) else lw_code
-  }
-
-  # Apply dynamic weights via centralized helper
-  wt = r_weight_code(reg, template = "~ `%s`")
-  if (nzchar(wt$data_code)) {
-    data_code = if (nzchar(data_code)) paste0(data_code, "\n", wt$data_code) else wt$data_code
-  }
-  if (nzchar(wt$weight_arg)) {
-    arg_str = c(arg_str, wt$weight_arg)
-  }
-
-  ssc_code = if (use_ssc) paste0("ssc = ", ssc_expr) else NULL
-  formula_code = paste0("formula = ", formula)
-  reg_vcov_code = paste0("reg_vcov = ", quote_arg(reg_vcov))
-  reg_code = paste0("reg = ", command, "(", paste0(arg_str, collapse=","), ")")
-
-  code_df = tibble(
-    part = c("library", "rcmd", "data", "formula", if (use_ssc) "ssc", "reg_vcov", "reg"),
-    code = c(library_code, rcmd_code, data_code, formula_code, if (use_ssc) ssc_code, reg_vcov_code, reg_code)
-  )
-
-  if (use_summary) {
-    sum_vcov_code = paste0("sum_vcov = ", quote_arg(vcov))
-    sum_code = "sum = summary(reg, vcov = sum_vcov)"
-    code_df = bind_rows(
-      code_df,
-      tibble(part = c("sum_vcov","sum"), code = c(sum_vcov_code, sum_code))
-    )
-  }
-  if (opts$add_broom) {
-    code_df = add_reg_broom_code(code_df, use_summary=use_summary, use_conf_int=TRUE)
-  }
-  if (opts$add_function) {
-    code_df = add_reg_function_code(code_df)
-  }
-  code_df
+  return(cmd_token_lower)
 }
-```
-!END_MODIFICATION stata_to_r_code_fixest in /home/rstudio/repbox/regtranslate/R/to_r_fixest.R
 
+# Vectorized version of get_stata_full_cmd_name
+get_stata_full_cmd_name_vec = function(cmd_tokens) {
+  restore.point("get_stata_full_cmd_name_vec")
 
-!MODIFICATION stata_to_r_code_lm in /home/rstudio/repbox/regtranslate/R/to_r_lm.R
-scope = "function"
-file = "/home/rstudio/repbox/regtranslate/R/to_r_lm.R"
-function_name = "stata_to_r_code_lm"
-description = "Add explicit listwise deletion to emulate Stata's e(sample) matching."
----
-```R
-stata_to_r_code_lm = function(reg, regvar, regxvar, cmdpart, opts=code_options(), parts = list()) {
-  restore.point("stata_to_r_code_lm")
+  res = rep(NA_character_, length(cmd_tokens))
+  valid_idx = !is.na(cmd_tokens) & cmd_tokens != ""
 
-  org_depvars = regvar$cterm[regvar$role=="dep"]
-  mod_depvars = replace_cterm_special_symbols(org_depvars)
+  if (any(valid_idx)) {
+    cmd_tokens_lower = tolower(cmd_tokens[valid_idx])
+    res_valid = cmd_tokens_lower
 
-  formula = regvar_to_formula_fixest(regvar, regxvar, cmdpart, reg = reg)
+    abbrs = names(stata_cmd_abbreviations)
+    full_cmds = unlist(stata_cmd_abbreviations, use.names = FALSE)
 
-  command = "lm"
-  arg_str = c(
-    paste0("formula = formula"),
-    paste0('data = dat')
-  )
+    # 1. Exact match in abbreviations
+    exact_match = match(cmd_tokens_lower, abbrs)
+    has_exact = !is.na(exact_match)
+    res_valid[has_exact] = full_cmds[exact_match[has_exact]]
 
-  rcmd_code = paste0('rcmd = "',command,'"')
-  # We use the default ssc arguments since they are closest to the
-  # Stata defaults
-  if (all(org_depvars==mod_depvars)) {
-    data_code = ""
-  } else {
-    data_code = paste0(
-      'dat[["', mod_depvars,'"]] = dat[["', org_depvars,'"]]',
-      collapse="\n"
-    )
+    # 2. Prefix matching for those without exact match
+    needs_prefix = !has_exact
+    if (any(needs_prefix)) {
+      tokens_to_check = cmd_tokens_lower[needs_prefix]
+      resolved = tokens_to_check
+
+      for (i in seq_along(tokens_to_check)) {
+        tok = tokens_to_check[i]
+        for (j in seq_along(abbrs)) {
+          abbr = abbrs[j]
+          full_cmd = full_cmds[j]
+          if (startsWith(full_cmd, tok) && startsWith(tok, abbr)) {
+            resolved[i] = full_cmd
+            break
+          }
+        }
+      }
+      res_valid[needs_prefix] = resolved
+    }
+    res[valid_idx] = res_valid
   }
-  
-  # Apply explicit listwise deletion to emulate Stata's e(sample)
-  lw_code = r_listwise_deletion_code(regvar)
-  if (nzchar(lw_code)) {
-    data_code = if (nzchar(data_code)) paste0(data_code, "\n", lw_code) else lw_code
-  }
-
-  # Apply dynamic weights via centralized helper
-  wt = r_weight_code(reg, template = "dat[['%s']]")
-  if (nzchar(wt$data_code)) {
-    data_code = if (nzchar(data_code)) paste0(data_code, "\n", wt$data_code) else wt$data_code
-  }
-  if (nzchar(wt$weight_arg)) {
-    arg_str = c(arg_str, wt$weight_arg)
-  }
-
-  formula_code = paste0('formula = ', formula)
-  reg_code = paste0('reg = ', command, "(", paste0(arg_str, collapse=","),")")
-
-  code_df = tibble(part = c("rcmd","data","formula", "reg"), code = c(rcmd_code,data_code, formula_code, reg_code))
-
-
-  use_summary=FALSE
-  if (opts$add_broom) {
-    code_df = add_reg_broom_code(code_df, use_summary=use_summary, use_conf_int=TRUE)
-  }
-  if (opts$add_function) {
-    code_df = add_reg_function_code(code_df)
-  }
-  code_df
+  return(res)
 }
-```
-!END_MODIFICATION stata_to_r_code_lm in /home/rstudio/repbox/regtranslate/R/to_r_lm.R
 
 
-!MODIFICATION stata_to_r_code_mfx in /home/rstudio/repbox/regtranslate/R/to_r_mfx.R
-scope = "function"
-file = "/home/rstudio/repbox/regtranslate/R/to_r_mfx.R"
-function_name = "stata_to_r_code_mfx"
-description = "Add explicit listwise deletion to emulate Stata's e(sample) matching."
----
-```R
-stata_to_r_code_mfx = function(reg, regvar, regxvar, cmdpart, opts=code_options(), parts = list()) {
-  restore.point("stata_to_r_code_mfx")
+# List of Stata commands considered to modify the dataset
+stata_data_manip_cmds = c(
+  "append", "collapse", "compress", "contract", "decode", "destring", "drop",
+  "duplicates", "egen", "encode", "expand", "fillin", "for",
+  "generate", "gen", "gsort", "input", "insheet", "keep", "label",
+  "merge", "modify", "move", "mvdecode", "mvrecode", "order", "pctile",
+  "predict",
+  "preserve", "recode", "rename", "reshape", "restore", "sample",
+  # save will not modify the data set,
+  # it is not helpful to include in our pipeline
+  # "save",
+  "set","sort", "stack", "statsby", "stsplit",
+  "svar", "sysuse",
+  "tempfile", "tempvar", "tempname",
+  "total",
+  "use", "xtile", "xi",
+  "replace", "clear", "scalar", "sc", "carryforward"
+)
 
-  # Ignore dropped regvars (if they are nor part of an interaction)
-  #regvar = filter(regvar, !is_dropped | ia_cterm != cterm)
+# Commands that primarily display info or control program flow, and never
+# modify data or produce e()/r() results for later use.
+stata_non_data_manip_cmds = c(
+  "assert", "browse", "capture", "cd", "confirm", "constraint", "display", "di", "do", "edit", "erase", "error",
+  "exit", "findit", "format", "graph", "gr", "help", "h", "if", "inspect", "i", "list", "l", "log", "lookup", "marksample",
+  "matrix", "mat", "memory", "mem", "mkdir", "more", "mo", "notes", "n", "outfile", "outsheet", "ou", "pause", "plot",
+  "print", "program", "pwd", "query",
+  "return", "ret", "rmdir", "run", "ru", "search", "shell", "sh", "signestim", "sleep",
+  "stata", "st", "tabdisp", "table", "test", "te", "timer", "translate", "truncate",
+  "tutorials", "type", "ty", "view", "version", "v", "webuse", "w", "which", "while", "window", "winexec", "xmlsav"
+)
 
-  # Currently we just use the fixest formula
-  formula = regvar_to_formula_fixest(regvar,regxvar, cmdpart, reg = reg)
+# List of estimation commands that can produce e() results
+stata_estimation_cmds = c(
+  "regress", "logit", "probit", "ivregress", "xtreg", "areg", "reghdfe", "sem", "asmixlogit", "gmm"
+)
 
-  cmd = reg$cmd
-  if (cmd=="dprobit") {
-    rcmd = "probitmfx"
-  } else {
-    stop("Cannot yet translate Stata command ", cmd)
+# List of commands that can produce r() results
+stata_r_result_cmds = c(
+  "summarize", "su", "tabulate", "tab", "count", "correlate"
+)
+
+
+# Vectorized helper to parse multiple Stata command lines
+parse_stata_command_lines = function(lines_text) {
+  restore.point("parse_stata_command_lines")
+  n = length(lines_text)
+  if (n == 0) {
+    return(list(
+      stata_cmd_original = character(0),
+      stata_cmd = character(0),
+      rest_of_cmd = character(0),
+      is_by_prefix = logical(0),
+      is_bysort_prefix = logical(0),
+      by_group_vars = character(0),
+      by_sort_vars = character(0),
+      is_quietly_prefix = logical(0),
+      is_capture_prefix = logical(0),
+      is_xi_prefix = logical(0)
+    ))
   }
 
-  # The exclude='select' arguments avoids overwriting
-  # of dplyr's select function
-  library_code = "library(MASS, exclude='select')\nlibrary(mfx)\n  "
-  rcmd_code = paste0('rcmd = "',rcmd,'"')
-  # We use the default ssc arguments since they are closest to the
-  # Stata defaults
-  formula_code = paste0('formula = ', formula)
-  
-  data_code = r_listwise_deletion_code(regvar)
+  effective_line = stringi::stri_trim_both(lines_text)
 
-  # mfx
-  arg_str = NULL
-  if (reg$se_category == "robust") {
-    arg_str = "robust = true"
-  } else if (reg$se_category == "cluster") {
-    clustervar = extract_clustervar_from_se_args(reg$se_args)
-    arg_str = paste0('clustervar1 = "', clustervar[1],'"')
-    if (reg$se_type == "twoway") {
-      arg_str = c(arg_str, paste0('clustervar2 = "', clustervar[2],'"'))
+  is_by_prefix_val = rep(FALSE, n)
+  is_bysort_prefix_val = rep(FALSE, n)
+  by_group_vars = rep("", n)
+  by_sort_vars = rep("", n)
+  is_quietly_prefix_val = rep(FALSE, n)
+  is_capture_prefix_val = rep(FALSE, n)
+  is_xi_prefix_val = rep(FALSE, n)
+
+  # 1. capture prefix
+  capture_match = stringi::stri_match_first_regex(effective_line, "^(?:capture|cap)\\s+(.*)$")
+  idx_cap = !is.na(capture_match[,1])
+  if (any(idx_cap)) {
+    is_capture_prefix_val[idx_cap] = TRUE
+    effective_line[idx_cap] = stringi::stri_trim_both(capture_match[idx_cap, 2])
+  }
+
+  # 2. quietly prefix
+  quietly_match = stringi::stri_match_first_regex(effective_line, "^(?:quietly|qui|q)\\s+(.*)$")
+  idx_qui = !is.na(quietly_match[,1])
+  if (any(idx_qui)) {
+    is_quietly_prefix_val[idx_qui] = TRUE
+    effective_line[idx_qui] = stringi::stri_trim_both(quietly_match[idx_qui, 2])
+  }
+
+  # 3. by / bysort prefix
+  by_prefix_regex = "^(by|bys|byso|bysor|bysort)\\s+([^:]+?)\\s*:\\s*(.*)$"
+  idx_by_starts = stringi::stri_detect_regex(effective_line, "^(by|bys|byso|bysor|bysort)\\s")
+  if (any(idx_by_starts)) {
+    prefix_match = stringi::stri_match_first_regex(effective_line[idx_by_starts], by_prefix_regex)
+    valid_by = !is.na(prefix_match[,1])
+    if (any(valid_by)) {
+      idx_valid_by = which(idx_by_starts)[valid_by]
+      raw_prefix = stringi::stri_trim_both(prefix_match[valid_by, 2])
+      raw_by_string_from_prefix = stringi::stri_trim_both(prefix_match[valid_by, 3])
+      effective_line[idx_valid_by] = stringi::stri_trim_both(prefix_match[valid_by, 4])
+
+      is_by_prefix_val[idx_valid_by] = TRUE
+      is_bysort_prefix_val[idx_valid_by] = (raw_prefix != "by")
+
+      for (i in seq_along(idx_valid_by)) {
+        raw_str = raw_by_string_from_prefix[i]
+        grp_vars = character(0)
+        srt_vars = character(0)
+
+        if (!is.na(raw_str) && raw_str != "") {
+          by_parts = stringi::stri_split_fixed(raw_str, ",", n = 2)[[1]]
+          varlist_str = stringi::stri_trim_both(by_parts[1])
+          options_str = if (length(by_parts) > 1) stringi::stri_trim_both(by_parts[2]) else ""
+
+          if (fast_coalesce(stringi::stri_detect_regex(options_str, "\\bsort\\b"), FALSE)) {
+            is_bysort_prefix_val[idx_valid_by[i]] = TRUE
+          }
+
+          match_result = stringi::stri_match_all_regex(varlist_str, "\\s*(\\([^)]+\\)|[^\\s()]+)\\s*")
+          if (!is.null(match_result[[1]]) && NROW(match_result[[1]]) > 0) {
+            by_tokens = match_result[[1]][,2]
+            for (token in by_tokens) {
+              if (stringi::stri_startswith_fixed(token, "(") && stringi::stri_endswith_fixed(token, ")")) {
+                sort_vars_in_paren = stringi::stri_sub(token, 2, -2)
+                srt_vars = c(srt_vars, stringi::stri_split_regex(stringi::stri_trim_both(sort_vars_in_paren), "\\s+")[[1]])
+              } else {
+                grp_vars = c(grp_vars, token)
+              }
+            }
+          }
+        }
+
+        grp_vars = grp_vars[!is.na(grp_vars) & grp_vars != ""]
+        srt_vars = srt_vars[!is.na(srt_vars) & srt_vars != ""]
+
+        if (length(grp_vars) > 0) by_group_vars[idx_valid_by[i]] = paste(grp_vars, collapse = ",")
+        if (length(srt_vars) > 0) by_sort_vars[idx_valid_by[i]] = paste(srt_vars, collapse = ",")
+      }
     }
   }
-  arg_str = c(
-    paste0("formula = formula"),
-    paste0('data = dat'),
-    arg_str
-  )
 
-  reg_code = paste0('reg = ', rcmd,'(', paste0(arg_str, collapse=","),")")
-  code_df = tibble(part = c("library", "rcmd","data","formula","reg"), code = c(library_code, rcmd_code,data_code,formula_code,reg_code))
-  code_df = code_df[code_df$code != "", ]
+  # 4. xi: prefix
+  xi_match = stringi::stri_match_first_regex(effective_line, "^(?:xi)\\s*:\\s*(.*)$")
+  idx_xi = !is.na(xi_match[,1])
+  if (any(idx_xi)) {
+    is_xi_prefix_val[idx_xi] = TRUE
+    effective_line[idx_xi] = stringi::stri_trim_both(xi_match[idx_xi, 2])
+  }
 
-  if (opts$add_broom) {
-    code_df = add_reg_broom_code(code_df, use_summary=FALSE, use_conf_int=TRUE)
+  # Extract command token from prefix-stripped line
+  parts_mat = stringi::stri_split_fixed(effective_line, " ", n = 2, simplify = NA)
+
+  if (is.matrix(parts_mat)) {
+    cmd_token_original = stringi::stri_trim_both(parts_mat[, 1])
+    rest_of_cmd = stringi::stri_trim_both(parts_mat[, 2])
+  } else {
+    # Fallback for empty strings (should not normally trigger if simplify = NA and n >= 1)
+    cmd_token_original = stringi::stri_trim_both(parts_mat)
+    rest_of_cmd = rep(NA_character_, n)
   }
-  if (opts$add_function) {
-    code_df = add_reg_function_code(code_df)
+
+  idx_empty = is.na(cmd_token_original) | cmd_token_original == ""
+  if (any(idx_empty)) {
+    cmd_token_original[idx_empty] = NA_character_
   }
-  code_df
+
+  stata_cmd = get_stata_full_cmd_name_vec(cmd_token_original)
+
+  idx_by_cmd = which(!is.na(stata_cmd) & (stata_cmd == "bysort" | stata_cmd == "by"))
+  if (length(idx_by_cmd) > 0) {
+    is_by_prefix_val[idx_by_cmd] = FALSE
+    is_bysort_prefix_val[idx_by_cmd] = FALSE
+    by_group_vars[idx_by_cmd] = ""
+    by_sort_vars[idx_by_cmd] = ""
+    stata_cmd[idx_by_cmd[stata_cmd[idx_by_cmd] == "by"]] = "bysort"
+  }
+
+  return(list(
+    stata_cmd_original = cmd_token_original,
+    stata_cmd = stata_cmd,
+    rest_of_cmd = rest_of_cmd,
+    is_by_prefix = is_by_prefix_val,
+    is_bysort_prefix = is_bysort_prefix_val,
+    by_group_vars = by_group_vars,
+    by_sort_vars = by_sort_vars,
+    is_quietly_prefix = is_quietly_prefix_val,
+    is_capture_prefix = is_capture_prefix_val,
+    is_xi_prefix = is_xi_prefix_val
+  ))
 }
-```
-!END_MODIFICATION stata_to_r_code_mfx in /home/rstudio/repbox/regtranslate/R/to_r_mfx.R
 
 
-!MODIFICATION stata_to_r_code_quantreg in /home/rstudio/repbox/regtranslate/R/to_r_quantreg.R
-scope = "function"
-file = "/home/rstudio/repbox/regtranslate/R/to_r_quantreg.R"
-function_name = "stata_to_r_code_quantreg"
-description = "Add explicit listwise deletion to emulate Stata's e(sample) matching."
----
-```R
-stata_to_r_code_quantreg = function(reg, regvar,regxvar, cmdpart, opts=code_options(), parts = list()) {
-  restore.point("stata_to_r_code_quantreg")
+# Helper to parse basic Stata command line: cmd + rest
+# Handles capture, quietly, by/bysort, and xi: prefixes.
+parse_stata_command_line = function(line_text) {
+  restore.point("parse_stata_command_line")
+  trimmed_line = stringi::stri_trim_both(line_text)
 
-  # Ignore dropped regvars (if they are nor part of an interaction)
-  #regvar = filter(regvar, !is_dropped | ia_cterm != cterm)
+  effective_line = trimmed_line
 
+  is_by_prefix_val = FALSE
+  is_bysort_prefix_val = FALSE
+  by_group_vars = character(0)
+  by_sort_vars = character(0)
+  is_quietly_prefix_val = FALSE
+  is_capture_prefix_val = FALSE
+  is_xi_prefix_val = FALSE
 
-  # Currently we just use the fixest formula
-  formula = regvar_to_formula_fixest(regvar, regxvar, cmdpart, reg = reg)
-
-  rcmd = "rq"
-
-  library_code = paste0("library(quantreg)")
-  rcmd_code = paste0('rcmd = "',rcmd,'"')
-  # We use the default ssc arguments since they are closest to the
-  # Stata defaults
-  formula_code = paste0('formula = ', formula)
-
-  arg_str = NULL
-  if (reg$se_category != "iid") {
-    stop("Currently stata_to_r_code_quantreg is only implemented for iid standard errors. ")
-  }
-  arg_str = c(
-    paste0("formula = formula"),
-    paste0('data = dat'),
-    arg_str
-  )
-
-  data_code = r_listwise_deletion_code(regvar)
-
-  # Apply dynamic weights via centralized helper
-  wt = r_weight_code(reg, template = "dat[['%s']]")
-  if (nzchar(wt$data_code)) {
-    data_code = if (nzchar(data_code)) paste0(data_code, "\n", wt$data_code) else wt$data_code
-  }
-  if (nzchar(wt$weight_arg)) {
-    arg_str = c(arg_str, wt$weight_arg)
-  }
-
-  opts_df = cmdpart_to_opts_df(cmdpart)
-  opt_row = which(opts_df$opt=="quantile")
-  if (length(opt_row)>0) {
-    arg_str = c(arg_str, paste0("tau = ", opts_df$opt_arg[opt_row]))
-  }
-
-
-  reg_code = paste0('reg = suppressWarnings(', rcmd,'(', paste0(arg_str, collapse=","),"))")
-
-  code_df = tibble(part = c("library", "rcmd","data","formula","reg"), code = c(library_code, rcmd_code,data_code,formula_code,reg_code))
-  code_df = code_df[code_df$code != "", ]
-
-  if (opts$add_broom) {
-    code_df = add_reg_broom_code(code_df, use_summary=FALSE, use_conf_int=TRUE)
-    code_df = bind_rows(code_df, tibble(part="ct_mod",code='
-ct = mutate(ct, std.error=NA_real_, statistic= NA_real_,  p.value = NA_real_)
-if ("logLik" %in% names(glance)) {
-  glance$logLik = as.numeric(glance$logLik)
-}
-'))
-  }
-  if (opts$add_function) {
-    code_df = add_reg_function_code(code_df)
-  }
-  code_df
-}
-```
-!END_MODIFICATION stata_to_r_code_quantreg in /home/rstudio/repbox/regtranslate/R/to_r_quantreg.R
-
-
-!MODIFICATION stata_to_r_code_tobit in /home/rstudio/repbox/regtranslate/R/to_r_tobit.R
-scope = "function"
-file = "/home/rstudio/repbox/regtranslate/R/to_r_tobit.R"
-function_name = "stata_to_r_code_tobit"
-description = "Add explicit listwise deletion to emulate Stata's e(sample) matching."
----
-```R
-stata_to_r_code_tobit = function(reg, regvar, regxvar, cmdpart, opts=code_options(), parts = list()) {
-  restore.point("stata_to_r_code_mfx")
-
-  # Ignore dropped regvars (if they are nor part of an interaction)
-  #regvar = filter(regvar, !is_dropped | ia_cterm != cterm)
-
-  # Currently we just use the fixest formula
-  formula = regvar_to_formula_fixest(regvar, regxvar, cmdpart, reg = reg)
-
-  rcmd = "tobit"
-
-  library_code = paste0("library(AER)")
-  rcmd_code = paste0('rcmd = "',rcmd,'"')
-  # We use the default ssc arguments since they are closest to the
-  # Stata defaults
-  formula_code = paste0('formula = ', formula)
-
-  arg_str = NULL
-  if (reg$se_category == "robust") {
-    arg_str = "robust = true"
-  } else if (reg$se_category == "cluster") {
-    clustervar = extract_clustervar_from_se_args(reg$se_args)
-    arg_str = paste0('cluster = "', clustervar[1],'"')
-    if (reg$se_type == "twoway") {
-      stop("Two way clusters not yet implemented for tobit in R")
+  # 1. capture prefix
+  capture_prefix_regex = "^(?:capture|cap)\\s+(.*)$"
+  capture_match = stringi::stri_match_first_regex(effective_line, capture_prefix_regex)
+  if (!is.na(capture_match[1,1])) {
+    first_token_before_space = stringi::stri_extract_first_words(effective_line)
+    if (tolower(first_token_before_space) %in% c("capture", "cap")) {
+      is_capture_prefix_val = TRUE
+      effective_line = stringi::stri_trim_both(capture_match[1,2])
     }
   }
-  arg_str = c(
-    paste0("formula = formula"),
-    paste0('data = dat'),
-    arg_str
-  )
 
-  data_code = r_listwise_deletion_code(regvar)
-
-  # Apply dynamic weights via centralized helper
-  wt = r_weight_code(reg, template = "dat[['%s']]")
-  if (nzchar(wt$data_code)) {
-    data_code = if (nzchar(data_code)) paste0(data_code, "\n", wt$data_code) else wt$data_code
-  }
-  if (nzchar(wt$weight_arg)) {
-    arg_str = c(arg_str, wt$weight_arg)
+  # 2. quietly prefix
+  quietly_prefix_regex = "^(?:quietly|qui|q)\\s+(.*)$"
+  quietly_match = stringi::stri_match_first_regex(effective_line, quietly_prefix_regex)
+  if (!is.na(quietly_match[1,1])) {
+    first_token_before_space = stringi::stri_extract_first_words(effective_line)
+    if (tolower(first_token_before_space) %in% c("quietly", "qui", "q")) {
+      is_quietly_prefix_val = TRUE
+      effective_line = stringi::stri_trim_both(quietly_match[1,2])
+    }
   }
 
-  reg_code = paste0('reg = ', rcmd,'(', paste0(arg_str, collapse=","),")\nclass(reg) = 'survreg'")
+  # 3. by / bysort prefix
+  by_prefix_regex = "^(by|bys|byso|bysor|bysort)\\s+([^:]+?)\\s*:\\s*(.*)$"
+  if (fast_coalesce(stringi::stri_detect_regex(effective_line, "^(by|bys|byso|bysor|bysort)\\s"), FALSE)) {
+    prefix_match = stringi::stri_match_first_regex(effective_line, by_prefix_regex)
+    if (!is.na(prefix_match[1,1])) {
+      raw_prefix = stringi::stri_trim_both(prefix_match[1,2])
+      raw_by_string_from_prefix = stringi::stri_trim_both(prefix_match[1,3])
+      effective_line = stringi::stri_trim_both(prefix_match[1,4])
+      is_by_prefix_val = TRUE
+      is_bysort_prefix_val = (raw_prefix != "by")
 
-  code_df = tibble(part = c("library", "rcmd","data","formula","reg"), code = c(library_code, rcmd_code,data_code,formula_code,reg_code))
-  code_df = code_df[code_df$code != "", ]
+      by_tokens = character(0)
+      if (!is.na(raw_by_string_from_prefix) && raw_by_string_from_prefix != "") {
+        by_parts = stringi::stri_split_fixed(raw_by_string_from_prefix, ",", n = 2)[[1]]
+        varlist_str = stringi::stri_trim_both(by_parts[1])
+        options_str = if (length(by_parts) > 1) stringi::stri_trim_both(by_parts[2]) else ""
 
-  if (opts$add_broom) {
-    code_df = add_reg_broom_code(code_df, use_summary=FALSE, use_conf_int=TRUE)
+        if (fast_coalesce(stringi::stri_detect_regex(options_str, "\\bsort\\b"), FALSE)) {
+          is_bysort_prefix_val = TRUE
+        }
+
+        match_result = stringi::stri_match_all_regex(varlist_str, "\\s*(\\([^)]+\\)|[^\\s()]+)\\s*")
+        if (!is.null(match_result[[1]]) && NROW(match_result[[1]]) > 0) {
+          by_tokens = match_result[[1]][,2]
+        }
+      }
+
+      for (token in by_tokens) {
+        if (fast_coalesce(stringi::stri_startswith_fixed(token, "(") && stringi::stri_endswith_fixed(token, ")"), FALSE)) {
+          sort_vars_in_paren = stringi::stri_sub(token, 2, -2)
+          by_sort_vars = c(by_sort_vars, stringi::stri_split_regex(stringi::stri_trim_both(sort_vars_in_paren), "\\s+")[[1]])
+        } else {
+          by_group_vars = c(by_group_vars, token)
+        }
+      }
+      by_group_vars = by_group_vars[!is.na(by_group_vars) & by_group_vars != ""]
+      by_sort_vars = by_sort_vars[!is.na(by_sort_vars) & by_sort_vars != ""]
+    }
   }
-  if (opts$add_function) {
-    code_df = add_reg_function_code(code_df)
+
+  # 4. xi: prefix
+  xi_match = stringi::stri_match_first_regex(effective_line, "^(?:xi)\\s*:\\s*(.*)$")
+  if (!is.na(xi_match[1,1])) {
+    is_xi_prefix_val = TRUE
+    effective_line = stringi::stri_trim_both(xi_match[1,2])
   }
-  code_df
+
+  # Extract command token from prefix-stripped line
+  parts = stringi::stri_split_fixed(effective_line, " ", n = 2)
+  cmd_token_original = stringi::stri_trim_both(parts[[1]][1])
+
+  if (is.na(cmd_token_original) || cmd_token_original == "") {
+    return(list(
+      stata_cmd_original = NA_character_,
+      stata_cmd = NA_character_,
+      rest_of_cmd = NA_character_,
+      is_by_prefix = is_by_prefix_val,
+      is_bysort_prefix = is_bysort_prefix_val,
+      by_group_vars = character(0),
+      by_sort_vars = character(0),
+      is_quietly_prefix = is_quietly_prefix_val,
+      is_capture_prefix = is_capture_prefix_val,
+      is_xi_prefix = is_xi_prefix_val
+    ))
+  }
+
+  stata_cmd = get_stata_full_cmd_name(cmd_token_original)
+  rest_of_cmd = if (length(parts[[1]]) > 1 && !is.na(parts[[1]][2])) stringi::stri_trim_both(parts[[1]][2]) else NA_character_
+
+  if (stata_cmd == "bysort" || stata_cmd == "by") {
+    is_by_prefix_val = FALSE
+    is_bysort_prefix_val = FALSE
+    by_group_vars = character(0)
+    by_sort_vars = character(0)
+    if (stata_cmd == "by") {
+      stata_cmd = "bysort"
+    }
+  }
+
+  return(list(
+    stata_cmd_original = cmd_token_original,
+    stata_cmd = stata_cmd,
+    rest_of_cmd = rest_of_cmd,
+    is_by_prefix = is_by_prefix_val,
+    is_bysort_prefix = is_bysort_prefix_val,
+    by_group_vars = by_group_vars,
+    by_sort_vars = by_sort_vars,
+    is_quietly_prefix = is_quietly_prefix_val,
+    is_capture_prefix = is_capture_prefix_val,
+    is_xi_prefix = is_xi_prefix_val
+  ))
+}
+
+# Helper function to get macro names from a tempfile command's rest_of_cmd
+get_tempfile_macros = function(rest_of_cmd_for_tempfile) {
+  restore.point("get_tempfile_macros")
+  if (is.na(rest_of_cmd_for_tempfile) || rest_of_cmd_for_tempfile == "") return(character(0))
+  stringi::stri_split_regex(rest_of_cmd_for_tempfile, "\\s+")[[1]] %>%
+    stringi::stri_trim_both() %>%
+    .[. != ""]
+}
+
+# Helper function to unquote Stata string literals
+unquote_stata_string_literal = function(s) {
+  restore.point("unquote_stata_string_literal")
+  if (is.na(s) || s == "") return(s)
+  if (fast_coalesce(stringi::stri_startswith_fixed(s, "\"") && stringi::stri_endswith_fixed(s, "\""), FALSE)) {
+    return(stringi::stri_sub(s, 2, -2))
+  }
+  if (fast_coalesce(stringi::stri_startswith_fixed(s, "'") && stringi::stri_endswith_fixed(s, "'"), FALSE)) {
+    return(stringi::stri_sub(s, 2, -2))
+  }
+  return(s)
+}
+
+# Helper function to ensure a string is quoted for R literal use if not already
+quote_for_r_literal = function(s) {
+  restore.point("quote_for_r_literal")
+  if (is.na(s)) return("NA_character_")
+  if (length(s) == 0) return("character(0)")
+
+  s = as.character(s[1])
+  if (s == "") return("\"\"")
+
+  return(encodeString(s, quote = "\""))
+}
+
+# Helper function to expand Stata numlists for `for` loops
+expand_stata_numlist = function(numlist_str) {
+  restore.point("expand_stata_numlist")
+  if (is.na(numlist_str) || numlist_str == "") return(character(0))
+  tokens = stringi::stri_split_regex(stringi::stri_trim_both(numlist_str), "\\s+")[[1]]
+  res = character(0)
+  for (tok in tokens) {
+    if (grepl("/", tok)) {
+      parts = strsplit(tok, "/")[[1]]
+      if (length(parts) == 2) {
+        start = suppressWarnings(as.numeric(parts[1]))
+        end = suppressWarnings(as.numeric(parts[2]))
+        if (!is.na(start) && !is.na(end)) {
+          res = c(res, as.character(seq(start, end)))
+        } else {
+          res = c(res, tok)
+        }
+      } else {
+        res = c(res, tok)
+      }
+    } else {
+      res = c(res, tok)
+    }
+  }
+  res
+}
+
+# Helper function to resolve Stata filenames (literal or macro) to R path expressions
+resolve_stata_filename = function(raw_filename_token, cmd_df, line_num, default_base_dir_var = "working_dir") {
+  restore.point("resolve_stata_filename")
+  unquoted_content = unquote_stata_string_literal(raw_filename_token)
+
+  if (fast_coalesce(stringi::stri_startswith_fixed(unquoted_content, "`") && stringi::stri_endswith_fixed(unquoted_content, "'"), FALSE)) {
+    macro_name = stringi::stri_sub(unquoted_content, 2, -2)
+
+    found_def_line = NA_integer_
+    for (i in rev(seq_len(line_num - 1L))) {
+      if (cmd_df$stata_cmd[i] == "tempfile") {
+        defined_macros = get_tempfile_macros(cmd_df$rest_of_cmd[i])
+        if (macro_name %in% defined_macros) {
+          found_def_line = cmd_df$line[i]
+          break
+        }
+      }
+    }
+
+    if (!is.na(found_def_line)) {
+      return(paste0("R_tempfile_L", found_def_line, "_", macro_name, "_path"))
+    } else {
+      warning(paste0("Macro ", unquoted_content, " in command at line ", line_num, " not resolved from tempfile. Treating as literal string."))
+      return(quote_for_r_literal(unquoted_content))
+    }
+  } else {
+    is_absolute_path = fast_coalesce(stringi::stri_startswith_fixed(unquoted_content, "/"), FALSE) ||
+      fast_coalesce(stringi::stri_detect_regex(unquoted_content, "^[A-Za-z]:[\\\\/]"), FALSE)
+
+    if (is_absolute_path) {
+      return(quote_for_r_literal(unquoted_content))
+    } else {
+      return(paste0("file.path(stata2r_env$", default_base_dir_var, ", ", quote_for_r_literal(unquoted_content), ")"))
+    }
+  }
+}
+
+get_xi_base_name = function(varname) {
+  if (base::endsWith(varname, "_factor")) {
+    return(stringi::stri_replace_last_fixed(varname, "_factor", "_f"))
+  } else if (varname == "region_cat") {
+    return("region_ca")
+  } else {
+    return(varname)
+  }
+}
+
+get_xi_interaction_basename = function(var1, var2) {
+  short_var1 = stringi::stri_sub(var1, 1, min(stringi::stri_length(var1), 3))
+  short_var2 = stringi::stri_sub(var2, 1, min(stringi::stri_length(var2), 3))
+  return(paste0(short_var1, "X", short_var2))
 }
 ```
-!END_MODIFICATION stata_to_r_code_tobit in /home/rstudio/repbox/regtranslate/R/to_r_tobit.R
+!END_MODIFICATION stata_cmd_utils.R
