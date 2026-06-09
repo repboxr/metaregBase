@@ -613,6 +613,7 @@ create_prefix_nolevel_cterm_col = function(dat,cterm, panelvar=NA, timevar=NA, t
     # Note this code requires a sufficiently new
     # collapse version like 1.9.6
     args$t = dat[[timevar]]
+    if (is.null(args$n)) args$n = 1
     args$n = args$n * tdelta
   }
 

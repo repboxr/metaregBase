@@ -260,6 +260,8 @@ cmdpart_expand_vars = function(cmdpart, data_cols) {
 cmdpart_to_regvar = function(cmdpart, dat, opts_df, se_info) {
   restore.point("cmdpart_to_regvar")
 
+  uses_xi = any(cmdpart$part == "pre" & cmdpart$tag == "xi")
+
   # 1. Collect all terms mapped by role
   term_list = list()
 
@@ -353,7 +355,7 @@ cmdpart_to_regvar = function(cmdpart, dat, opts_df, se_info) {
         startsWith(tolower(prefix), "c") ~ "",
         startsWith(tolower(prefix), "b") ~ "b",
         startsWith(tolower(prefix), "i") ~ "i",
-        is_ia ~ "i",
+        is_ia & !uses_xi ~ "i",
         option %in% c("absorb", "fe") ~ option,
         is_factor ~ class,
         TRUE ~ ""

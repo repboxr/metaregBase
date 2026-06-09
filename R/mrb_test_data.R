@@ -2,7 +2,7 @@ example = function() {
   mrb_print_parcels(project_dir, runid=7)
 }
 
-mrb_print_parcels = function(project_dir=mrb$project_dir,parcel_names = c("regcoef","regcoef_so","regcoef_rb","regvar","regxvar", "regcheck"),  runid=NULL, mrb=NULL, parcels=mrb$parcels, outfile = file.path(project_dir, "run/parcel_out.txt")) {
+mrb_print_parcels = function(project_dir=mrb$project_dir,parcel_names = c("regcoef","regcoef_so","regcoef_rb","regvar","regxvar", "regcheck", "reg_cmdpart", "reg"),  runid=NULL, mrb=NULL, parcels=mrb$parcels, outfile = file.path(project_dir, "run/parcel_out.txt")) {
   restore.point("mrb_print_parcels")
   parcels = repdb_load_parcels(project_dir, parcel_names, parcels)
 

@@ -13,5 +13,5 @@ stata_cmds_with_exp_coef = function() {
 }
 
 mrb_cmds_ignore_intercept_in_r = function() {
-  c("areg", "xtreg", "reghdfe", "ivreghdfe", "xtlogit", "xtprobit", "xtpoisson", "clogit", "xtivreg", "xtivreg2")
+  c("areg", "xtreg", "reghdfe", "ivreghdfe", "xtlogit", "xtprobit", "xtpoisson", "clogit", "xtivreg", "xtivreg2", "stcox")
 }
