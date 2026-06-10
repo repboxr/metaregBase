@@ -10,7 +10,8 @@ mrb_pid_test_files = function(project_dir, pid, parcels = list(), drf = repboxDR
 
   if (!dir.exists(outdir)) dir.create(outdir)
   r_code = mrb_test_code_path(project_dir, pid, parcels, drf)
-  r_code = paste0('project_dir = "', project_dir, '"\n', r_code)
+  r_code = paste0('repboxRun::repbox_load_libs()
+project_dir = "', project_dir,'"\n', r_code)
   file = paste0(outdir, "/test_pid_", pid, ".R")
   writeLines(r_code, file)
 
