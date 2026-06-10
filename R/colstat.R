@@ -24,9 +24,10 @@ make_cols_small_info = function(df, cols = colnames(df)) {
 }
 
 # Make column statistics as mainly stored later in colstat_num and colstat_factor
+# Make column statistics as mainly stored later in colstat_num and colstat_factor
 make_cols_info = function(df, cols=colnames(df)) {
   restore.point("make_cols_info")
-  df = df[,cols]
+  df = df[,cols, drop=FALSE]
   distinct_num = sapply(df, n_distinct, na.rm=TRUE)
   distinct_vals = vector("list", NCOL(df))
   use = distinct_num <= 5
@@ -42,46 +43,63 @@ make_cols_info = function(df, cols=colnames(df)) {
         if (length(setdiff(distinct_vals[[j]], 0:1))==0)
           return("dummy")
       }
-      if (isTRUE(all(v==as_integer(v),na.rm=TRUE))) return("integer")
+      if (isTRUE(try(all(v==suppressWarnings(as_integer(v)),na.rm=TRUE), silent=TRUE))) return("integer")
       return("numeric")
     }
     return(class(v))[1]
   })
-  is_numeric = class %in% c("numeric","dummy","integer","Date","POSIXct")
+  is_numeric = class %in% c("numeric","dummy","integer","Date","POSIXct","POSIXt")
 
-  mean = sd = min = max = rep(NA, NCOL(df))
+  mean = sd = min = max = rep(NA_real_, NCOL(df))
 
   min.na.fun = function(vals) {
-    if (all(is.na(vals))) return(NA)
+    if (all(is.na(vals))) return(NA_real_)
+    if (inherits(vals, c("Date", "POSIXt", "difftime"))) vals = as.numeric(vals)
     min(vals, na.rm=TRUE)
   }
 
   max.na.fun = function(vals) {
-    if (all(is.na(vals))) return(NA)
+    if (all(is.na(vals))) return(NA_real_)
+    if (inherits(vals, c("Date", "POSIXt", "difftime"))) vals = as.numeric(vals)
     max(vals, na.rm=TRUE)
   }
 
-  mean[is_numeric] = sapply(df[is_numeric], mean, na.rm=TRUE)
-  sd[is_numeric] = sapply(df[is_numeric], sd, na.rm=TRUE)
-  min[is_numeric] = sapply(df[is_numeric], min.na.fun)
-  max[is_numeric] = sapply(df[is_numeric], max.na.fun)
+  safe_mean = function(vals) {
+    if (inherits(vals, c("Date", "POSIXt", "difftime"))) vals = as.numeric(vals)
+    mean(vals, na.rm=TRUE)
+  }
 
-  quantiles = matrix(NA, nrow=length(cols), ncol=5)
+  safe_sd = function(vals) {
+    if (inherits(vals, c("Date", "POSIXt", "difftime"))) vals = as.numeric(vals)
+    sd(vals, na.rm=TRUE)
+  }
+
+  if (any(is_numeric)) {
+    mean[is_numeric] = sapply(df[is_numeric], safe_mean)
+    sd[is_numeric] = sapply(df[is_numeric], safe_sd)
+    min[is_numeric] = sapply(df[is_numeric], min.na.fun)
+    max[is_numeric] = sapply(df[is_numeric], max.na.fun)
+  }
+
+  quantiles = matrix(NA_real_, nrow=length(cols), ncol=5)
   colnames(quantiles) = c("q10","q25","median","q75","q90")
 
-  # Quantiles don't work on data or datetime objects
-  rows = which(class %in% c("numeric","dummy","integer"))
+  # Quantiles don't work natively on Date objects without type=1 or converting
+  rows = which(class %in% c("numeric","dummy","integer","Date","POSIXct","POSIXt"))
   for (i in rows) {
-    qu = quantile(df[[i]],c(0.1,0.25,0.5,0.75,0.9),na.rm = TRUE)
+    vals = df[[i]]
+    if (inherits(vals, c("Date", "POSIXt", "difftime"))) vals = as.numeric(vals)
+    qu = quantile(vals, c(0.1,0.25,0.5,0.75,0.9), na.rm = TRUE)
     quantiles[i,] = qu
   }
 
   bind_cols(tibble(col = cols, class, distinct_num, distinct_vals, obs = NROW(df)-na_num, na_num, na_share, min, max, mean, sd), as_tibble(quantiles))
-
 }
 
 get_natural_reg_type = function(v) {
-  if (is.numeric(v)) {
+  if (inherits(v, c("Date", "POSIXt"))) {
+    return("numeric")
+  } else if (is.numeric(v)) {
     uni = unique(v)
     if (length(uni)>0 & length(uni)<=2) {
       if (all(uni %in% c(0,1))) {
@@ -98,11 +116,15 @@ get_natural_reg_type = function(v) {
 
 # Make column statistics as mainly stored later in colstat_numeric,
 # colstat_factor and colstat_dummy
+# Make column statistics as mainly stored later in colstat_numeric,
+# colstat_factor, colstat_dummy, and colstat_datetime
+# Make column statistics as mainly stored later in colstat_numeric,
+# colstat_factor, colstat_dummy, and colstat_datetime
 make_colstats = function(cols,df, reg_df=df, reg_types = NULL) {
   restore.point("make_colstats")
 
-  numeric_li = dummy_li = factor_li = vector("list", length(cols))
-  numeric_count = dummy_count = factor_count = 0
+  numeric_li = dummy_li = factor_li = datetime_li = vector("list", length(cols))
+  numeric_count = dummy_count = factor_count = datetime_count = 0
 
   for (col in cols) {
     rt = reg_types[[2]][reg_types[[1]] == col]
@@ -110,6 +132,16 @@ make_colstats = function(cols,df, reg_df=df, reg_types = NULL) {
     if (length(rt)==0) {
       rt = get_natural_reg_type(df[[col]])
     }
+
+    # Inspect actual object. If Date/Datetime, route to colstat_datetime
+    # and strip 'numeric' to prevent numeric quantile operations from crashing.
+    is_date = inherits(df[[col]], c("Date", "POSIXt"))
+    if (is_date) {
+      datetime_count = datetime_count + 1
+      datetime_li[[datetime_count]] = colstat_datetime(col, df, reg_df)
+      rt = setdiff(rt, "numeric")
+    }
+
     if ("numeric" %in% rt) {
       numeric_count = numeric_count + 1
       numeric_li[[numeric_count]] = colstat_numeric(col, df, reg_df)
@@ -126,21 +158,28 @@ make_colstats = function(cols,df, reg_df=df, reg_types = NULL) {
   list(
     colstat_numeric = bind_rows(numeric_li[seq_len(numeric_count)]),
     colstat_dummy = bind_rows(dummy_li[seq_len(dummy_count)]),
-    colstat_factor = bind_rows(factor_li[seq_len(factor_count)])
+    colstat_factor = bind_rows(factor_li[seq_len(factor_count)]),
+    colstat_datetime = bind_rows(datetime_li[seq_len(datetime_count)])
   )
 }
 
 
 
 # Make column statistics as mainly stored later in colstat_num and colstat_factor
+# Make column statistics as mainly stored later in colstat_num and colstat_factor
 colstat_numeric = function(col,df, reg_df=df, val = df[[col]], reg_val = reg_df[[col]]) {
   restore.point("colstat_numeric")
 
+  orig_class = class(val)[1]
   v = reg_val
+
+  if (inherits(v, c("Date", "POSIXt", "difftime"))) v = as.numeric(v)
+  if (inherits(val, c("Date", "POSIXt", "difftime"))) val = as.numeric(val)
+
   qu = quantile(v,c(0.1,0.25,0.75,0.9),na.rm = TRUE)
   tibble(
     col=col,
-    class = class(val)[1],
+    class = orig_class,
     na_num = sum(is.na(val)),
     na_share = na_num / length(val),
 
@@ -208,5 +247,28 @@ colstat_dummy = function(col,df, reg_df=df, val = as_integer(df[[col]]), reg_val
     mean_org = mean(val, na.rm=TRUE),
     mean = mean(v, na.rm=TRUE),
     sd = sd(v, na.rm=TRUE),
+  )
+}
+
+# Make column statistics specifically for Date and POSIXt objects
+colstat_datetime = function(col, df, reg_df = df, val = df[[col]], reg_val = reg_df[[col]]) {
+  restore.point("colstat_datetime")
+
+  out_class = if (inherits(val, "Date")) "date" else "datetime"
+
+  min_val = suppressWarnings(min(reg_val, na.rm = TRUE))
+  max_val = suppressWarnings(max(reg_val, na.rm = TRUE))
+
+  na_num = sum(is.na(val))
+
+  tibble(
+    col = col,
+    class = out_class,
+    na_num = na_num,
+    na_share = na_num / length(val),
+    min = if (is.infinite(min_val)) NA_character_ else as.character(min_val),
+    max = if (is.infinite(max_val)) NA_character_ else as.character(max_val),
+    distinct_num_org = n_distinct(val, na.rm = TRUE),
+    distinct_num = n_distinct(reg_val, na.rm = TRUE)
   )
 }

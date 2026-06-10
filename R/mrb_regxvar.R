@@ -124,6 +124,8 @@ make_regxvar_ia3 = function(rv, level_li) {
 
 # Add the expanded columns specified in regxvar to dat
 # if a column already exists, we won't overwrite it.
+# Add the expanded columns specified in regxvar to dat
+# if a column already exists, we won't overwrite it.
 make_regxvar_cols = function(dat, regxvar) {
   restore.point("make_regxvar_cols")
   # Don't overwrite existing columns
@@ -151,7 +153,11 @@ make_regxvar_cols = function(dat, regxvar) {
     vars1 = str.left.of(cterms, "#")
     vars2 = str.right.of(cterms, "#")
     for (i in seq_along(cterms)) {
-      dat[[ cterms[i] ]] = dat[[vars1[i] ]]*dat[[vars2[i]]]
+      v1 = dat[[vars1[i]]]
+      v2 = dat[[vars2[i]]]
+      if (inherits(v1, c("Date", "POSIXt", "difftime"))) v1 = as.numeric(v1)
+      if (inherits(v2, c("Date", "POSIXt", "difftime"))) v2 = as.numeric(v2)
+      dat[[ cterms[i] ]] = v1 * v2
     }
   }
 
@@ -164,7 +170,13 @@ make_regxvar_cols = function(dat, regxvar) {
     vars2 = str.left.of(str, "#")
     vars3 = str.right.of(str, "#")
     for (i in seq_along(cterms)) {
-      dat[[ cterms[i] ]] = dat[[vars1[i]]]*dat[[vars2[i]]]*dat[[vars3[i]]]
+      v1 = dat[[vars1[i]]]
+      v2 = dat[[vars2[i]]]
+      v3 = dat[[vars3[i]]]
+      if (inherits(v1, c("Date", "POSIXt", "difftime"))) v1 = as.numeric(v1)
+      if (inherits(v2, c("Date", "POSIXt", "difftime"))) v2 = as.numeric(v2)
+      if (inherits(v3, c("Date", "POSIXt", "difftime"))) v3 = as.numeric(v3)
+      dat[[ cterms[i] ]] = v1 * v2 * v3
     }
   }
   dat

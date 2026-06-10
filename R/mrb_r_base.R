@@ -202,6 +202,12 @@ mrb_run_r_base_step = function(mrb, pid, with_try = isTRUE(mrb$with_try), contin
     tibble()
   }
 
+  step_parcels$colstat_datetime = if (nrow(colstats$colstat_datetime) > 0) {
+    colstats$colstat_datetime %>% mutate(artid = mrb$artid, variant = "sb", runid = runid, cterm = col)
+  } else {
+    tibble()
+  }
+
   nobs_val = if ("N" %in% names(stats_wide)) as.numeric(stats_wide$N) else NA_real_
   r2_val = if ("r2" %in% names(stats_wide)) as.numeric(stats_wide$r2) else if ("r2_p" %in% names(stats_wide)) as.numeric(stats_wide$r2_p) else NA_real_
 
@@ -313,6 +319,7 @@ mrb_run_r_base = function(mrb, just_pids=NULL, make_parcels=TRUE, continue_on_er
 
 # The step parcels are generated in mrb_r
 # The step parcels are generated in mrb_r
+# The step parcels are generated in mrb_r
 mrb_make_r_base_parcels = function(mrb, save=TRUE, is_partial_run = isTRUE(mrb$is_partial_run)) {
   restore.point("mrb_make_r_base_parcels")
 
@@ -335,7 +342,7 @@ mrb_make_r_base_parcels = function(mrb, save=TRUE, is_partial_run = isTRUE(mrb$i
       mrb$project_dir,
       c(
         "reg", "regcoef", "regvar", "regxvar",
-        "colstat_numeric", "colstat_dummy", "colstat_factor",
+        "colstat_numeric", "colstat_dummy", "colstat_factor", "colstat_datetime",
         "colinfo", "regscalar", "regstring",
         extra_regcoef_fields
       ),
@@ -386,6 +393,7 @@ mrb_make_r_base_parcels = function(mrb, save=TRUE, is_partial_run = isTRUE(mrb$i
   parcels$colstat_numeric = combine_steps("colstat_numeric")
   parcels$colstat_dummy = combine_steps("colstat_dummy")
   parcels$colstat_factor = combine_steps("colstat_factor")
+  parcels$colstat_datetime = combine_steps("colstat_datetime")
 
   parcels$colinfo = combine_steps("colinfo")
 

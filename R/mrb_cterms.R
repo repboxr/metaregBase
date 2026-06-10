@@ -436,10 +436,15 @@ create_cterm_col = function(dat, cterm, timevar=NA, panelvar=NA, tdelta=NA, chec
     return(dat)
   }
 
-  # Multiply the main effects
-  dat[[cterm]] = dat[[cterms[1]]]
+  # Multiply the main effects safely
+  v1 = dat[[ cterms[1] ]]
+  if (inherits(v1, c("Date", "POSIXt", "difftime"))) v1 = as.numeric(v1)
+  dat[[cterm]] = v1
+
   for (i in 2:length(cterms)) {
-    dat[[cterm]] = dat[[cterm]] * dat[[cterms[i]]]
+    v2 = dat[[ cterms[i] ]]
+    if (inherits(v2, c("Date", "POSIXt", "difftime"))) v2 = as.numeric(v2)
+    dat[[cterm]] = dat[[cterm]] * v2
   }
   dat
 }
@@ -512,10 +517,15 @@ create_cterm_col_old = function(dat, cterm, timevar=NA, panelvar=NA, tdelta=NA, 
     return(dat)
   }
 
-  # Multiply the main effects
-  dat[[cterm]] = dat[[ cterms[1] ]]
+  # Multiply the main effects safely
+  v1 = dat[[ cterms[1] ]]
+  if (inherits(v1, c("Date", "POSIXt", "difftime"))) v1 = as.numeric(v1)
+  dat[[cterm]] = v1
+
   for (i in 2:length(cterms)) {
-    dat[[cterm]] = dat[[cterm]]*dat[[ cterms[i] ]]
+    v2 = dat[[ cterms[i] ]]
+    if (inherits(v2, c("Date", "POSIXt", "difftime"))) v2 = as.numeric(v2)
+    dat[[cterm]] = dat[[cterm]] * v2
   }
   dat
 }

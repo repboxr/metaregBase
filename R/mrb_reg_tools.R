@@ -429,7 +429,10 @@ cmdpart_to_regvar = function(cmdpart, dat, opts_df, se_info) {
 
   vi = vi %>% dplyr::mutate(
     var_org_type = varclass %>% change_val(c("fe", "character"), "factor"),
-    var_reg_type = class %>% change_val(c("fe", "character"), "factor") %>% change_val("logical", "dummy"),
+    var_reg_type = class %>%
+      change_val(c("fe", "character"), "factor") %>%
+      change_val(c("Date", "POSIXct", "POSIXt"), "numeric") %>%
+      change_val("logical", "dummy"),
     ia_reg_type = ia_type %>%
       change_val("fe", "factor") %>%
       change_val("fe_numeric", "factor_numeric") %>%

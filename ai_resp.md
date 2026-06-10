@@ -1,252 +1,591 @@
-This is a perfect use case for a targeted repair strategy. 
+Yes! You are completely right, and that is a much better and cleaner approach. 
 
-You are completely right that your `predict` command is already perfectly set up for caching in the pipeline. Because you wrote `predict ... if e(sample)`, the DRF dependency tracker (`drf_deps.R`) automatically detects `e(sample)` via regex, links the `predict` to the preceding `reg`, and ensures both the `reg` and `predict` are flagged as data modifications (`is_mod = TRUE`). This means your `path_df` already contains the correct Stata commands to generate the cache; it just needed the mechanism to trigger it!
+To answer your question directly: **Yes, the code injection will ONLY happen if a variable of natural type `Date` or `POSIXct` is present and used numerically.** The helper function explicitly checks this condition and returns an empty string `""` if no such variables exist. The central injection logic then checks `if (nzchar(date_code))` and won't add any clutter or empty blocks to the generated R script.
 
-Here is the surgical fix. I will:
-1. Add a new `mrb_repair_paths_with_predict_via_cache` function specifically targeting this scenario (with a default limit of 10 caches).
-2. Update `mrb_repair_via_cache` and `mrb_get_to_repair_runids` to accept an `only_paths_with_predict` flag. This ensures we isolate the repair attempt strictly to pipelines involving `predict` or `predictnl`.
-3. Wire the new predict cache repair into `mrb_run_all` as the final default repair step.
-4. Fix a minor bug in `mrb_create_cache_at_runid` where passing `overwrite = TRUE` returned early instead of deleting the existing cache file.
+Centralizing this inside the main `reg_stata_to_r_code()` orchestrator in `to_r.R` is the perfect way to do this. We can evaluate `r_date_to_numeric_code()` once and prepend the generated code to the `part == "data"` block of the generated `code_df`. This completely eliminates the need to pollute all the individual `stata_to_r_code_*` functions.
 
-Here are the surgical modifications:
+Here are the complete code changes to implement this centralized approach (this includes reverting the separate files back to their original, clean state):
 
-!MODIFICATION mrb_run_all metaregBase/R/mrb.R
+### 1. Centralize logic in `to_r.R`
+
+We will add the new helper function `r_date_to_numeric_code` here and update `reg_stata_to_r_code` to intercept the generated `code_df` and prepend the date conversion string if needed.
+
+!MODIFICATION r_date_to_numeric_code in R/to_r.R
 scope = "function"
-file = "/home/rstudio/repbox/metaregBase/R/mrb.R"
-function_name = "mrb_run_all"
-description = "Add targeted cache repair for paths with predict commands to the default pipeline."
+file = "/home/rstudio/repbox/regtranslate/R/to_r.R"
+insert_before_fun = "reg_stata_to_r_code"
+description = "Add helper function to convert Date variables to numeric safely."
 ---
 ```r
-mrb_run_all = function(project_dir, drf=repboxDRF::drf_load(project_dir,apply_caches = FALSE), repair_failed=TRUE) {
-  restore.point("mrb_run_all")
-
-  mrb = mrb_init(project_dir, drf=drf)
-
-  # Original Stata reproduction coefficients are independent input evidence.
-  # Generate them before the metaregBase sb/rb pipeline, so they survive even
-  # if mrb_run_r_base_step fails for some runids.
-  mrb = mrb_make_so_parcels(mrb)
-
-  mrb = mrb_full_stata_script(mrb)
-
-
-  # removes previous mrb regression output files
-  mrb_clear_stata_reg_out(project_dir)
-
-  mrb = mrb_run_stata_script(mrb)
-  # The Stata script can create new DRF cache files, e.g. after xi commands.
-  mrb$drf = repboxDRF:::drf_apply_caches(mrb$drf)
-
-
-  mrb = mrb_agg_stata(mrb)
-  mrb = mrb_run_r_base(mrb)
-  mrb = mrb_run_r_reg(mrb)
-  mrb = mrb_make_regcheck_parcel(mrb)
-
-  if (repair_failed) {
-    mrb = mrb_repair_via_ignore(mrb=mrb)
-    mrb = mrb_repair_paths_with_imports_via_cache(mrb=mrb)
-    mrb = mrb_repair_paths_with_predict_via_cache(mrb=mrb, max_reg=10)
-  }
-
-  mrb
-}
-```
-!END_MODIFICATION mrb_run_all metaregBase/R/mrb.R
-
-
-!MODIFICATION mrb_repair_paths_with_predict_via_cache metaregBase/R/mrb_repair.R
-scope = "function"
-file = "/home/rstudio/repbox/metaregBase/R/mrb_repair.R"
-insert_after_fun = "mrb_repair_paths_with_imports_via_cache"
-description = "New helper function to target only predict/predictnl commands for cache repair."
----
-```r
-mrb_repair_paths_with_predict_via_cache = function(project_dir = mrb$project_dir, mrb = NULL, max_reg = 10) {
-  mrb_repair_via_cache(project_dir, mrb, max_reg, only_paths_with_predict = TRUE)
-}
-```
-!END_MODIFICATION mrb_repair_paths_with_predict_via_cache metaregBase/R/mrb_repair.R
-
-
-!MODIFICATION mrb_repair_via_cache metaregBase/R/mrb_repair.R
-scope = "function"
-file = "/home/rstudio/repbox/metaregBase/R/mrb_repair.R"
-function_name = "mrb_repair_via_cache"
-description = "Pass the new only_paths_with_predict argument down to the runid collector."
----
-```r
-#' Cache-based repair: add strategic data caches, re-run failed regressions.
-#'
-#' For each failed pid that still needs repair after the ignore pass,
-#' determine the best cache position, generate it in Stata, and re-run.
-mrb_repair_via_cache = function(project_dir = mrb$project_dir, mrb = NULL, max_reg = 10, only_paths_with_import = FALSE, only_paths_with_predict = FALSE) {
-  restore.point("mrb_repair_via_cache")
-
-  if (is.null(mrb)) {
-    mrb = mrb_init(project_dir)
-    mrb = mrb_agg_stata(mrb, skip_if_has = TRUE)
-  }
-
-  drf_clear_mcache()
-  failed_pids = mrb_get_to_repair_runids(mrb = mrb, only_paths_with_import = only_paths_with_import, only_paths_with_predict = only_paths_with_predict)
-
-  if (!is.null(max_reg)) {
-    failed_pids = head(failed_pids, max_reg)
-  }
-
-  if (length(failed_pids) == 0) {
-    cat("\nNo failed runs left to repair via cache.\n")
-    return(mrb)
-  }
-
-  cat("\nCache repair attempt for runids: ", paste(failed_pids, collapse = ", "), "\n")
-
-  mrb$drf = repboxDRF:::drf_sync_r_err_runids(mrb$drf)
-
-  while (length(failed_pids) > 0) {
-    cache_runid = mrb_determine_repair_cache_runid(mrb, failed_pids = failed_pids)
-
-    if (is.null(cache_runid)) {
-      cat(sprintf("\nCannot determine cache runid for remaining pids: %s. Stopping cache repair.\n", paste(failed_pids, collapse=", ")))
-      break
+#' Generate R code to convert Date/Datetime variables to numeric
+#' 
+#' Fixest and other packages complain if Date variables are used directly as numeric variables.
+#' We also emit a repbox_problem since effect sizes of Dates are hard to interpret.
+r_date_to_numeric_code = function(regvar, runid = NULL) {
+  if (!"varclass" %in% colnames(regvar)) return("")
+  
+  date_vars = regvar$cterm[regvar$varclass %in% c("Date", "POSIXct", "POSIXt", "difftime") & regvar$var_reg_type == "numeric"]
+  date_vars = unique(date_vars)
+  date_vars = setdiff(date_vars, c("(Intercept)", "", NA))
+  
+  if (length(date_vars) > 0) {
+    if (!is.null(runid)) {
+      msg = paste0("Regression uses Date/Datetime variables as numeric: ", paste(date_vars, collapse=", "), ". Effect sizes might be hard to interpret.")
+      repboxUtils::repbox_problem(msg, type = "date_as_numeric", runid = runid, fail_action = "msg")
     }
-
-    # Identify which failed pids are going to be repaired by this cache
-    pids_to_rerun = unique(mrb$drf$path_df$pid[mrb$drf$path_df$runid == cache_runid & mrb$drf$path_df$pid %in% failed_pids])
-
-    if (length(pids_to_rerun) == 0) {
-      cat(sprintf("\nError: Cache runid %d does not serve any failed pids. Stopping to avoid infinite loop.\n", cache_runid))
-      break
-    }
-
-    cat(sprintf("\nCaching at runid %d. This serves %d failed pid(s).\n", cache_runid, length(pids_to_rerun)))
-
-    mrb_create_cache_at_runid(mrb, cache_runid = cache_runid, pid = pids_to_rerun[1], overwrite = TRUE)
-
-    mrb$drf = repboxDRF:::drf_apply_caches(mrb$drf, just_pids = pids_to_rerun)
-
-    mrb = mrb_repair_via_ignore(mrb = mrb, pids = pids_to_rerun, rerun = TRUE, repair_code = "c")
-
-    # Remove the ones we just tried so we can find the next best cache for any remaining
-    failed_pids = setdiff(failed_pids, pids_to_rerun)
+    
+    paste0(
+      "date_cols = c(", paste0('"', date_vars, '"', collapse=", "), ")\n",
+      "date_cols = intersect(date_cols, colnames(dat))\n",
+      "if (length(date_cols) > 0) {\n",
+      "  dat[date_cols] = lapply(dat[date_cols], as.numeric)\n",
+      "}"
+    )
+  } else {
+    ""
   }
-
-  mrb
 }
 ```
-!END_MODIFICATION mrb_repair_via_cache metaregBase/R/mrb_repair.R
+!END_MODIFICATION r_date_to_numeric_code in R/to_r.R
 
-
-!MODIFICATION mrb_get_to_repair_runids metaregBase/R/mrb_repair.R
+!MODIFICATION reg_stata_to_r_code in R/to_r.R
 scope = "function"
-file = "/home/rstudio/repbox/metaregBase/R/mrb_repair.R"
-function_name = "mrb_get_to_repair_runids"
-description = "Add filtering logic for paths containing predict/predictnl commands."
+file = "/home/rstudio/repbox/regtranslate/R/to_r.R"
+function_name = "reg_stata_to_r_code"
+description = "Centralize the injection of the date conversion code for all translations."
 ---
 ```r
-mrb_get_to_repair_runids = function(mrb, parcels = mrb$parcels,  only_paths_with_import = FALSE, only_paths_with_predict = FALSE) {
-  restore.point("mrb_get_to_repair_runids")
-  parcels = repboxDB::repdb_load_parcels(mrb$project_dir, c("regcheck", "reg", "regrepair"), parcels)
+reg_stata_to_r_code = function(reg, regvar, regxvar, cmdpart, prefer="fixest", opts=code_options()) {
+  restore.point("reg_stata_to_r_code")
 
-  regcheck = parcels$regcheck
-  if (is.null(regcheck)) {
-    cat("\nNo regcheck parcel found. Run mrb_make_regcheck_parcel() first.\n")
+  r_cmd = get_stata_to_r_cmd(reg$cmd, prefer)
+  if (isTRUE(r_cmd == "no_trans") | is.na(r_cmd)) {
+    cat(paste0("The Stata command ", reg$cmd, " is not yet implemented for translation in regtranslate."))
     return(NULL)
   }
-  reg = parcels$reg
-  if (!repboxUtils::has_col(regcheck, "cmd") & NROW(regcheck) > 0) {
-    if (!is.null(reg)) {
-      regcheck = left_join(regcheck, reg %>% select(cmd, runid), by = "runid")
-    } else {
-      regcheck$cmd = ""
+
+  args = list(reg=reg, regvar=regvar,regxvar, cmdpart=cmdpart, opts=opts)
+  fun = paste0("stata_to_r_code_",r_cmd)
+  res = do.call(fun, args)
+  
+  # Centralized injection of Date to numeric conversion code
+  if (!is.null(res) && "data" %in% res$part) {
+    date_code = r_date_to_numeric_code(regvar, runid = reg$runid)
+    if (nzchar(date_code)) {
+      data_idx = which(res$part == "data")[1]
+      if (nzchar(res$code[data_idx])) {
+        res$code[data_idx] = paste0(date_code, "\n", res$code[data_idx])
+      } else {
+        res$code[data_idx] = date_code
+      }
     }
   }
-  regcheck$cmd = repboxUtils::na.val(regcheck$cmd, "")
-
-  regcheck = regcheck %>%
-    mutate(do_repair = (sb_raw_did_run) & (!rb_did_run)) %>%
-    mutate(do_repair = do_repair | repboxUtils::is.true(!rb_sb_coef_same & !(has.substr(cmd, "logit") | has.substr(cmd, "probit")))) %>%
-    mutate(do_repair = do_repair & (stata_reg_cmd_has_r_trans(cmd) | cmd == ""))
-
-  failed_pids = regcheck$runid[regcheck$do_repair]
-
-  if (only_paths_with_import && length(failed_pids) > 0 && !is.null(mrb$drf$path_df)) {
-    first_runids = mrb$drf$path_df %>%
-      filter(pid %in% failed_pids) %>%
-      group_by(pid) %>%
-      summarize(first_runid = min(runid), .groups = "drop")
-
-    run_df_first = mrb$drf$run_df %>% filter(runid %in% first_runids$first_runid)
-
-    is_import = run_df_first$cmd %in% c("import", "insheet", "infix") & !run_df_first$has_file_cache
-    import_first_runids = run_df_first$runid[is_import]
-
-    failed_pids = first_runids$pid[first_runids$first_runid %in% import_first_runids]
-  }
-
-  if (only_paths_with_predict && length(failed_pids) > 0 && !is.null(mrb$drf$path_df)) {
-    path_cmds = mrb$drf$path_df %>%
-      filter(pid %in% failed_pids) %>%
-      left_join(mrb$drf$run_df %>% select(runid, cmd), by = "runid")
-
-    has_pred = path_cmds %>%
-      group_by(pid) %>%
-      summarize(has_predict = any(cmd %in% c("predict", "predictnl")), .groups = "drop") %>%
-      filter(has_predict)
-
-    failed_pids = intersect(failed_pids, has_pred$pid)
-  }
-
-  failed_pids
+  
+  res
 }
 ```
-!END_MODIFICATION mrb_get_to_repair_runids metaregBase/R/mrb_repair.R
+!END_MODIFICATION reg_stata_to_r_code in R/to_r.R
 
+---
 
-!MODIFICATION mrb_create_cache_at_runid metaregBase/R/mrb_repair.R
+### 2. Clean up (Revert) all Individual Translators
+
+Since the logic is now fully centralized, we can revert the 6 individual regression translator functions back to their pristine, original states (removing the changes I suggested in the previous turn). 
+
+!MODIFICATION stata_to_r_code_fixest in R/to_r_fixest.R
 scope = "function"
-file = "/home/rstudio/repbox/metaregBase/R/mrb_repair.R"
-function_name = "mrb_create_cache_at_runid"
-description = "Ensure overwrite deletes the existing cache file instead of early returning."
+file = "/home/rstudio/repbox/regtranslate/R/to_r_fixest.R"
+function_name = "stata_to_r_code_fixest"
+description = "Revert to original state. Date conversion logic is now centralized."
 ---
 ```r
-#' Generate a Stata cache at a specific intermediate runid
-mrb_create_cache_at_runid = function(mrb=mrb_init(project_dir), cache_runid, overwrite = FALSE, project_dir=NULL, pid=NULL) {
-  restore.point("mrb_create_cache_at_runid")
-  project_dir = mrb$project_dir
-  cache_dir = file.path(project_dir, "drf/cached_dta")
+stata_to_r_code_fixest = function(reg, regvar, regxvar, cmdpart, opts=code_options(), parts = list()) {
+  restore.point("stata_to_r_code_fixest")
 
-  cache_file = file.path(cache_dir, paste0(cache_runid, "_cache.dta"))
-  if (file.exists(cache_file)) {
-    if (!overwrite) {
-      return(invisible(cache_runid))
-    } else {
-      file.remove(cache_file)
+  org_depvars = regvar$cterm[regvar$role=="dep"]
+  mod_depvars = replace_cterm_special_symbols(org_depvars)
+
+  formula = regvar_to_formula_fixest(regvar, regxvar, cmdpart, reg = reg)
+
+  vcov_type = fixest_vcov_type_from_regdb(reg$se_type, reg$se_args)
+  ssc_expr = fixest_ssc_code_from_reg(reg, vcov_type = vcov_type)
+  use_ssc = !is.null(ssc_expr)
+
+  use_sandwich = (vcov_type == "sandwich") | opts$prefer_sandwich
+  use_summary = use_sandwich | opts$prefer_summary
+
+  if (use_sandwich) {
+    reg_vcov = "iid"
+    vcov = regdb_se_to_sandwich(reg$se_category, reg$se_type, reg$se_args)
+  } else {
+    reg_vcov = fixest_vcov_code_from_regdb(reg$se_type, reg$se_args, vcov_type, quote=FALSE, reg=reg)
+    if (use_summary) {
+      vcov = reg_vcov
     }
   }
 
-  if (!dir.exists(cache_dir)) dir.create(cache_dir, recursive = TRUE)
-
-  if (is.null(pid)) {
-    path_df = mrb$drf$path_df
-    row = which(path_df$runid==cache_runid)
-    pid = first(path_df$pid[row])
+  command = "feols"
+  arg_str = NULL
+  if (reg$cmd %in% c("ppmlhdfe", "poisson", "xtpoisson")) {
+    command = "fepois"
+  } else if (reg$cmd %in% c("nbreg", "gnbreg")) {
+    command = "fenegbin"
+  } else if (reg$cmd %in% c("logit","xtlogit", "clogit")) {
+    command = "feglm"
+    arg_str = "family=binomial()"
+  } else if (reg$cmd %in% c("probit","xtprobit","dprobit")) {
+    command = "feglm"
+    arg_str = 'family=binomial(link = "probit")'
   }
 
-  # Get the Stata code path for this pid
-  sc_df = repboxDRF::drf_stata_code_df(mrb$drf, runids = pid, path_merge = "none", write_e_r = FALSE, cache_after_runids = cache_runid,keep_non_mod_reg = TRUE)
+  arg_str = c(
+    paste0("fml = formula"),
+    paste0("data = dat"),
+    paste0("vcov = reg_vcov"),
+    arg_str
+  )
 
-  # Subset up to cache_runid
-  rows = which(sc_df$runid <= cache_runid)
-  if (length(rows) == 0) return(invisible(cache_runid))
-  sc_df = sc_df[rows, , drop = FALSE]
+  # Pass ssc to fixest natively when relevant.
+  if (use_ssc) {
+    arg_str = c(arg_str, "ssc = ssc")
+  }
 
-  script_file = file.path(mrb$project_dir, "metareg/base/stata_code/mrb_repair.do")
-  metaregBase:::drf_code_write(sc_df, script_file)
+  library_code = "library(fixest)"
+  rcmd_code = paste0('rcmd = "',command,'"')
+  if (all(org_depvars==mod_depvars)) {
+    data_code = ""
+  } else {
+    data_code = paste0(
+      'dat[["', mod_depvars,'"]] = dat[["', org_depvars,'"]]',
+      collapse="\n"
+    )
+  }
 
-  cat("\nRunning Stata repair script to generate cache at runid", cache_runid, "...\n")
-  mrb_run_stata_script(mrb, do_file = script_file)
+  # Apply explicit listwise deletion to emulate Stata's e(sample)
+  lw_code = r_listwise_deletion_code(regvar)
+  if (nzchar(lw_code)) {
+    data_code = if (nzchar(data_code)) paste0(data_code, "\n", lw_code) else lw_code
+  }
+
+  is_binary = reg$cmd %in% c("logit", "xtlogit", "probit", "xtprobit", "dprobit", "clogit", "logistic", "exlogistic", "blogit", "glogit", "binreg")
+
+  if (is_binary && isTRUE(opts$drop_perfect_predictors)) {
+    # Check all possible expanded predictors before filtering omitted formulas
+    pred_cols = unique(regxvar$cterm)
+    pred_cols = setdiff(pred_cols, c("(Intercept)", ""))
+    if (length(pred_cols) > 0) {
+      pred_str = paste0('c(', paste0('"', pred_cols, '"', collapse=", "), ')')
+      dp_code = paste0(
+        'dp_cols = intersect(', pred_str, ', colnames(dat))\n',
+        'dp_res = regtranslate::stata_drop_perfect_predictors(dat, "', mod_depvars[1], '", dp_cols, verbose = TRUE)\n',
+        'dat = dp_res$dat'
+      )
+      data_code = paste0(data_code, "\n", dp_code)
+    }
+  }
+
+  # Apply dynamic weights via centralized helper
+  wt = r_weight_code(reg, template = "~ `%s`")
+  if (nzchar(wt$data_code)) {
+    data_code = if (nzchar(data_code)) paste0(data_code, "\n", wt$data_code) else wt$data_code
+  }
+  if (nzchar(wt$weight_arg)) {
+    arg_str = c(arg_str, wt$weight_arg)
+  }
+
+  ssc_code = if (use_ssc) paste0("ssc = ", ssc_expr) else NULL
+  formula_code = paste0("formula = ", formula)
+  reg_vcov_code = paste0("reg_vcov = ", quote_arg(reg_vcov))
+  reg_code = paste0("reg = ", command, "(", paste0(arg_str, collapse=","), ")")
+
+  code_df = tibble(
+    part = c("library", "rcmd", "data", "formula", if (use_ssc) "ssc", "reg_vcov", "reg"),
+    code = c(library_code, rcmd_code, data_code, formula_code, if (use_ssc) ssc_code, reg_vcov_code, reg_code)
+  )
+
+  if (use_summary) {
+    sum_vcov_code = paste0("sum_vcov = ", quote_arg(vcov))
+    sum_code = "sum = summary(reg, vcov = sum_vcov)"
+    code_df = bind_rows(
+      code_df,
+      tibble(part = c("sum_vcov","sum"), code = c(sum_vcov_code, sum_code))
+    )
+  }
+  if (opts$add_broom) {
+    code_df = add_reg_broom_code(code_df, use_summary=use_summary, use_conf_int=TRUE)
+  }
+  if (opts$add_function) {
+    code_df = add_reg_function_code(code_df)
+  }
+  code_df
 }
 ```
-!END_MODIFICATION mrb_create_cache_at_runid metaregBase/R/mrb_repair.R
+!END_MODIFICATION stata_to_r_code_fixest in R/to_r_fixest.R
+
+!MODIFICATION stata_to_r_code_lm in R/to_r_lm.R
+scope = "function"
+file = "/home/rstudio/repbox/regtranslate/R/to_r_lm.R"
+function_name = "stata_to_r_code_lm"
+description = "Revert to original state. Date conversion logic is now centralized."
+---
+```r
+stata_to_r_code_lm = function(reg, regvar, regxvar, cmdpart, opts=code_options(), parts = list()) {
+  restore.point("stata_to_r_code_lm")
+
+  org_depvars = regvar$cterm[regvar$role=="dep"]
+  mod_depvars = replace_cterm_special_symbols(org_depvars)
+
+  formula = regvar_to_formula_fixest(regvar, regxvar, cmdpart, reg = reg)
+
+  command = "lm"
+  arg_str = c(
+    paste0("formula = formula"),
+    paste0('data = dat')
+  )
+
+  rcmd_code = paste0('rcmd = "',command,'"')
+  # We use the default ssc arguments since they are closest to the
+  # Stata defaults
+  if (all(org_depvars==mod_depvars)) {
+    data_code = ""
+  } else {
+    data_code = paste0(
+      'dat[["', mod_depvars,'"]] = dat[["', org_depvars,'"]]',
+      collapse="\n"
+    )
+  }
+
+  # Apply explicit listwise deletion to emulate Stata's e(sample)
+  lw_code = r_listwise_deletion_code(regvar)
+  if (nzchar(lw_code)) {
+    data_code = if (nzchar(data_code)) paste0(data_code, "\n", lw_code) else lw_code
+  }
+
+  # Apply dynamic weights via centralized helper
+  wt = r_weight_code(reg, template = "dat[['%s']]")
+  if (nzchar(wt$data_code)) {
+    data_code = if (nzchar(data_code)) paste0(data_code, "\n", wt$data_code) else wt$data_code
+  }
+  if (nzchar(wt$weight_arg)) {
+    arg_str = c(arg_str, wt$weight_arg)
+  }
+
+  formula_code = paste0('formula = ', formula)
+  reg_code = paste0('reg = ', command, "(", paste0(arg_str, collapse=","),")")
+
+  code_df = tibble(part = c("rcmd","data","formula", "reg"), code = c(rcmd_code,data_code, formula_code, reg_code))
+
+
+  use_summary=FALSE
+  if (opts$add_broom) {
+    code_df = add_reg_broom_code(code_df, use_summary=use_summary, use_conf_int=TRUE)
+  }
+  if (opts$add_function) {
+    code_df = add_reg_function_code(code_df)
+  }
+  code_df
+}
+```
+!END_MODIFICATION stata_to_r_code_lm in R/to_r_lm.R
+
+!MODIFICATION stata_to_r_code_mfx in R/to_r_mfx.R
+scope = "function"
+file = "/home/rstudio/repbox/regtranslate/R/to_r_mfx.R"
+function_name = "stata_to_r_code_mfx"
+description = "Revert to original state. Date conversion logic is now centralized."
+---
+```r
+stata_to_r_code_mfx = function(reg, regvar, regxvar, cmdpart, opts=code_options(), parts = list()) {
+  restore.point("stata_to_r_code_mfx")
+
+  # Ignore dropped regvars (if they are nor part of an interaction)
+  #regvar = filter(regvar, !is_dropped | ia_cterm != cterm)
+
+  # Currently we just use the fixest formula
+  formula = regvar_to_formula_fixest(regvar,regxvar, cmdpart, reg = reg)
+
+  cmd = reg$cmd
+  if (cmd=="dprobit") {
+    rcmd = "probitmfx"
+  } else {
+    stop("Cannot yet translate Stata command ", cmd)
+  }
+
+  # The exclude='select' arguments avoids overwriting
+  # of dplyr's select function
+  library_code = "library(MASS, exclude='select')\nlibrary(mfx)\n  "
+  rcmd_code = paste0('rcmd = "',rcmd,'"')
+  # We use the default ssc arguments since they are closest to the
+  # Stata defaults
+  formula_code = paste0('formula = ', formula)
+
+  data_code = r_listwise_deletion_code(regvar)
+
+  is_binary = reg$cmd %in% c("logit", "xtlogit", "probit", "xtprobit", "dprobit", "clogit", "logistic", "exlogistic")
+  if (is_binary && isTRUE(opts$drop_perfect_predictors)) {
+    mod_depvars = regvar$cterm[regvar$role=="dep"]
+    pred_cols = unique(regxvar$cterm)
+    pred_cols = setdiff(pred_cols, c("(Intercept)", ""))
+    if (length(pred_cols) > 0) {
+      pred_str = paste0('c(', paste0('"', pred_cols, '"', collapse=", "), ')')
+      dp_code = paste0(
+        'dp_cols = intersect(', pred_str, ', colnames(dat))\n',
+        'dp_res = regtranslate::stata_drop_perfect_predictors(dat, "', mod_depvars[1], '", dp_cols, verbose = TRUE)\n',
+        'dat = dp_res$dat'
+      )
+      data_code = paste0(data_code, "\n", dp_code)
+    }
+  }
+
+  # mfx
+  arg_str = NULL
+  if (reg$se_category == "robust") {
+    arg_str = "robust = true"
+  } else if (reg$se_category == "cluster") {
+    clustervar = extract_clustervar_from_se_args(reg$se_args)
+    arg_str = paste0('clustervar1 = "', clustervar[1],'"')
+    if (reg$se_type == "twoway") {
+      arg_str = c(arg_str, paste0('clustervar2 = "', clustervar[2],'"'))
+    }
+  }
+  arg_str = c(
+    paste0("formula = formula"),
+    paste0('data = dat'),
+    arg_str
+  )
+
+  reg_code = paste0('reg = ', rcmd,'(', paste0(arg_str, collapse=","),")")
+  code_df = tibble(part = c("library", "rcmd","data","formula","reg"), code = c(library_code, rcmd_code,data_code,formula_code,reg_code))
+  code_df = code_df[code_df$code != "", ]
+
+  if (opts$add_broom) {
+    code_df = add_reg_broom_code(code_df, use_summary=FALSE, use_conf_int=TRUE)
+  }
+  if (opts$add_function) {
+    code_df = add_reg_function_code(code_df)
+  }
+  code_df
+}
+```
+!END_MODIFICATION stata_to_r_code_mfx in R/to_r_mfx.R
+
+!MODIFICATION stata_to_r_code_quantreg in R/to_r_quantreg.R
+scope = "function"
+file = "/home/rstudio/repbox/regtranslate/R/to_r_quantreg.R"
+function_name = "stata_to_r_code_quantreg"
+description = "Revert to original state. Date conversion logic is now centralized."
+---
+```r
+stata_to_r_code_quantreg = function(reg, regvar,regxvar, cmdpart, opts=code_options(), parts = list()) {
+  restore.point("stata_to_r_code_quantreg")
+
+  # Ignore dropped regvars (if they are nor part of an interaction)
+  #regvar = filter(regvar, !is_dropped | ia_cterm != cterm)
+
+
+  # Currently we just use the fixest formula
+  formula = regvar_to_formula_fixest(regvar, regxvar, cmdpart, reg = reg)
+
+  rcmd = "rq"
+
+  library_code = paste0("library(quantreg)")
+  rcmd_code = paste0('rcmd = "',rcmd,'"')
+  # We use the default ssc arguments since they are closest to the
+  # Stata defaults
+  formula_code = paste0('formula = ', formula)
+
+  arg_str = NULL
+  if (reg$se_category != "iid") {
+    stop("Currently stata_to_r_code_quantreg is only implemented for iid standard errors. ")
+  }
+  arg_str = c(
+    paste0("formula = formula"),
+    paste0('data = dat'),
+    arg_str
+  )
+
+  data_code = r_listwise_deletion_code(regvar)
+
+  # Apply dynamic weights via centralized helper
+  wt = r_weight_code(reg, template = "dat[['%s']]")
+  if (nzchar(wt$data_code)) {
+    data_code = if (nzchar(data_code)) paste0(data_code, "\n", wt$data_code) else wt$data_code
+  }
+  if (nzchar(wt$weight_arg)) {
+    arg_str = c(arg_str, wt$weight_arg)
+  }
+
+  opts_df = cmdpart_to_opts_df(cmdpart)
+  opt_row = which(opts_df$opt=="quantile")
+  if (length(opt_row)>0) {
+    arg_str = c(arg_str, paste0("tau = ", opts_df$opt_arg[opt_row]))
+  }
+
+
+  reg_code = paste0('reg = suppressWarnings(', rcmd,'(', paste0(arg_str, collapse=","),"))")
+
+  code_df = tibble(part = c("library", "rcmd","data","formula","reg"), code = c(library_code, rcmd_code,data_code,formula_code,reg_code))
+  code_df = code_df[code_df$code != "", ]
+
+  if (opts$add_broom) {
+    code_df = add_reg_broom_code(code_df, use_summary=FALSE, use_conf_int=TRUE)
+    code_df = bind_rows(code_df, tibble(part="ct_mod",code='
+ct = mutate(ct, std.error=NA_real_, statistic= NA_real_,  p.value = NA_real_)
+if ("logLik" %in% names(glance)) {
+  glance$logLik = as.numeric(glance$logLik)
+}
+'))
+  }
+  if (opts$add_function) {
+    code_df = add_reg_function_code(code_df)
+  }
+  code_df
+}
+```
+!END_MODIFICATION stata_to_r_code_quantreg in R/to_r_quantreg.R
+
+!MODIFICATION stata_to_r_code_stcox in R/to_r_stcox.R
+scope = "function"
+file = "/home/rstudio/repbox/regtranslate/R/to_r_stcox.R"
+function_name = "stata_to_r_code_stcox"
+description = "Revert to original state. Date conversion logic is now centralized."
+---
+```r
+stata_to_r_code_stcox = function(reg, regvar, regxvar, cmdpart, opts=code_options(), parts = list()) {
+  restore.point("stata_to_r_code_stcox")
+
+  timevar = reg$timevar[1]
+  failvar = reg$panelvar[1]
+
+  if (is.na(timevar) || !nzchar(timevar)) {
+    stop("Cannot translate stcox: timevar missing (stset not found or not parsed)")
+  }
+
+  if (!is.na(failvar) && nzchar(failvar)) {
+    surv_expr = paste0("survival::Surv(`", timevar, "`, `", failvar, "`)")
+  } else {
+    surv_expr = paste0("survival::Surv(`", timevar, "`)")
+  }
+
+  # stcox doesn't have a LHS variable in varlist. cmdparts_of_stata_reg treats the first one as dep.
+  # We convert it to exo to prevent it from going to LHS.
+  regvar$role[regvar$role == "dep"] = "exo"
+  if (!is.null(regxvar) && nrow(regxvar) > 0) {
+    regxvar$role[regxvar$role == "dep"] = "exo"
+  }
+
+  formula_rhs = regvar_to_formula_fixest(regvar, regxvar, cmdpart, reg = reg)
+  formula = paste0(surv_expr, formula_rhs)
+
+  library_code = "library(survival)"
+  rcmd_code = 'rcmd = "coxph"'
+
+  arg_str = c(
+    "formula = formula",
+    "data = dat",
+    'ties = "breslow"'
+  )
+
+  # Handle se
+  if (reg$se_category == "robust") {
+    arg_str = c(arg_str, "robust = TRUE")
+  } else if (reg$se_category == "cluster") {
+    clustervar = extract_clustervar_from_se_args(reg$se_args)
+    if (length(clustervar) > 0) {
+      arg_str = c(arg_str, paste0('cluster = dat[["', clustervar[1], '"]]'))
+    }
+  }
+
+  data_code = r_listwise_deletion_code(regvar)
+
+  # Apply dynamic weights via centralized helper
+  wt = r_weight_code(reg, template = "dat[['%s']]")
+  if (nzchar(wt$data_code)) {
+    data_code = if (nzchar(data_code)) paste0(data_code, "\n", wt$data_code) else wt$data_code
+  }
+  if (nzchar(wt$weight_arg)) {
+    arg_str = c(arg_str, wt$weight_arg)
+  }
+
+  formula_code = paste0('formula = ', formula)
+  reg_code = paste0('reg = coxph(', paste0(arg_str, collapse=","),')')
+
+  code_df = tibble(part = c("library", "rcmd","data","formula","reg"), code = c(library_code, rcmd_code, data_code, formula_code, reg_code))
+
+  if (opts$add_broom) {
+    code_df = add_reg_broom_code(code_df, use_summary=FALSE, use_conf_int=TRUE)
+  }
+  if (opts$add_function) {
+    code_df = add_reg_function_code(code_df)
+  }
+  code_df
+}
+```
+!END_MODIFICATION stata_to_r_code_stcox in R/to_r_stcox.R
+
+!MODIFICATION stata_to_r_code_tobit in R/to_r_tobit.R
+scope = "function"
+file = "/home/rstudio/repbox/regtranslate/R/to_r_tobit.R"
+function_name = "stata_to_r_code_tobit"
+description = "Revert to original state. Date conversion logic is now centralized."
+---
+```r
+stata_to_r_code_tobit = function(reg, regvar, regxvar, cmdpart, opts=code_options(), parts = list()) {
+  restore.point("stata_to_r_code_mfx")
+
+  # Ignore dropped regvars (if they are nor part of an interaction)
+  #regvar = filter(regvar, !is_dropped | ia_cterm != cterm)
+
+  # Currently we just use the fixest formula
+  formula = regvar_to_formula_fixest(regvar, regxvar, cmdpart, reg = reg)
+
+  rcmd = "tobit"
+
+  library_code = paste0("library(AER)")
+  rcmd_code = paste0('rcmd = "',rcmd,'"')
+  # We use the default ssc arguments since they are closest to the
+  # Stata defaults
+  formula_code = paste0('formula = ', formula)
+
+  arg_str = NULL
+  if (reg$se_category == "robust") {
+    arg_str = "robust = true"
+  } else if (reg$se_category == "cluster") {
+    clustervar = extract_clustervar_from_se_args(reg$se_args)
+    arg_str = paste0('cluster = "', clustervar[1],'"')
+    if (reg$se_type == "twoway") {
+      stop("Two way clusters not yet implemented for tobit in R")
+    }
+  }
+  arg_str = c(
+    paste0("formula = formula"),
+    paste0('data = dat'),
+    arg_str
+  )
+
+  data_code = r_listwise_deletion_code(regvar)
+
+  # Apply dynamic weights via centralized helper
+  wt = r_weight_code(reg, template = "dat[['%s']]")
+  if (nzchar(wt$data_code)) {
+    data_code = if (nzchar(data_code)) paste0(data_code, "\n", wt$data_code) else wt$data_code
+  }
+  if (nzchar(wt$weight_arg)) {
+    arg_str = c(arg_str, wt$weight_arg)
+  }
+
+  reg_code = paste0('reg = ', rcmd,'(', paste0(arg_str, collapse=","),")\nclass(reg) = 'survreg'")
+
+  code_df = tibble(part = c("library", "rcmd","data","formula","reg"), code = c(library_code, rcmd_code,data_code,formula_code,reg_code))
+  code_df = code_df[code_df$code != "", ]
+
+  if (opts$add_broom) {
+    code_df = add_reg_broom_code(code_df, use_summary=FALSE, use_conf_int=TRUE)
+  }
+  if (opts$add_function) {
+    code_df = add_reg_function_code(code_df)
+  }
+  code_df
+}
+```
+!END_MODIFICATION stata_to_r_code_tobit in R/to_r_tobit.R
