@@ -40,6 +40,7 @@ mrb_run_all = function(project_dir, drf=repboxDRF::drf_load(project_dir,apply_ca
   if (repair_failed) {
     mrb = mrb_repair_via_ignore(mrb=mrb)
     mrb = mrb_repair_paths_with_imports_via_cache(mrb=mrb)
+    mrb = mrb_repair_paths_with_predict_via_cache(mrb=mrb, max_reg=10)
   }
 
   mrb

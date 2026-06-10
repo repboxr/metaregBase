@@ -1,319 +1,252 @@
-You spotted the discrepancy perfectly. 
+This is a perfect use case for a targeted repair strategy. 
 
-### Why did R drop 598 instead of 599 observations?
-Stata's "predicts success/failure perfectly" heuristic only checks **dummy/binary variables**.
-Because my previous code checked *all* variables in the formula, it evaluated the continuous variables (`apt_size_h`, `apt_price_t`) as well. It's extremely likely that one of those continuous variables had exactly one observation equal to `0`. Since a sample size of 1 always has `min(y) == max(y)` trivially, my previous algorithm improperly dropped that 1 single observation, resulting in 598 instead of 599!
+You are completely right that your `predict` command is already perfectly set up for caching in the pipeline. Because you wrote `predict ... if e(sample)`, the DRF dependency tracker (`drf_deps.R`) automatically detects `e(sample)` via regex, links the `predict` to the preceding `reg`, and ensures both the `reg` and `predict` are flagged as data modifications (`is_mod = TRUE`). This means your `path_df` already contains the correct Stata commands to generate the cache; it just needed the mechanism to trigger it!
 
-### The Fix
-We need to restrict the `x == 0` vs `x != 0` separation check exclusively to variables that only take a maximum of 2 distinct values in the dataset. This perfectly mimics Stata's pre-estimation behavior for indicators. 
+Here is the surgical fix. I will:
+1. Add a new `mrb_repair_paths_with_predict_via_cache` function specifically targeting this scenario (with a default limit of 10 caches).
+2. Update `mrb_repair_via_cache` and `mrb_get_to_repair_runids` to accept an `only_paths_with_predict` flag. This ensures we isolate the repair attempt strictly to pipelines involving `predict` or `predictnl`.
+3. Wire the new predict cache repair into `mrb_run_all` as the final default repair step.
+4. Fix a minor bug in `mrb_create_cache_at_runid` where passing `overwrite = TRUE` returned early instead of deleting the existing cache file.
 
-I've also added the `verbose = TRUE` logging to print out the exact notes Stata generates.
+Here are the surgical modifications:
 
-Here are the modifications to fix the algorithm and explicitly inject `verbose = TRUE` into the R translation.
-
-!MODIFICATION drop_perfect_predictors.R
-scope = "file"
-file = "/home/rstudio/repbox/regtranslate/R/drop_perfect_predictors.R"
-description = "Fix Stata perfect predictor dropping logic to only apply to binary variables, preventing erroneous continuous singleton drops. Add verbose logging to match Stata notes."
----
-```r
-#' Drop perfect predictors for binary outcome models
-#'
-#' Emulates Stata's behavior of dropping variables and observations
-#' that perfectly predict the outcome in logit/probit models.
-#'
-#' @param dat data.frame
-#' @param depvar character, name of dependent variable
-#' @param indepvars character vector of independent variables
-#' @param verbose logical, if TRUE prints Stata-like notes
-#' @return A list with `dat` (filtered data) and `indepvars` (variables kept).
-#' @export
-stata_drop_perfect_predictors = function(dat, depvar, indepvars, verbose = TRUE) {
-  if (length(depvar) != 1 || !depvar %in% colnames(dat)) return(list(dat=dat, indepvars=indepvars))
-  
-  y = dat[[depvar]]
-  if (is.logical(y)) y = as.integer(y)
-  y = as.numeric(y)
-  # Stata treats exactly 0 as failure, and non-zero as success
-  y = ifelse(y == 0, 0, 1)
-  
-  uni_y = unique(na.omit(y))
-  if (length(uni_y) < 2) {
-    return(list(dat=dat, indepvars=indepvars))
-  }
-  
-  kept_vars = indepvars
-  keep_rows = !is.na(y)
-  
-  changed = TRUE
-  
-  while(changed) {
-    changed = FALSE
-    cur_y = y[keep_rows]
-    
-    for (var in kept_vars) {
-      if (!var %in% colnames(dat)) next
-      x = dat[[var]]
-      
-      if (is.character(x) || is.factor(x)) next
-      
-      cur_x = x[keep_rows]
-      if (all(is.na(cur_x))) next
-      
-      # CRITICAL FIX: Stata only applies the "!= 0" heuristic to dummy variables.
-      # If we don't check this, continuous variables with a single 0 observation
-      # will falsely appear as perfect predictors and drop the observation.
-      uni_x = unique(na.omit(cur_x))
-      if (length(uni_x) > 2) next
-      
-      idx_neq_0 = which(!is.na(cur_x) & cur_x != 0)
-      idx_eq_0 = which(!is.na(cur_x) & cur_x == 0)
-      
-      if (length(idx_neq_0) > 0 && length(idx_eq_0) > 0) {
-        
-        y_neq = cur_y[idx_neq_0]
-        if (min(y_neq) == max(y_neq)) {
-          if (verbose) {
-             cat(sprintf("note: %s != 0 predicts %s perfectly;\n      %s omitted and %d obs not used.\n", 
-                         var, ifelse(y_neq[1]==1, "success", "failure"), var, length(idx_neq_0)))
-          }
-          keep_rows[which(keep_rows)[idx_neq_0]] = FALSE
-          kept_vars = setdiff(kept_vars, var)
-          changed = TRUE
-          break
-        }
-        
-        y_eq = cur_y[idx_eq_0]
-        if (min(y_eq) == max(y_eq)) {
-          if (verbose) {
-             cat(sprintf("note: %s == 0 predicts %s perfectly;\n      %s omitted and %d obs not used.\n", 
-                         var, ifelse(y_eq[1]==1, "success", "failure"), var, length(idx_eq_0)))
-          }
-          keep_rows[which(keep_rows)[idx_eq_0]] = FALSE
-          kept_vars = setdiff(kept_vars, var)
-          changed = TRUE
-          break
-        }
-      }
-    }
-  }
-  
-  if (!all(keep_rows)) {
-    dat = dat[keep_rows, , drop=FALSE]
-  }
-  
-  list(dat = dat, indepvars = kept_vars)
-}
-```
-!END_MODIFICATION drop_perfect_predictors.R
-
-!MODIFICATION stata_to_r_code_fixest to_r_fixest.R
+!MODIFICATION mrb_run_all metaregBase/R/mrb.R
 scope = "function"
-file = "/home/rstudio/repbox/regtranslate/R/to_r_fixest.R"
-function_name = "stata_to_r_code_fixest"
-description = "Update drop perfect predictors call to explicitly pass verbose=TRUE."
+file = "/home/rstudio/repbox/metaregBase/R/mrb.R"
+function_name = "mrb_run_all"
+description = "Add targeted cache repair for paths with predict commands to the default pipeline."
 ---
 ```r
-stata_to_r_code_fixest = function(reg, regvar, regxvar, cmdpart, opts=code_options(), parts = list()) {
-  restore.point("stata_to_r_code_fixest")
+mrb_run_all = function(project_dir, drf=repboxDRF::drf_load(project_dir,apply_caches = FALSE), repair_failed=TRUE) {
+  restore.point("mrb_run_all")
 
-  org_depvars = regvar$cterm[regvar$role=="dep"]
-  mod_depvars = replace_cterm_special_symbols(org_depvars)
+  mrb = mrb_init(project_dir, drf=drf)
 
-  formula = regvar_to_formula_fixest(regvar, regxvar, cmdpart, reg = reg)
+  # Original Stata reproduction coefficients are independent input evidence.
+  # Generate them before the metaregBase sb/rb pipeline, so they survive even
+  # if mrb_run_r_base_step fails for some runids.
+  mrb = mrb_make_so_parcels(mrb)
 
-  vcov_type = fixest_vcov_type_from_regdb(reg$se_type, reg$se_args)
-  ssc_expr = fixest_ssc_code_from_reg(reg, vcov_type = vcov_type)
-  use_ssc = !is.null(ssc_expr)
+  mrb = mrb_full_stata_script(mrb)
 
-  use_sandwich = (vcov_type == "sandwich") | opts$prefer_sandwich
-  use_summary = use_sandwich | opts$prefer_summary
 
-  if (use_sandwich) {
-    reg_vcov = "iid"
-    vcov = regdb_se_to_sandwich(reg$se_category, reg$se_type, reg$se_args)
-  } else {
-    reg_vcov = fixest_vcov_code_from_regdb(reg$se_type, reg$se_args, vcov_type, quote=FALSE, reg=reg)
-    if (use_summary) {
-      vcov = reg_vcov
-    }
+  # removes previous mrb regression output files
+  mrb_clear_stata_reg_out(project_dir)
+
+  mrb = mrb_run_stata_script(mrb)
+  # The Stata script can create new DRF cache files, e.g. after xi commands.
+  mrb$drf = repboxDRF:::drf_apply_caches(mrb$drf)
+
+
+  mrb = mrb_agg_stata(mrb)
+  mrb = mrb_run_r_base(mrb)
+  mrb = mrb_run_r_reg(mrb)
+  mrb = mrb_make_regcheck_parcel(mrb)
+
+  if (repair_failed) {
+    mrb = mrb_repair_via_ignore(mrb=mrb)
+    mrb = mrb_repair_paths_with_imports_via_cache(mrb=mrb)
+    mrb = mrb_repair_paths_with_predict_via_cache(mrb=mrb, max_reg=10)
   }
 
-  command = "feols"
-  arg_str = NULL
-  if (reg$cmd %in% c("ppmlhdfe", "poisson", "xtpoisson")) {
-    command = "fepois"
-  } else if (reg$cmd %in% c("nbreg", "gnbreg")) {
-    command = "fenegbin"
-  } else if (reg$cmd %in% c("logit","xtlogit", "clogit")) {
-    command = "feglm"
-    arg_str = "family=binomial()"
-  } else if (reg$cmd %in% c("probit","xtprobit","dprobit")) {
-    command = "feglm"
-    arg_str = 'family=binomial(link = "probit")'
-  }
-
-  arg_str = c(
-    paste0("fml = formula"),
-    paste0("data = dat"),
-    paste0("vcov = reg_vcov"),
-    arg_str
-  )
-
-  # Pass ssc to fixest natively when relevant.
-  if (use_ssc) {
-    arg_str = c(arg_str, "ssc = ssc")
-  }
-
-  library_code = "library(fixest)"
-  rcmd_code = paste0('rcmd = "',command,'"')
-  if (all(org_depvars==mod_depvars)) {
-    data_code = ""
-  } else {
-    data_code = paste0(
-      'dat[["', mod_depvars,'"]] = dat[["', org_depvars,'"]]',
-      collapse="\n"
-    )
-  }
-
-  # Apply explicit listwise deletion to emulate Stata's e(sample)
-  lw_code = r_listwise_deletion_code(regvar)
-  if (nzchar(lw_code)) {
-    data_code = if (nzchar(data_code)) paste0(data_code, "\n", lw_code) else lw_code
-  }
-
-  is_binary = reg$cmd %in% c("logit", "xtlogit", "probit", "xtprobit", "dprobit", "clogit", "logistic", "exlogistic", "blogit", "glogit", "binreg")
-  
-  if (is_binary && isTRUE(opts$drop_perfect_predictors)) {
-    # Check all possible expanded predictors before filtering omitted formulas
-    pred_cols = unique(regxvar$cterm)
-    pred_cols = setdiff(pred_cols, c("(Intercept)", ""))
-    if (length(pred_cols) > 0) {
-      pred_str = paste0('c(', paste0('"', pred_cols, '"', collapse=", "), ')')
-      dp_code = paste0(
-        'dp_cols = intersect(', pred_str, ', colnames(dat))\n',
-        'dp_res = regtranslate::stata_drop_perfect_predictors(dat, "', mod_depvars[1], '", dp_cols, verbose = TRUE)\n',
-        'dat = dp_res$dat'
-      )
-      data_code = paste0(data_code, "\n", dp_code)
-    }
-  }
-
-  # Apply dynamic weights via centralized helper
-  wt = r_weight_code(reg, template = "~ `%s`")
-  if (nzchar(wt$data_code)) {
-    data_code = if (nzchar(data_code)) paste0(data_code, "\n", wt$data_code) else wt$data_code
-  }
-  if (nzchar(wt$weight_arg)) {
-    arg_str = c(arg_str, wt$weight_arg)
-  }
-
-  ssc_code = if (use_ssc) paste0("ssc = ", ssc_expr) else NULL
-  formula_code = paste0("formula = ", formula)
-  reg_vcov_code = paste0("reg_vcov = ", quote_arg(reg_vcov))
-  reg_code = paste0("reg = ", command, "(", paste0(arg_str, collapse=","), ")")
-
-  code_df = tibble(
-    part = c("library", "rcmd", "data", "formula", if (use_ssc) "ssc", "reg_vcov", "reg"),
-    code = c(library_code, rcmd_code, data_code, formula_code, if (use_ssc) ssc_code, reg_vcov_code, reg_code)
-  )
-
-  if (use_summary) {
-    sum_vcov_code = paste0("sum_vcov = ", quote_arg(vcov))
-    sum_code = "sum = summary(reg, vcov = sum_vcov)"
-    code_df = bind_rows(
-      code_df,
-      tibble(part = c("sum_vcov","sum"), code = c(sum_vcov_code, sum_code))
-    )
-  }
-  if (opts$add_broom) {
-    code_df = add_reg_broom_code(code_df, use_summary=use_summary, use_conf_int=TRUE)
-  }
-  if (opts$add_function) {
-    code_df = add_reg_function_code(code_df)
-  }
-  code_df
+  mrb
 }
 ```
-!END_MODIFICATION stata_to_r_code_fixest to_r_fixest.R
+!END_MODIFICATION mrb_run_all metaregBase/R/mrb.R
 
-!MODIFICATION stata_to_r_code_mfx to_r_mfx.R
+
+!MODIFICATION mrb_repair_paths_with_predict_via_cache metaregBase/R/mrb_repair.R
 scope = "function"
-file = "/home/rstudio/repbox/regtranslate/R/to_r_mfx.R"
-function_name = "stata_to_r_code_mfx"
-description = "Update drop perfect predictors call to explicitly pass verbose=TRUE in mfx translation."
+file = "/home/rstudio/repbox/metaregBase/R/mrb_repair.R"
+insert_after_fun = "mrb_repair_paths_with_imports_via_cache"
+description = "New helper function to target only predict/predictnl commands for cache repair."
 ---
 ```r
-stata_to_r_code_mfx = function(reg, regvar, regxvar, cmdpart, opts=code_options(), parts = list()) {
-  restore.point("stata_to_r_code_mfx")
-
-  # Ignore dropped regvars (if they are nor part of an interaction)
-  #regvar = filter(regvar, !is_dropped | ia_cterm != cterm)
-
-  # Currently we just use the fixest formula
-  formula = regvar_to_formula_fixest(regvar,regxvar, cmdpart, reg = reg)
-
-  cmd = reg$cmd
-  if (cmd=="dprobit") {
-    rcmd = "probitmfx"
-  } else {
-    stop("Cannot yet translate Stata command ", cmd)
-  }
-
-  # The exclude='select' arguments avoids overwriting
-  # of dplyr's select function
-  library_code = "library(MASS, exclude='select')\nlibrary(mfx)\n  "
-  rcmd_code = paste0('rcmd = "',rcmd,'"')
-  # We use the default ssc arguments since they are closest to the
-  # Stata defaults
-  formula_code = paste0('formula = ', formula)
-
-  data_code = r_listwise_deletion_code(regvar)
-  
-  is_binary = reg$cmd %in% c("logit", "xtlogit", "probit", "xtprobit", "dprobit", "clogit", "logistic", "exlogistic")
-  if (is_binary && isTRUE(opts$drop_perfect_predictors)) {
-    mod_depvars = regvar$cterm[regvar$role=="dep"]
-    pred_cols = unique(regxvar$cterm)
-    pred_cols = setdiff(pred_cols, c("(Intercept)", ""))
-    if (length(pred_cols) > 0) {
-      pred_str = paste0('c(', paste0('"', pred_cols, '"', collapse=", "), ')')
-      dp_code = paste0(
-        'dp_cols = intersect(', pred_str, ', colnames(dat))\n',
-        'dp_res = regtranslate::stata_drop_perfect_predictors(dat, "', mod_depvars[1], '", dp_cols, verbose = TRUE)\n',
-        'dat = dp_res$dat'
-      )
-      data_code = paste0(data_code, "\n", dp_code)
-    }
-  }
-
-  # mfx
-  arg_str = NULL
-  if (reg$se_category == "robust") {
-    arg_str = "robust = true"
-  } else if (reg$se_category == "cluster") {
-    clustervar = extract_clustervar_from_se_args(reg$se_args)
-    arg_str = paste0('clustervar1 = "', clustervar[1],'"')
-    if (reg$se_type == "twoway") {
-      arg_str = c(arg_str, paste0('clustervar2 = "', clustervar[2],'"'))
-    }
-  }
-  arg_str = c(
-    paste0("formula = formula"),
-    paste0('data = dat'),
-    arg_str
-  )
-
-  reg_code = paste0('reg = ', rcmd,'(', paste0(arg_str, collapse=","),")")
-  code_df = tibble(part = c("library", "rcmd","data","formula","reg"), code = c(library_code, rcmd_code,data_code,formula_code,reg_code))
-  code_df = code_df[code_df$code != "", ]
-
-  if (opts$add_broom) {
-    code_df = add_reg_broom_code(code_df, use_summary=FALSE, use_conf_int=TRUE)
-  }
-  if (opts$add_function) {
-    code_df = add_reg_function_code(code_df)
-  }
-  code_df
+mrb_repair_paths_with_predict_via_cache = function(project_dir = mrb$project_dir, mrb = NULL, max_reg = 10) {
+  mrb_repair_via_cache(project_dir, mrb, max_reg, only_paths_with_predict = TRUE)
 }
 ```
-!END_MODIFICATION stata_to_r_code_mfx to_r_mfx.R
+!END_MODIFICATION mrb_repair_paths_with_predict_via_cache metaregBase/R/mrb_repair.R
+
+
+!MODIFICATION mrb_repair_via_cache metaregBase/R/mrb_repair.R
+scope = "function"
+file = "/home/rstudio/repbox/metaregBase/R/mrb_repair.R"
+function_name = "mrb_repair_via_cache"
+description = "Pass the new only_paths_with_predict argument down to the runid collector."
+---
+```r
+#' Cache-based repair: add strategic data caches, re-run failed regressions.
+#'
+#' For each failed pid that still needs repair after the ignore pass,
+#' determine the best cache position, generate it in Stata, and re-run.
+mrb_repair_via_cache = function(project_dir = mrb$project_dir, mrb = NULL, max_reg = 10, only_paths_with_import = FALSE, only_paths_with_predict = FALSE) {
+  restore.point("mrb_repair_via_cache")
+
+  if (is.null(mrb)) {
+    mrb = mrb_init(project_dir)
+    mrb = mrb_agg_stata(mrb, skip_if_has = TRUE)
+  }
+
+  drf_clear_mcache()
+  failed_pids = mrb_get_to_repair_runids(mrb = mrb, only_paths_with_import = only_paths_with_import, only_paths_with_predict = only_paths_with_predict)
+
+  if (!is.null(max_reg)) {
+    failed_pids = head(failed_pids, max_reg)
+  }
+
+  if (length(failed_pids) == 0) {
+    cat("\nNo failed runs left to repair via cache.\n")
+    return(mrb)
+  }
+
+  cat("\nCache repair attempt for runids: ", paste(failed_pids, collapse = ", "), "\n")
+
+  mrb$drf = repboxDRF:::drf_sync_r_err_runids(mrb$drf)
+
+  while (length(failed_pids) > 0) {
+    cache_runid = mrb_determine_repair_cache_runid(mrb, failed_pids = failed_pids)
+
+    if (is.null(cache_runid)) {
+      cat(sprintf("\nCannot determine cache runid for remaining pids: %s. Stopping cache repair.\n", paste(failed_pids, collapse=", ")))
+      break
+    }
+
+    # Identify which failed pids are going to be repaired by this cache
+    pids_to_rerun = unique(mrb$drf$path_df$pid[mrb$drf$path_df$runid == cache_runid & mrb$drf$path_df$pid %in% failed_pids])
+
+    if (length(pids_to_rerun) == 0) {
+      cat(sprintf("\nError: Cache runid %d does not serve any failed pids. Stopping to avoid infinite loop.\n", cache_runid))
+      break
+    }
+
+    cat(sprintf("\nCaching at runid %d. This serves %d failed pid(s).\n", cache_runid, length(pids_to_rerun)))
+
+    mrb_create_cache_at_runid(mrb, cache_runid = cache_runid, pid = pids_to_rerun[1], overwrite = TRUE)
+
+    mrb$drf = repboxDRF:::drf_apply_caches(mrb$drf, just_pids = pids_to_rerun)
+
+    mrb = mrb_repair_via_ignore(mrb = mrb, pids = pids_to_rerun, rerun = TRUE, repair_code = "c")
+
+    # Remove the ones we just tried so we can find the next best cache for any remaining
+    failed_pids = setdiff(failed_pids, pids_to_rerun)
+  }
+
+  mrb
+}
+```
+!END_MODIFICATION mrb_repair_via_cache metaregBase/R/mrb_repair.R
+
+
+!MODIFICATION mrb_get_to_repair_runids metaregBase/R/mrb_repair.R
+scope = "function"
+file = "/home/rstudio/repbox/metaregBase/R/mrb_repair.R"
+function_name = "mrb_get_to_repair_runids"
+description = "Add filtering logic for paths containing predict/predictnl commands."
+---
+```r
+mrb_get_to_repair_runids = function(mrb, parcels = mrb$parcels,  only_paths_with_import = FALSE, only_paths_with_predict = FALSE) {
+  restore.point("mrb_get_to_repair_runids")
+  parcels = repboxDB::repdb_load_parcels(mrb$project_dir, c("regcheck", "reg", "regrepair"), parcels)
+
+  regcheck = parcels$regcheck
+  if (is.null(regcheck)) {
+    cat("\nNo regcheck parcel found. Run mrb_make_regcheck_parcel() first.\n")
+    return(NULL)
+  }
+  reg = parcels$reg
+  if (!repboxUtils::has_col(regcheck, "cmd") & NROW(regcheck) > 0) {
+    if (!is.null(reg)) {
+      regcheck = left_join(regcheck, reg %>% select(cmd, runid), by = "runid")
+    } else {
+      regcheck$cmd = ""
+    }
+  }
+  regcheck$cmd = repboxUtils::na.val(regcheck$cmd, "")
+
+  regcheck = regcheck %>%
+    mutate(do_repair = (sb_raw_did_run) & (!rb_did_run)) %>%
+    mutate(do_repair = do_repair | repboxUtils::is.true(!rb_sb_coef_same & !(has.substr(cmd, "logit") | has.substr(cmd, "probit")))) %>%
+    mutate(do_repair = do_repair & (stata_reg_cmd_has_r_trans(cmd) | cmd == ""))
+
+  failed_pids = regcheck$runid[regcheck$do_repair]
+
+  if (only_paths_with_import && length(failed_pids) > 0 && !is.null(mrb$drf$path_df)) {
+    first_runids = mrb$drf$path_df %>%
+      filter(pid %in% failed_pids) %>%
+      group_by(pid) %>%
+      summarize(first_runid = min(runid), .groups = "drop")
+
+    run_df_first = mrb$drf$run_df %>% filter(runid %in% first_runids$first_runid)
+
+    is_import = run_df_first$cmd %in% c("import", "insheet", "infix") & !run_df_first$has_file_cache
+    import_first_runids = run_df_first$runid[is_import]
+
+    failed_pids = first_runids$pid[first_runids$first_runid %in% import_first_runids]
+  }
+
+  if (only_paths_with_predict && length(failed_pids) > 0 && !is.null(mrb$drf$path_df)) {
+    path_cmds = mrb$drf$path_df %>%
+      filter(pid %in% failed_pids) %>%
+      left_join(mrb$drf$run_df %>% select(runid, cmd), by = "runid")
+
+    has_pred = path_cmds %>%
+      group_by(pid) %>%
+      summarize(has_predict = any(cmd %in% c("predict", "predictnl")), .groups = "drop") %>%
+      filter(has_predict)
+
+    failed_pids = intersect(failed_pids, has_pred$pid)
+  }
+
+  failed_pids
+}
+```
+!END_MODIFICATION mrb_get_to_repair_runids metaregBase/R/mrb_repair.R
+
+
+!MODIFICATION mrb_create_cache_at_runid metaregBase/R/mrb_repair.R
+scope = "function"
+file = "/home/rstudio/repbox/metaregBase/R/mrb_repair.R"
+function_name = "mrb_create_cache_at_runid"
+description = "Ensure overwrite deletes the existing cache file instead of early returning."
+---
+```r
+#' Generate a Stata cache at a specific intermediate runid
+mrb_create_cache_at_runid = function(mrb=mrb_init(project_dir), cache_runid, overwrite = FALSE, project_dir=NULL, pid=NULL) {
+  restore.point("mrb_create_cache_at_runid")
+  project_dir = mrb$project_dir
+  cache_dir = file.path(project_dir, "drf/cached_dta")
+
+  cache_file = file.path(cache_dir, paste0(cache_runid, "_cache.dta"))
+  if (file.exists(cache_file)) {
+    if (!overwrite) {
+      return(invisible(cache_runid))
+    } else {
+      file.remove(cache_file)
+    }
+  }
+
+  if (!dir.exists(cache_dir)) dir.create(cache_dir, recursive = TRUE)
+
+  if (is.null(pid)) {
+    path_df = mrb$drf$path_df
+    row = which(path_df$runid==cache_runid)
+    pid = first(path_df$pid[row])
+  }
+
+  # Get the Stata code path for this pid
+  sc_df = repboxDRF::drf_stata_code_df(mrb$drf, runids = pid, path_merge = "none", write_e_r = FALSE, cache_after_runids = cache_runid,keep_non_mod_reg = TRUE)
+
+  # Subset up to cache_runid
+  rows = which(sc_df$runid <= cache_runid)
+  if (length(rows) == 0) return(invisible(cache_runid))
+  sc_df = sc_df[rows, , drop = FALSE]
+
+  script_file = file.path(mrb$project_dir, "metareg/base/stata_code/mrb_repair.do")
+  metaregBase:::drf_code_write(sc_df, script_file)
+
+  cat("\nRunning Stata repair script to generate cache at runid", cache_runid, "...\n")
+  mrb_run_stata_script(mrb, do_file = script_file)
+}
+```
+!END_MODIFICATION mrb_create_cache_at_runid metaregBase/R/mrb_repair.R

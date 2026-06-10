@@ -100,12 +100,15 @@ mrb_regcheck_to_regrepair = function(mrb, pids) {
 mrb_repair_paths_with_imports_via_cache = function(project_dir = mrb$project_dir, mrb = NULL, max_reg = Inf) {
   mrb_repair_via_cache(project_dir, mrb, max_reg, only_paths_with_import = TRUE)
 }
+mrb_repair_paths_with_predict_via_cache = function(project_dir = mrb$project_dir, mrb = NULL, max_reg = 10) {
+  mrb_repair_via_cache(project_dir, mrb, max_reg, only_paths_with_predict = TRUE)
+}
 
 #' Cache-based repair: add strategic data caches, re-run failed regressions.
 #'
 #' For each failed pid that still needs repair after the ignore pass,
 #' determine the best cache position, generate it in Stata, and re-run.
-mrb_repair_via_cache = function(project_dir = mrb$project_dir, mrb = NULL, max_reg = 10, only_paths_with_import = FALSE) {
+mrb_repair_via_cache = function(project_dir = mrb$project_dir, mrb = NULL, max_reg = 10, only_paths_with_import = FALSE, only_paths_with_predict = FALSE) {
   restore.point("mrb_repair_via_cache")
 
   if (is.null(mrb)) {
@@ -114,7 +117,7 @@ mrb_repair_via_cache = function(project_dir = mrb$project_dir, mrb = NULL, max_r
   }
 
   drf_clear_mcache()
-  failed_pids = mrb_get_to_repair_runids(mrb = mrb, only_paths_with_import = only_paths_with_import)
+  failed_pids = mrb_get_to_repair_runids(mrb = mrb, only_paths_with_import = only_paths_with_import, only_paths_with_predict = only_paths_with_predict)
 
   if (!is.null(max_reg)) {
     failed_pids = head(failed_pids, max_reg)
@@ -147,7 +150,7 @@ mrb_repair_via_cache = function(project_dir = mrb$project_dir, mrb = NULL, max_r
 
     cat(sprintf("\nCaching at runid %d. This serves %d failed pid(s).\n", cache_runid, length(pids_to_rerun)))
 
-    mrb_create_cache_at_runid(mrb, cache_runid = cache_runid, pid = pids_to_rerun[1])
+    mrb_create_cache_at_runid(mrb, cache_runid = cache_runid, pid = pids_to_rerun[1], overwrite = TRUE)
 
     mrb$drf = repboxDRF:::drf_apply_caches(mrb$drf, just_pids = pids_to_rerun)
 
@@ -207,7 +210,7 @@ mrb_determine_repair_cache_runid = function(mrb, failed_pids, drf = mrb$drf) {
 }
 
 
-mrb_get_to_repair_runids = function(mrb, parcels = mrb$parcels,  only_paths_with_import = FALSE) {
+mrb_get_to_repair_runids = function(mrb, parcels = mrb$parcels,  only_paths_with_import = FALSE, only_paths_with_predict = FALSE) {
   restore.point("mrb_get_to_repair_runids")
   parcels = repboxDB::repdb_load_parcels(mrb$project_dir, c("regcheck", "reg", "regrepair"), parcels)
 
@@ -247,6 +250,19 @@ mrb_get_to_repair_runids = function(mrb, parcels = mrb$parcels,  only_paths_with
     failed_pids = first_runids$pid[first_runids$first_runid %in% import_first_runids]
   }
 
+  if (only_paths_with_predict && length(failed_pids) > 0 && !is.null(mrb$drf$path_df)) {
+    path_cmds = mrb$drf$path_df %>%
+      filter(pid %in% failed_pids) %>%
+      left_join(mrb$drf$run_df %>% select(runid, cmd), by = "runid")
+
+    has_pred = path_cmds %>%
+      group_by(pid) %>%
+      summarize(has_predict = any(cmd %in% c("predict", "predictnl")), .groups = "drop") %>%
+      filter(has_predict)
+
+    failed_pids = intersect(failed_pids, has_pred$pid)
+  }
+
   failed_pids
 }
 
@@ -257,8 +273,12 @@ mrb_create_cache_at_runid = function(mrb=mrb_init(project_dir), cache_runid, ove
   cache_dir = file.path(project_dir, "drf/cached_dta")
 
   cache_file = file.path(cache_dir, paste0(cache_runid, "_cache.dta"))
-  if (!overwrite && file.exists(cache_file)) {
-    return(invisible(cache_runid))
+  if (file.exists(cache_file)) {
+    if (!overwrite) {
+      return(invisible(cache_runid))
+    } else {
+      file.remove(cache_file)
+    }
   }
 
   if (!dir.exists(cache_dir)) dir.create(cache_dir, recursive = TRUE)
@@ -276,11 +296,6 @@ mrb_create_cache_at_runid = function(mrb=mrb_init(project_dir), cache_runid, ove
   rows = which(sc_df$runid <= cache_runid)
   if (length(rows) == 0) return(invisible(cache_runid))
   sc_df = sc_df[rows, , drop = FALSE]
-
-  # Add save to the last row (which should be cache_runid)
-  # last_row = length(rows)
-  # new_code = paste0(sc_df$code[last_row], "\ncapture save \"", cache_file, "\", replace\n")
-  # sc_df$code[last_row] = new_code
 
   script_file = file.path(mrb$project_dir, "metareg/base/stata_code/mrb_repair.do")
   metaregBase:::drf_code_write(sc_df, script_file)
