@@ -1,102 +1,112 @@
-Yes! You are completely right, and that is a much better and cleaner approach. 
+This is a fantastic catch. The discrepancy you are seeing is actually caused by **two distinct differences** in how R and Stata handle the estimation sample, acting at the exact same time.
 
-To answer your question directly: **Yes, the code injection will ONLY happen if a variable of natural type `Date` or `POSIXct` is present and used numerically.** The helper function explicitly checks this condition and returns an empty string `""` if no such variables exist. The central injection logic then checks `if (nzchar(date_code))` and won't add any clutter or empty blocks to the generated R script.
+### The Explanation
 
-Centralizing this inside the main `reg_stata_to_r_code()` orchestrator in `to_r.R` is the perfect way to do this. We can evaluate `r_date_to_numeric_code()` once and prepend the generated code to the `part == "data"` block of the generated `code_df`. This completely eliminates the need to pollute all the individual `stata_to_r_code_*` functions.
+**1. The Singleton Difference (`fixef.rm`)**
+As we discussed, Stata’s `areg` keeps fixed-effect singletons, while `feols` drops them by default (1,168 observations in this case). Adding `fixef.rm = "none"` forces R to keep them, raising the R sample size to 9,242. But Stata's N is 9,153. Why the remaining 89 observation difference?
 
-Here are the complete code changes to implement this centralized approach (this includes reverting the separate files back to their original, clean state):
+**2. The "Silent Dropping" Difference (`""` and `Inf` vs `NA`)**
+If you look closely at Stata's output, it did *not* print a warning that 89 observations were dropped for collinearity. In Stata, if observations disappear silently before estimation, it happens during `marksample` (listwise deletion). 
+R's `complete.cases()` only drops `NA` values. However, Stata treats **empty strings (`""`)** as missing for string variables, and treats **`Inf` / `NaN` / extended missing values (`.a`, `.b`)** as missing for numeric variables. 
+If your dataset has 89 observations where a covariate contains an empty string or an `Inf`, R keeps them (because they are not `NA`), but Stata silently deletes them. 
 
-### 1. Centralize logic in `to_r.R`
+Because the sample is fundamentally different (R included 89 outliers/invalid rows that Stata threw out), the coefficient for `logmeanbudget` swung wildly from `0.0017` to `-0.0329`. 
 
-We will add the new helper function `r_date_to_numeric_code` here and update `reg_stata_to_r_code` to intercept the generated `code_df` and prepend the date conversion string if needed.
+### The Solution
 
-!MODIFICATION r_date_to_numeric_code in R/to_r.R
+Your proposal is absolutely correct. We need to:
+1. Define a fast, custom listwise-deletion function (`stata_drop_missing`) that strictly mirrors Stata's `marksample` behavior.
+2. Update `r_listwise_deletion_code` to inject this function into the translated script.
+3. Update `code_options` and `stata_to_r_code_fixest` to inject the `fixef.rm = "none"` argument natively inside `regtranslate`.
+
+Here are the `!MODIFICATION` blocks to implement this cleanly inside `regtranslate`.
+
+!MODIFICATION code_options to_r.R
 scope = "function"
 file = "/home/rstudio/repbox/regtranslate/R/to_r.R"
-insert_before_fun = "reg_stata_to_r_code"
-description = "Add helper function to convert Date variables to numeric safely."
+function_name = "code_options"
+description = "Add match_stata_singletons toggle to code_options"
 ---
 ```r
-#' Generate R code to convert Date/Datetime variables to numeric
-#' 
-#' Fixest and other packages complain if Date variables are used directly as numeric variables.
-#' We also emit a repbox_problem since effect sizes of Dates are hard to interpret.
-r_date_to_numeric_code = function(regvar, runid = NULL) {
-  if (!"varclass" %in% colnames(regvar)) return("")
-  
-  date_vars = regvar$cterm[regvar$varclass %in% c("Date", "POSIXct", "POSIXt", "difftime") & regvar$var_reg_type == "numeric"]
-  date_vars = unique(date_vars)
-  date_vars = setdiff(date_vars, c("(Intercept)", "", NA))
-  
-  if (length(date_vars) > 0) {
-    if (!is.null(runid)) {
-      msg = paste0("Regression uses Date/Datetime variables as numeric: ", paste(date_vars, collapse=", "), ". Effect sizes might be hard to interpret.")
-      repboxUtils::repbox_problem(msg, type = "date_as_numeric", runid = runid, fail_action = "msg")
-    }
-    
-    paste0(
-      "date_cols = c(", paste0('"', date_vars, '"', collapse=", "), ")\n",
-      "date_cols = intersect(date_cols, colnames(dat))\n",
-      "if (length(date_cols) > 0) {\n",
-      "  dat[date_cols] = lapply(dat[date_cols], as.numeric)\n",
-      "}"
-    )
-  } else {
-    ""
-  }
+code_options = function(prefer_sandwich=FALSE, prefer_summary=FALSE, add_broom=TRUE, add_function=FALSE, add_restorepoint=FALSE, drop_perfect_predictors=TRUE, match_stata_singletons=TRUE) {
+  list(
+    prefer_sandwich = prefer_sandwich, 
+    prefer_summary = prefer_summary, 
+    add_broom = add_broom, 
+    add_function = add_function, 
+    add_restorepoint = add_restorepoint, 
+    drop_perfect_predictors = drop_perfect_predictors,
+    match_stata_singletons = match_stata_singletons
+  )
 }
 ```
-!END_MODIFICATION r_date_to_numeric_code in R/to_r.R
+!END_MODIFICATION code_options to_r.R
 
-!MODIFICATION reg_stata_to_r_code in R/to_r.R
+!MODIFICATION stata_drop_missing to_r.R
 scope = "function"
 file = "/home/rstudio/repbox/regtranslate/R/to_r.R"
-function_name = "reg_stata_to_r_code"
-description = "Centralize the injection of the date conversion code for all translations."
+insert_after_fun = "r_listwise_deletion_code"
+description = "Add highly optimized helper to perfectly emulate Stata's marksample missing value drops"
 ---
 ```r
-reg_stata_to_r_code = function(reg, regvar, regxvar, cmdpart, prefer="fixest", opts=code_options()) {
-  restore.point("reg_stata_to_r_code")
-
-  r_cmd = get_stata_to_r_cmd(reg$cmd, prefer)
-  if (isTRUE(r_cmd == "no_trans") | is.na(r_cmd)) {
-    cat(paste0("The Stata command ", reg$cmd, " is not yet implemented for translation in regtranslate."))
-    return(NULL)
-  }
-
-  args = list(reg=reg, regvar=regvar,regxvar, cmdpart=cmdpart, opts=opts)
-  fun = paste0("stata_to_r_code_",r_cmd)
-  res = do.call(fun, args)
+#' Emulate Stata's listwise deletion (e(sample))
+#'
+#' Drops NA, but also empty strings ("") and non-finite numbers (Inf, NaN),
+#' which Stata treats as missing values during marksample.
+#' @export
+stata_drop_missing = function(dat, vars) {
+  vars = intersect(vars, colnames(dat))
+  if (length(vars) == 0) return(dat)
   
-  # Centralized injection of Date to numeric conversion code
-  if (!is.null(res) && "data" %in% res$part) {
-    date_code = r_date_to_numeric_code(regvar, runid = reg$runid)
-    if (nzchar(date_code)) {
-      data_idx = which(res$part == "data")[1]
-      if (nzchar(res$code[data_idx])) {
-        res$code[data_idx] = paste0(date_code, "\n", res$code[data_idx])
-      } else {
-        res$code[data_idx] = date_code
-      }
+  # Fast vectorized check avoiding large intermediate matrix allocations
+  keep = rep(TRUE, nrow(dat))
+  for (v in vars) {
+    val = dat[[v]]
+    if (is.character(val) || is.factor(val)) {
+      keep = keep & !is.na(val) & (val != "")
+    } else if (is.numeric(val)) {
+      keep = keep & is.finite(val)
+    } else {
+      keep = keep & !is.na(val)
     }
   }
-  
-  res
+  dat[keep, , drop = FALSE]
 }
 ```
-!END_MODIFICATION reg_stata_to_r_code in R/to_r.R
+!END_MODIFICATION stata_drop_missing to_r.R
 
+!MODIFICATION r_listwise_deletion_code to_r.R
+scope = "function"
+file = "/home/rstudio/repbox/regtranslate/R/to_r.R"
+function_name = "r_listwise_deletion_code"
+description = "Update listwise deletion string generation to use the new stata_drop_missing helper instead of complete.cases"
 ---
+```r
+#' Generate R code to emulate Stata's listwise deletion (e(sample))
+#'
+#' Stata drops missing values for all variables in the original varlist
+#' *before* omitting collinear terms. Since our R translation explicitly
+#' drops collinear terms from the formula, we need to manually drop NAs
+#' across all original variables to match Stata's e(sample).
+r_listwise_deletion_code = function(regvar) {
+  all_base_cterms = unique(regvar$cterm)
+  all_base_cterms = setdiff(all_base_cterms, c("(Intercept)", ""))
 
-### 2. Clean up (Revert) all Individual Translators
+  if (length(all_base_cterms) == 0) return("")
 
-Since the logic is now fully centralized, we can revert the 6 individual regression translator functions back to their pristine, original states (removing the changes I suggested in the previous turn). 
+  paste0(
+    "cc_cols = c(", paste0('"', all_base_cterms, '"', collapse=", "), ")\n",
+    "dat = regtranslate::stata_drop_missing(dat, cc_cols)"
+  )
+}
+```
+!END_MODIFICATION r_listwise_deletion_code to_r.R
 
-!MODIFICATION stata_to_r_code_fixest in R/to_r_fixest.R
+!MODIFICATION stata_to_r_code_fixest to_r_fixest.R
 scope = "function"
 file = "/home/rstudio/repbox/regtranslate/R/to_r_fixest.R"
 function_name = "stata_to_r_code_fixest"
-description = "Revert to original state. Date conversion logic is now centralized."
+description = "Dynamically inject fixef.rm = 'none' for Stata commands that retain singletons (e.g. areg/xtreg) or when reghdfe has keepsingletons"
 ---
 ```r
 stata_to_r_code_fixest = function(reg, regvar, regxvar, cmdpart, opts=code_options(), parts = list()) {
@@ -148,6 +158,22 @@ stata_to_r_code_fixest = function(reg, regvar, regxvar, cmdpart, opts=code_optio
   # Pass ssc to fixest natively when relevant.
   if (use_ssc) {
     arg_str = c(arg_str, "ssc = ssc")
+  }
+
+  # Handle singleton observations according to Stata behavior
+  if (isTRUE(opts$match_stata_singletons)) {
+    if (reg$cmd %in% c("areg", "xtreg", "xtivreg", "xtivreg2", "xtpoisson", "xtlogit", "xtprobit", "clogit")) {
+      arg_str = c(arg_str, 'fixef.rm = "none"')
+    } else if (reg$cmd %in% c("reghdfe", "ivreghdfe", "ppmlhdfe")) {
+      # reghdfe/ppmlhdfe drops them by default, but allows keepsingletons option
+      keep_singletons = FALSE
+      if (!is.null(cmdpart)) {
+        keep_singletons = any(cmdpart$part == "opt" & startsWith(tolower(cmdpart$content), "keepsingleton"))
+      }
+      if (keep_singletons) {
+        arg_str = c(arg_str, 'fixef.rm = "none"')
+      }
+    }
   }
 
   library_code = "library(fixest)"
@@ -220,372 +246,4 @@ stata_to_r_code_fixest = function(reg, regvar, regxvar, cmdpart, opts=code_optio
   code_df
 }
 ```
-!END_MODIFICATION stata_to_r_code_fixest in R/to_r_fixest.R
-
-!MODIFICATION stata_to_r_code_lm in R/to_r_lm.R
-scope = "function"
-file = "/home/rstudio/repbox/regtranslate/R/to_r_lm.R"
-function_name = "stata_to_r_code_lm"
-description = "Revert to original state. Date conversion logic is now centralized."
----
-```r
-stata_to_r_code_lm = function(reg, regvar, regxvar, cmdpart, opts=code_options(), parts = list()) {
-  restore.point("stata_to_r_code_lm")
-
-  org_depvars = regvar$cterm[regvar$role=="dep"]
-  mod_depvars = replace_cterm_special_symbols(org_depvars)
-
-  formula = regvar_to_formula_fixest(regvar, regxvar, cmdpart, reg = reg)
-
-  command = "lm"
-  arg_str = c(
-    paste0("formula = formula"),
-    paste0('data = dat')
-  )
-
-  rcmd_code = paste0('rcmd = "',command,'"')
-  # We use the default ssc arguments since they are closest to the
-  # Stata defaults
-  if (all(org_depvars==mod_depvars)) {
-    data_code = ""
-  } else {
-    data_code = paste0(
-      'dat[["', mod_depvars,'"]] = dat[["', org_depvars,'"]]',
-      collapse="\n"
-    )
-  }
-
-  # Apply explicit listwise deletion to emulate Stata's e(sample)
-  lw_code = r_listwise_deletion_code(regvar)
-  if (nzchar(lw_code)) {
-    data_code = if (nzchar(data_code)) paste0(data_code, "\n", lw_code) else lw_code
-  }
-
-  # Apply dynamic weights via centralized helper
-  wt = r_weight_code(reg, template = "dat[['%s']]")
-  if (nzchar(wt$data_code)) {
-    data_code = if (nzchar(data_code)) paste0(data_code, "\n", wt$data_code) else wt$data_code
-  }
-  if (nzchar(wt$weight_arg)) {
-    arg_str = c(arg_str, wt$weight_arg)
-  }
-
-  formula_code = paste0('formula = ', formula)
-  reg_code = paste0('reg = ', command, "(", paste0(arg_str, collapse=","),")")
-
-  code_df = tibble(part = c("rcmd","data","formula", "reg"), code = c(rcmd_code,data_code, formula_code, reg_code))
-
-
-  use_summary=FALSE
-  if (opts$add_broom) {
-    code_df = add_reg_broom_code(code_df, use_summary=use_summary, use_conf_int=TRUE)
-  }
-  if (opts$add_function) {
-    code_df = add_reg_function_code(code_df)
-  }
-  code_df
-}
-```
-!END_MODIFICATION stata_to_r_code_lm in R/to_r_lm.R
-
-!MODIFICATION stata_to_r_code_mfx in R/to_r_mfx.R
-scope = "function"
-file = "/home/rstudio/repbox/regtranslate/R/to_r_mfx.R"
-function_name = "stata_to_r_code_mfx"
-description = "Revert to original state. Date conversion logic is now centralized."
----
-```r
-stata_to_r_code_mfx = function(reg, regvar, regxvar, cmdpart, opts=code_options(), parts = list()) {
-  restore.point("stata_to_r_code_mfx")
-
-  # Ignore dropped regvars (if they are nor part of an interaction)
-  #regvar = filter(regvar, !is_dropped | ia_cterm != cterm)
-
-  # Currently we just use the fixest formula
-  formula = regvar_to_formula_fixest(regvar,regxvar, cmdpart, reg = reg)
-
-  cmd = reg$cmd
-  if (cmd=="dprobit") {
-    rcmd = "probitmfx"
-  } else {
-    stop("Cannot yet translate Stata command ", cmd)
-  }
-
-  # The exclude='select' arguments avoids overwriting
-  # of dplyr's select function
-  library_code = "library(MASS, exclude='select')\nlibrary(mfx)\n  "
-  rcmd_code = paste0('rcmd = "',rcmd,'"')
-  # We use the default ssc arguments since they are closest to the
-  # Stata defaults
-  formula_code = paste0('formula = ', formula)
-
-  data_code = r_listwise_deletion_code(regvar)
-
-  is_binary = reg$cmd %in% c("logit", "xtlogit", "probit", "xtprobit", "dprobit", "clogit", "logistic", "exlogistic")
-  if (is_binary && isTRUE(opts$drop_perfect_predictors)) {
-    mod_depvars = regvar$cterm[regvar$role=="dep"]
-    pred_cols = unique(regxvar$cterm)
-    pred_cols = setdiff(pred_cols, c("(Intercept)", ""))
-    if (length(pred_cols) > 0) {
-      pred_str = paste0('c(', paste0('"', pred_cols, '"', collapse=", "), ')')
-      dp_code = paste0(
-        'dp_cols = intersect(', pred_str, ', colnames(dat))\n',
-        'dp_res = regtranslate::stata_drop_perfect_predictors(dat, "', mod_depvars[1], '", dp_cols, verbose = TRUE)\n',
-        'dat = dp_res$dat'
-      )
-      data_code = paste0(data_code, "\n", dp_code)
-    }
-  }
-
-  # mfx
-  arg_str = NULL
-  if (reg$se_category == "robust") {
-    arg_str = "robust = true"
-  } else if (reg$se_category == "cluster") {
-    clustervar = extract_clustervar_from_se_args(reg$se_args)
-    arg_str = paste0('clustervar1 = "', clustervar[1],'"')
-    if (reg$se_type == "twoway") {
-      arg_str = c(arg_str, paste0('clustervar2 = "', clustervar[2],'"'))
-    }
-  }
-  arg_str = c(
-    paste0("formula = formula"),
-    paste0('data = dat'),
-    arg_str
-  )
-
-  reg_code = paste0('reg = ', rcmd,'(', paste0(arg_str, collapse=","),")")
-  code_df = tibble(part = c("library", "rcmd","data","formula","reg"), code = c(library_code, rcmd_code,data_code,formula_code,reg_code))
-  code_df = code_df[code_df$code != "", ]
-
-  if (opts$add_broom) {
-    code_df = add_reg_broom_code(code_df, use_summary=FALSE, use_conf_int=TRUE)
-  }
-  if (opts$add_function) {
-    code_df = add_reg_function_code(code_df)
-  }
-  code_df
-}
-```
-!END_MODIFICATION stata_to_r_code_mfx in R/to_r_mfx.R
-
-!MODIFICATION stata_to_r_code_quantreg in R/to_r_quantreg.R
-scope = "function"
-file = "/home/rstudio/repbox/regtranslate/R/to_r_quantreg.R"
-function_name = "stata_to_r_code_quantreg"
-description = "Revert to original state. Date conversion logic is now centralized."
----
-```r
-stata_to_r_code_quantreg = function(reg, regvar,regxvar, cmdpart, opts=code_options(), parts = list()) {
-  restore.point("stata_to_r_code_quantreg")
-
-  # Ignore dropped regvars (if they are nor part of an interaction)
-  #regvar = filter(regvar, !is_dropped | ia_cterm != cterm)
-
-
-  # Currently we just use the fixest formula
-  formula = regvar_to_formula_fixest(regvar, regxvar, cmdpart, reg = reg)
-
-  rcmd = "rq"
-
-  library_code = paste0("library(quantreg)")
-  rcmd_code = paste0('rcmd = "',rcmd,'"')
-  # We use the default ssc arguments since they are closest to the
-  # Stata defaults
-  formula_code = paste0('formula = ', formula)
-
-  arg_str = NULL
-  if (reg$se_category != "iid") {
-    stop("Currently stata_to_r_code_quantreg is only implemented for iid standard errors. ")
-  }
-  arg_str = c(
-    paste0("formula = formula"),
-    paste0('data = dat'),
-    arg_str
-  )
-
-  data_code = r_listwise_deletion_code(regvar)
-
-  # Apply dynamic weights via centralized helper
-  wt = r_weight_code(reg, template = "dat[['%s']]")
-  if (nzchar(wt$data_code)) {
-    data_code = if (nzchar(data_code)) paste0(data_code, "\n", wt$data_code) else wt$data_code
-  }
-  if (nzchar(wt$weight_arg)) {
-    arg_str = c(arg_str, wt$weight_arg)
-  }
-
-  opts_df = cmdpart_to_opts_df(cmdpart)
-  opt_row = which(opts_df$opt=="quantile")
-  if (length(opt_row)>0) {
-    arg_str = c(arg_str, paste0("tau = ", opts_df$opt_arg[opt_row]))
-  }
-
-
-  reg_code = paste0('reg = suppressWarnings(', rcmd,'(', paste0(arg_str, collapse=","),"))")
-
-  code_df = tibble(part = c("library", "rcmd","data","formula","reg"), code = c(library_code, rcmd_code,data_code,formula_code,reg_code))
-  code_df = code_df[code_df$code != "", ]
-
-  if (opts$add_broom) {
-    code_df = add_reg_broom_code(code_df, use_summary=FALSE, use_conf_int=TRUE)
-    code_df = bind_rows(code_df, tibble(part="ct_mod",code='
-ct = mutate(ct, std.error=NA_real_, statistic= NA_real_,  p.value = NA_real_)
-if ("logLik" %in% names(glance)) {
-  glance$logLik = as.numeric(glance$logLik)
-}
-'))
-  }
-  if (opts$add_function) {
-    code_df = add_reg_function_code(code_df)
-  }
-  code_df
-}
-```
-!END_MODIFICATION stata_to_r_code_quantreg in R/to_r_quantreg.R
-
-!MODIFICATION stata_to_r_code_stcox in R/to_r_stcox.R
-scope = "function"
-file = "/home/rstudio/repbox/regtranslate/R/to_r_stcox.R"
-function_name = "stata_to_r_code_stcox"
-description = "Revert to original state. Date conversion logic is now centralized."
----
-```r
-stata_to_r_code_stcox = function(reg, regvar, regxvar, cmdpart, opts=code_options(), parts = list()) {
-  restore.point("stata_to_r_code_stcox")
-
-  timevar = reg$timevar[1]
-  failvar = reg$panelvar[1]
-
-  if (is.na(timevar) || !nzchar(timevar)) {
-    stop("Cannot translate stcox: timevar missing (stset not found or not parsed)")
-  }
-
-  if (!is.na(failvar) && nzchar(failvar)) {
-    surv_expr = paste0("survival::Surv(`", timevar, "`, `", failvar, "`)")
-  } else {
-    surv_expr = paste0("survival::Surv(`", timevar, "`)")
-  }
-
-  # stcox doesn't have a LHS variable in varlist. cmdparts_of_stata_reg treats the first one as dep.
-  # We convert it to exo to prevent it from going to LHS.
-  regvar$role[regvar$role == "dep"] = "exo"
-  if (!is.null(regxvar) && nrow(regxvar) > 0) {
-    regxvar$role[regxvar$role == "dep"] = "exo"
-  }
-
-  formula_rhs = regvar_to_formula_fixest(regvar, regxvar, cmdpart, reg = reg)
-  formula = paste0(surv_expr, formula_rhs)
-
-  library_code = "library(survival)"
-  rcmd_code = 'rcmd = "coxph"'
-
-  arg_str = c(
-    "formula = formula",
-    "data = dat",
-    'ties = "breslow"'
-  )
-
-  # Handle se
-  if (reg$se_category == "robust") {
-    arg_str = c(arg_str, "robust = TRUE")
-  } else if (reg$se_category == "cluster") {
-    clustervar = extract_clustervar_from_se_args(reg$se_args)
-    if (length(clustervar) > 0) {
-      arg_str = c(arg_str, paste0('cluster = dat[["', clustervar[1], '"]]'))
-    }
-  }
-
-  data_code = r_listwise_deletion_code(regvar)
-
-  # Apply dynamic weights via centralized helper
-  wt = r_weight_code(reg, template = "dat[['%s']]")
-  if (nzchar(wt$data_code)) {
-    data_code = if (nzchar(data_code)) paste0(data_code, "\n", wt$data_code) else wt$data_code
-  }
-  if (nzchar(wt$weight_arg)) {
-    arg_str = c(arg_str, wt$weight_arg)
-  }
-
-  formula_code = paste0('formula = ', formula)
-  reg_code = paste0('reg = coxph(', paste0(arg_str, collapse=","),')')
-
-  code_df = tibble(part = c("library", "rcmd","data","formula","reg"), code = c(library_code, rcmd_code, data_code, formula_code, reg_code))
-
-  if (opts$add_broom) {
-    code_df = add_reg_broom_code(code_df, use_summary=FALSE, use_conf_int=TRUE)
-  }
-  if (opts$add_function) {
-    code_df = add_reg_function_code(code_df)
-  }
-  code_df
-}
-```
-!END_MODIFICATION stata_to_r_code_stcox in R/to_r_stcox.R
-
-!MODIFICATION stata_to_r_code_tobit in R/to_r_tobit.R
-scope = "function"
-file = "/home/rstudio/repbox/regtranslate/R/to_r_tobit.R"
-function_name = "stata_to_r_code_tobit"
-description = "Revert to original state. Date conversion logic is now centralized."
----
-```r
-stata_to_r_code_tobit = function(reg, regvar, regxvar, cmdpart, opts=code_options(), parts = list()) {
-  restore.point("stata_to_r_code_mfx")
-
-  # Ignore dropped regvars (if they are nor part of an interaction)
-  #regvar = filter(regvar, !is_dropped | ia_cterm != cterm)
-
-  # Currently we just use the fixest formula
-  formula = regvar_to_formula_fixest(regvar, regxvar, cmdpart, reg = reg)
-
-  rcmd = "tobit"
-
-  library_code = paste0("library(AER)")
-  rcmd_code = paste0('rcmd = "',rcmd,'"')
-  # We use the default ssc arguments since they are closest to the
-  # Stata defaults
-  formula_code = paste0('formula = ', formula)
-
-  arg_str = NULL
-  if (reg$se_category == "robust") {
-    arg_str = "robust = true"
-  } else if (reg$se_category == "cluster") {
-    clustervar = extract_clustervar_from_se_args(reg$se_args)
-    arg_str = paste0('cluster = "', clustervar[1],'"')
-    if (reg$se_type == "twoway") {
-      stop("Two way clusters not yet implemented for tobit in R")
-    }
-  }
-  arg_str = c(
-    paste0("formula = formula"),
-    paste0('data = dat'),
-    arg_str
-  )
-
-  data_code = r_listwise_deletion_code(regvar)
-
-  # Apply dynamic weights via centralized helper
-  wt = r_weight_code(reg, template = "dat[['%s']]")
-  if (nzchar(wt$data_code)) {
-    data_code = if (nzchar(data_code)) paste0(data_code, "\n", wt$data_code) else wt$data_code
-  }
-  if (nzchar(wt$weight_arg)) {
-    arg_str = c(arg_str, wt$weight_arg)
-  }
-
-  reg_code = paste0('reg = ', rcmd,'(', paste0(arg_str, collapse=","),")\nclass(reg) = 'survreg'")
-
-  code_df = tibble(part = c("library", "rcmd","data","formula","reg"), code = c(library_code, rcmd_code,data_code,formula_code,reg_code))
-  code_df = code_df[code_df$code != "", ]
-
-  if (opts$add_broom) {
-    code_df = add_reg_broom_code(code_df, use_summary=FALSE, use_conf_int=TRUE)
-  }
-  if (opts$add_function) {
-    code_df = add_reg_function_code(code_df)
-  }
-  code_df
-}
-```
-!END_MODIFICATION stata_to_r_code_tobit in R/to_r_tobit.R
+!END_MODIFICATION stata_to_r_code_fixest to_r_fixest.R
