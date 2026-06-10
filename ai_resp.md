@@ -1,52 +1,29 @@
-This is a fantastic catch. The discrepancy you are seeing is actually caused by **two distinct differences** in how R and Stata handle the estimation sample, acting at the exact same time.
+### Discussion: Where should the Stata data cleaning logic live?
 
-### The Explanation
+You raise an excellent architectural question: *Since Stata's `marksample` (listwise deletion) is a global feature applied to almost every regression, should it be baked into `mrb_get_regression_data`?*
 
-**1. The Singleton Difference (`fixef.rm`)**
-As we discussed, Stata’s `areg` keeps fixed-effect singletons, while `feols` drops them by default (1,168 observations in this case). Adding `fixef.rm = "none"` forces R to keep them, raising the R sample size to 9,242. But Stata's N is 9,153. Why the remaining 89 observation difference?
+Here is the breakdown:
 
-**2. The "Silent Dropping" Difference (`""` and `Inf` vs `NA`)**
-If you look closely at Stata's output, it did *not* print a warning that 89 observations were dropped for collinearity. In Stata, if observations disappear silently before estimation, it happens during `marksample` (listwise deletion). 
-R's `complete.cases()` only drops `NA` values. However, Stata treats **empty strings (`""`)** as missing for string variables, and treats **`Inf` / `NaN` / extended missing values (`.a`, `.b`)** as missing for numeric variables. 
-If your dataset has 89 observations where a covariate contains an empty string or an `Inf`, R keeps them (because they are not `NA`), but Stata silently deletes them. 
+1. **Yes, it is a global Stata feature.** Almost every Stata estimation command silently drops rows where *any* variable in the regression contains a numeric missing (`.`, `.a`, etc.) or an empty string (`""`), treating them all as missing. Stata also has no concept of `Inf` (division by zero creates a missing `.`), so `Inf` in R must be dropped to match Stata perfectly.
+2. **Why it is better to keep the code injection in `regtranslate`:** The primary goal of `regtranslate` is to generate a **standalone, reproducible R script** that is completely transparent to a human reader. If we hide the `""` and `Inf` dropping inside `mrb_get_regression_data`, the exported R script will magically receive clean data. If a user runs that exact script outside the pipeline on raw data, the observation counts will mismatch. Therefore, the translated R code itself *must* explicitly contain the code that drops the missing values.
+3. **Why it also makes sense to add it to `mrb_get_regression_data`:** As you noted, it might be highly useful to query the exact `e(sample)` data for a regression without needing to parse or execute the full generated `reg_fun`.
 
-Because the sample is fundamentally different (R included 89 outliers/invalid rows that Stata threw out), the coefficient for `logmeanbudget` swung wildly from `0.0017` to `-0.0329`. 
+**The Proposal:**
+We will do both, gracefully bridging your requests.
+1. We will create the highly optimized cleaning function `mrb_stata_drop_missing` in `metaregBase`.
+2. We will add an option `drop_missing = FALSE` to `mrb_get_regression_data`. This defaults to `FALSE` to prevent double-dropping during the standard pipeline, but allows you to extract the strict `e(sample)` whenever you want.
+3. We will update `regtranslate`'s `r_listwise_deletion_code` to inject a call to `metaregBase::mrb_stata_drop_missing()` instead of R's naive `complete.cases()`.
+4. We will apply the `match_stata_singletons = TRUE` fix to `regtranslate` to dynamically handle `fixef.rm = "none"`, preserving singletons exactly as Stata does.
 
-### The Solution
+Here are the required modifications:
 
-Your proposal is absolutely correct. We need to:
-1. Define a fast, custom listwise-deletion function (`stata_drop_missing`) that strictly mirrors Stata's `marksample` behavior.
-2. Update `r_listwise_deletion_code` to inject this function into the translated script.
-3. Update `code_options` and `stata_to_r_code_fixest` to inject the `fixef.rm = "none"` argument natively inside `regtranslate`.
+### 1. Modifications in `metaregBase`
 
-Here are the `!MODIFICATION` blocks to implement this cleanly inside `regtranslate`.
-
-!MODIFICATION code_options to_r.R
+!MODIFICATION mrb_stata_drop_missing mrb_r_reg.R
 scope = "function"
-file = "/home/rstudio/repbox/regtranslate/R/to_r.R"
-function_name = "code_options"
-description = "Add match_stata_singletons toggle to code_options"
----
-```r
-code_options = function(prefer_sandwich=FALSE, prefer_summary=FALSE, add_broom=TRUE, add_function=FALSE, add_restorepoint=FALSE, drop_perfect_predictors=TRUE, match_stata_singletons=TRUE) {
-  list(
-    prefer_sandwich = prefer_sandwich, 
-    prefer_summary = prefer_summary, 
-    add_broom = add_broom, 
-    add_function = add_function, 
-    add_restorepoint = add_restorepoint, 
-    drop_perfect_predictors = drop_perfect_predictors,
-    match_stata_singletons = match_stata_singletons
-  )
-}
-```
-!END_MODIFICATION code_options to_r.R
-
-!MODIFICATION stata_drop_missing to_r.R
-scope = "function"
-file = "/home/rstudio/repbox/regtranslate/R/to_r.R"
-insert_after_fun = "r_listwise_deletion_code"
-description = "Add highly optimized helper to perfectly emulate Stata's marksample missing value drops"
+file = "/home/rstudio/repbox/metaregBase/R/mrb_r_reg.R"
+insert_bottom = true
+description = "Add helper to cleanly drop Stata-equivalent missing values"
 ---
 ```r
 #' Emulate Stata's listwise deletion (e(sample))
@@ -54,32 +31,116 @@ description = "Add highly optimized helper to perfectly emulate Stata's marksamp
 #' Drops NA, but also empty strings ("") and non-finite numbers (Inf, NaN),
 #' which Stata treats as missing values during marksample.
 #' @export
-stata_drop_missing = function(dat, vars) {
+mrb_stata_drop_missing = function(dat, vars) {
   vars = intersect(vars, colnames(dat))
   if (length(vars) == 0) return(dat)
-  
-  # Fast vectorized check avoiding large intermediate matrix allocations
+
   keep = rep(TRUE, nrow(dat))
   for (v in vars) {
     val = dat[[v]]
     if (is.character(val) || is.factor(val)) {
-      keep = keep & !is.na(val) & (val != "")
+      char_val = as.character(val)
+      keep = keep & !is.na(char_val) & (char_val != "")
     } else if (is.numeric(val)) {
       keep = keep & is.finite(val)
     } else {
       keep = keep & !is.na(val)
     }
   }
-  dat[keep, , drop = FALSE]
+
+  if (!all(keep)) {
+    dat = dat[keep, , drop = FALSE]
+  }
+  dat
 }
 ```
-!END_MODIFICATION stata_drop_missing to_r.R
+!END_MODIFICATION mrb_stata_drop_missing mrb_r_reg.R
+
+!MODIFICATION mrb_get_regression_data mrb_r_reg.R
+scope = "function"
+file = "/home/rstudio/repbox/metaregBase/R/mrb_r_reg.R"
+function_name = "mrb_get_regression_data"
+description = "Add drop_missing toggle to optionally emulate Stata's marksample inside the data fetcher"
+---
+```r
+#' Get and prepare regression data (creates cterms and regxvar columns)
+mrb_get_regression_data = function(runid, drf, reg=NULL, regvar, regxvar = NULL, continue_on_error=FALSE, parcels=NULL, drop_missing=FALSE) {
+  restore.point("mrb_get_regression_data")
+
+  # Phase 1: Fetch UNFILTERED data to correctly evaluate time-series lags and leads
+  dat = repboxDRF::drf_get_data(runid, drf = drf, filtered = FALSE, continue_on_error = continue_on_error)
+  if (is.null(dat) || inherits(dat, "try-error")) return(dat)
+
+  # Extract panel/time variables if available
+  timevar = NA; panelvar = NA; tdelta = NA
+  if (!is.null(reg) && nrow(reg) > 0) {
+    timevar = reg$timevar[1]
+    panelvar = reg$panelvar[1]
+    tdelta = reg$tdelta[1]
+  }
+
+  if (!is.null(regvar) && nrow(regvar) > 0) {
+    dat = create_cterm_cols(dat, unique(regvar$cterm), timevar = timevar, panelvar = panelvar, tdelta = tdelta)
+  }
+
+  # Phase 2: Apply the regression filter AFTER generating the time-series variables
+  if (!is.null(parcels)) {
+    filter_code = repboxDRF::drf_get_filter_code(runid, drf, parcels = parcels)
+    if (length(filter_code) > 0 && any(nzchar(filter_code))) {
+      data = dat # The evaluated filter code safely acts on the local variable 'data'
+      for (code in filter_code) {
+        if (nzchar(code)) {
+          eval(parse(text = code))
+        }
+      }
+      dat = data # Map back to 'dat' to continue standard processing
+    }
+  }
+
+  # Phase 3: Build interactions / dummy variables ONLY on the filtered estimation sample
+  if (!is.null(regxvar) && nrow(regxvar) > 0) {
+    dat = make_regxvar_cols(dat, regxvar)
+  }
+
+  # Phase 4: Optional Listwise deletion of missing values (matching Stata's marksample)
+  if (drop_missing && !is.null(regvar) && nrow(regvar) > 0) {
+    cc_cols = setdiff(unique(regvar$cterm), c("(Intercept)", ""))
+    dat = mrb_stata_drop_missing(dat, cc_cols)
+  }
+
+  return(dat)
+}
+```
+!END_MODIFICATION mrb_get_regression_data mrb_r_reg.R
+
+### 2. Modifications in `regtranslate`
+
+!MODIFICATION code_options to_r.R
+scope = "function"
+file = "/home/rstudio/repbox/regtranslate/R/to_r.R"
+function_name = "code_options"
+description = "Add match_stata_singletons toggle to control fixest singleton behavior natively"
+---
+```r
+code_options = function(prefer_sandwich=FALSE, prefer_summary=FALSE, add_broom=TRUE, add_function=FALSE, add_restorepoint=FALSE, drop_perfect_predictors=TRUE, match_stata_singletons=TRUE) {
+  list(
+    prefer_sandwich=prefer_sandwich, 
+    prefer_summary=prefer_summary, 
+    add_broom=add_broom, 
+    add_function=add_function, 
+    add_restorepoint=add_restorepoint, 
+    drop_perfect_predictors=drop_perfect_predictors,
+    match_stata_singletons=match_stata_singletons
+  )
+}
+```
+!END_MODIFICATION code_options to_r.R
 
 !MODIFICATION r_listwise_deletion_code to_r.R
 scope = "function"
 file = "/home/rstudio/repbox/regtranslate/R/to_r.R"
 function_name = "r_listwise_deletion_code"
-description = "Update listwise deletion string generation to use the new stata_drop_missing helper instead of complete.cases"
+description = "Use metaregBase::mrb_stata_drop_missing in translated R code instead of complete.cases"
 ---
 ```r
 #' Generate R code to emulate Stata's listwise deletion (e(sample))
@@ -96,7 +157,7 @@ r_listwise_deletion_code = function(regvar) {
 
   paste0(
     "cc_cols = c(", paste0('"', all_base_cterms, '"', collapse=", "), ")\n",
-    "dat = regtranslate::stata_drop_missing(dat, cc_cols)"
+    "dat = metaregBase::mrb_stata_drop_missing(dat, cc_cols)"
   )
 }
 ```
@@ -106,7 +167,7 @@ r_listwise_deletion_code = function(regvar) {
 scope = "function"
 file = "/home/rstudio/repbox/regtranslate/R/to_r_fixest.R"
 function_name = "stata_to_r_code_fixest"
-description = "Dynamically inject fixef.rm = 'none' for Stata commands that retain singletons (e.g. areg/xtreg) or when reghdfe has keepsingletons"
+description = "Inject fixef.rm = 'none' for Stata commands that retain singletons (areg, xtreg) or reghdfe with keepsingletons"
 ---
 ```r
 stata_to_r_code_fixest = function(reg, regvar, regxvar, cmdpart, opts=code_options(), parts = list()) {

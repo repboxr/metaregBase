@@ -217,7 +217,7 @@ mrb_run_r_reg_step = function(mrb, pid, continue_on_error=FALSE) {
 
 
 #' Get and prepare regression data (creates cterms and regxvar columns)
-mrb_get_regression_data = function(runid, drf, reg=NULL, regvar, regxvar = NULL, continue_on_error=FALSE, parcels=NULL) {
+mrb_get_regression_data = function(runid, drf, reg=NULL, regvar, regxvar = NULL, continue_on_error=FALSE, parcels=NULL, drop_missing=FALSE) {
   restore.point("mrb_get_regression_data")
 
   # Phase 1: Fetch UNFILTERED data to correctly evaluate time-series lags and leads
@@ -253,6 +253,12 @@ mrb_get_regression_data = function(runid, drf, reg=NULL, regvar, regxvar = NULL,
   # Phase 3: Build interactions / dummy variables ONLY on the filtered estimation sample
   if (!is.null(regxvar) && nrow(regxvar) > 0) {
     dat = make_regxvar_cols(dat, regxvar)
+  }
+
+  # Phase 4: Optional Listwise deletion of missing values (matching Stata's marksample)
+  if (drop_missing && !is.null(regvar) && nrow(regvar) > 0) {
+    cc_cols = setdiff(unique(regvar$cterm), c("(Intercept)", ""))
+    dat = regtranslate::stata_drop_missing(dat, cc_cols)
   }
 
   return(dat)
@@ -408,7 +414,6 @@ extract_reg_stats_from_regscalar = function(regscalar) {
 
   stats
 }
-
 
 
 
