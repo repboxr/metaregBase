@@ -1824,6 +1824,7 @@ mrb_run_r_base_step = function(mrb, pid, with_try = isTRUE(mrb$with_try), contin
 mrb_run_r_base = function(mrb, just_pids=NULL, make_parcels=TRUE, continue_on_error=FALSE) {
   restore.point("mrb_run_r")
 
+  repbox_problem_set_project_dir(mrb$project_dir)
 
   mrb$drf = drf_apply_loop_ignore(mrb$drf)
 
@@ -10082,6 +10083,10 @@ drf_sync_r_err_runids = function(drf, runids=NULL) {
   drf
 }
 
+drf_clear_r_err_runids = function(project_dir) {
+  files = list.files(file.path(project_dir, "drf/r_err_runids"), "[0-9]*", full.names = TRUE)
+  file.remove(files)
+}
 ```
 # END OF FILE: /home/rstudio/repbox/repboxDRF/R/drf_run_r.R
 
@@ -12307,7 +12312,7 @@ sort2_chr = function(a, b, ..., sep=NULL) {
   swap = stringi::stri_cmp_gt(a, b, ...)
   lo = ifelse(swap, b, a)
   hi = ifelse(swap, a, b)
-  if (!is.null(sep)) return(paste0(a,sep,b))
+  if (!is.null(sep)) return(paste0(lo,sep,hi))
   list(lo = lo, hi = hi)
 }
 
@@ -12656,7 +12661,7 @@ regvar_to_formula_fixest = function(regvar, regxvar, cmdpart, reg = NULL) {
   # Exogeneous x that are no FE
   rows = which(rxv$role == "exo")
   if (sum(rows)>0) {
-    rhs_terms = c(rhs_terms, paste0("`",rxv$cterm[rows],"`"))
+    rhs_terms = c(rhs_terms, paste0("`",unique(rxv$cterm[rows]),"`"))
   } else {
     if (!omit_constant) {
       rhs_terms = c(rhs_terms, "1")
@@ -12685,17 +12690,17 @@ regvar_to_formula_fixest = function(regvar, regxvar, cmdpart, reg = NULL) {
         }
       ) %>%
       pull(fe_expr)
-    form = paste0(form, " | ", paste0(fe_terms, collapse = " + "))
+    form = paste0(form, " | ", paste0(unique(fe_terms), collapse = " + "))
   }
 
   # Endogeneous x and instruments (never FE)
   rows = which(rxv$role == "endo")
   if (sum(rows)>0) {
-    form = paste0(form, " | ",paste0("`",rxv$cterm[rows],"`", collapse= " + "))
+    form = paste0(form, " | ",paste0("`",unique(rxv$cterm[rows]),"`", collapse= " + "))
   }
   rows = which(rxv$role == "instr")
   if (sum(rows)>0) {
-    form = paste0(form, " ~ ",paste0("`",rxv$cterm[rows],"`", collapse= " + "))
+    form = paste0(form, " ~ ",paste0("`",unique(rxv$cterm[rows]),"`", collapse= " + "))
   }
   form
 }
@@ -13700,330 +13705,6 @@ is_negative = function(n) {
 # Your Task
 ##################################
 
-In the following example the R regression results don't match those of Stata. The reason might be incorrect handling of the tripple interaction effect (also see screenshot). Can you find the problem and propose a fix? Also explain.
 
 
-```Stata
-. reg s_over50b i.env i.cost i.hybrid i.study b_recycledb0_mc i.env#i.study i.cost#i.study i.h
-> ybrid#i.study c.b_recycledb0_mc#i.study c.b_recycledb0_mc#i.env c.b_recycledb0_mc#i.cost c.b
-> _recycledb0_mc#i.hybrid i.env#i.study#c.b_recycledb0_mc i.cost#i.study#c.b_recycledb0_mc i.h
-> ybrid#i.study#c.b_recycledb0_mc if tt==2, vce(cluster fbc)
 
-Linear regression                               Number of obs     =        976
-                                                F(15, 487)        =       8.36
-                                                Prob > F          =     0.0000
-                                                R-squared         =     0.0830
-                                                Root MSE          =     .24965
-
-                                                 (Std. err. adjusted for 488 clusters in fbc)
----------------------------------------------------------------------------------------------
-                            |               Robust
-                  s_over50b | Coefficient  std. err.      t    P>|t|     [95% conf. interval]
-----------------------------+----------------------------------------------------------------
-                      1.env |  -.0198453   .0390754    -0.51   0.612    -.0966224    .0569318
-                     1.cost |  -.0508298   .0370395    -1.37   0.171    -.1236066    .0219471
-                   1.hybrid |  -.0357775   .0335118    -1.07   0.286    -.1016231     .030068
-                    1.study |   .0556583   .0287156     1.94   0.053    -.0007634      .11208
-            b_recycledb0_mc |  -.0811592   .2420463    -0.34   0.738    -.5567431    .3944248
-                            |
-                  env#study |
-                       1 1  |   -.013272   .0369413    -0.36   0.720     -.085856    .0593119
-                            |
-                 cost#study |
-                       1 1  |   .0577638   .0357843     1.61   0.107    -.0125469    .1280745
-                            |
-               hybrid#study |
-                       1 1  |   .0366278   .0329469     1.11   0.267    -.0281078    .1013633
-                            |
-    study#c.b_recycledb0_mc |
-                         1  |   .1296487   .1575163     0.82   0.411    -.1798467    .4391441
-                            |
-      env#c.b_recycledb0_mc |
-                         1  |   .3128777   .2664336     1.17   0.241    -.2106235     .836379
-                            |
-     cost#c.b_recycledb0_mc |
-                         1  |    .252989   .2764837     0.92   0.361    -.2902591    .7962372
-                            |
-   hybrid#c.b_recycledb0_mc |
-                         1  |   .6461103   .2625712     2.46   0.014     .1301981    1.162023
-                            |
-env#study#c.b_recycledb0_mc |
-                       1 1  |  -.2568725   .2097267    -1.22   0.221    -.6689534    .1552083
-                            |
-                 cost#study#|
-          c.b_recycledb0_mc |
-                       1 1  |  -.0190729   .1885031    -0.10   0.919    -.3894526    .3513068
-                            |
-               hybrid#study#|
-          c.b_recycledb0_mc |
-                       1 1  |  -.3350935    .177746    -1.89   0.060    -.6843372    .0141502
-                            |
-                      _cons |   .6993775   .0288805    24.22   0.000     .6426317    .7561233
----------------------------------------------------------------------------------------------
-```
-
-
-R
-
-```
-data = stata2r::scmd_keep(data, r_if_cond = "s2r_stata_logical(`tt`==2)")
-> 
-> pid = 226
-> if (!exists("parcels")) parcels = list()
-> parcels = repboxDB::repdb_load_parcels(project_dir, c("reg", "regvar", "regxvar"), parcels = parcels)
-> drf = repboxDRF::drf_load(project_dir, parcels = parcels)
-> reg = parcels$reg[parcels$reg$runid == pid, , drop = FALSE]
-> regvar = parcels$regvar[parcels$regvar$runid == pid, , drop = FALSE]
-> regxvar = if (!is.null(parcels$regxvar)) parcels$regxvar[parcels$regxvar$runid == pid, , drop = FALSE] else tibble::tibble()
-> 
-> # dat is the regression-ready data, including the DRF path, filtering,
-> # generated cterm columns, and regxvar columns
-> dat = metaregBase:::mrb_get_regression_data(runid = pid, drf = drf, reg = reg, regvar = regvar, regxvar = regxvar, parcels = parcels)
-> 
-> library(fixest)
-> rcmd = "feols"
-> cc_cols = c("env", "cost", "hybrid", "study", "s_over50b", "b_recycledb0_mc", "fbc")
-> dat = stata_drop_missing(dat, cc_cols)
-> formula = `s_over50b` ~ `env=1` + `cost=1` + `hybrid=1` + `study=1` + `env=1` + `study=1` + `env=1#study=1` + `cost=1` + `study=1` + `cost=1#study=1` + `hybrid=1` + `study=1` + `hybrid=1#study=1` + `study=1` + `b_recycledb0_mc` + `env=1` + `b_recycledb0_mc` + `cost=1` + `b_recycledb0_mc` + `hybrid=1` + `b_recycledb0_mc` + `env=1` + `study=1` + `b_recycledb0_mc` + `env=1#study=1` + `b_recycledb0_mc#env=1#study=1` + `cost=1` + `study=1` + `b_recycledb0_mc` + `cost=1#study=1` + `b_recycledb0_mc#cost=1#study=1` + `hybrid=1` + `study=1` + `b_recycledb0_mc` + `hybrid=1#study=1` + `b_recycledb0_mc#hybrid=1#study=1` + `b_recycledb0_mc`
-> ssc = fixest::ssc()
-> reg_vcov = ~ `fbc`
-> reg = feols(fml = formula,data = dat,vcov = reg_vcov,ssc = ssc)
-> summary(reg)
-OLS estimation, Dep. Var.: s_over50b
-Observations: 976
-Standard-errors: Clustered (fbc) 
-                                    Estimate Std. Error   t value   Pr(>|t|)    
-(Intercept)                         0.708224   0.028802 24.589082  < 2.2e-16 ***
-`env=1`                            -0.029709   0.038404 -0.773572 4.3956e-01    
-`cost=1`                           -0.062165   0.036784 -1.689998 9.1668e-02 .  
-`hybrid=1`                         -0.048378   0.033929 -1.425873 1.5455e-01    
-`study=1`                           0.052331   0.029904  1.749971 8.0753e-02 .  
-`env=1#study=1`                    -0.008929   0.037792 -0.236255 8.1333e-01    
-`cost=1#study=1`                    0.063579   0.036863  1.724741 8.5209e-02 .  
-`hybrid=1#study=1`                  0.043709   0.034278  1.275111 2.0288e-01    
-b_recycledb0_mc                     0.263591   0.064576  4.081852 5.2211e-05 ***
-`b_recycledb0_mc#env=1#study=1`    -0.159096   0.139461 -1.140793 2.5452e-01    
-`b_recycledb0_mc#cost=1#study=1`    0.018815   0.085295  0.220587 8.2551e-01    
-`b_recycledb0_mc#hybrid=1#study=1`  0.095916   0.102783  0.933187 3.5119e-01    
----
-Signif. codes:  0 '***' 0.001 '**' 0.01 '*' 0.05 '.' 0.1 ' ' 1
-RMSE: 0.24925   Adj. R2: 0.060057
-```
-
-Parcels:
-
-All parcel contents for runid=226
-
-Parcel regcoef:
-
-# A tibble: 42 × 12
-   runid variant cterm           shown_term      label          eq       coef      se      t
-   <int> <chr>   <chr>           <chr>           <chr>          <chr>   <dbl>   <dbl>  <dbl>
- 1   226 sb      env=0           0b.env          "Prosocial"    ""    NA      NA      NA    
- 2   226 sb      env=1           1.env           "Prosocial"    ""    -0.0198  0.0391 -0.508
- 3   226 sb      cost=0          0b.cost         "Instrumental" ""    NA      NA      NA    
- 4   226 sb      cost=1          1.cost          "Instrumental" ""    -0.0508  0.0370 -1.37 
- 5   226 sb      hybrid=0        0b.hybrid       "Mixed"        ""    NA      NA      NA    
- 6   226 sb      hybrid=1        1.hybrid        "Mixed"        ""    -0.0358  0.0335 -1.07 
- 7   226 sb      study=0         0b.study        "Study Period" ""    NA      NA      NA    
- 8   226 sb      study=1         1.study         "Study Period" ""     0.0557  0.0287  1.94 
- 9   226 sb      b_recycledb0_mc b_recycledb0_mc ""             ""    -0.0812  0.242  -0.335
-10   226 sb      env=0#study=0   0b.env#0b.study ""             ""    NA      NA      NA    
-         p    ci_low  ci_up
-     <dbl>     <dbl>  <dbl>
- 1 NA       0        0     
- 2  0.612  -0.0966   0.0569
- 3 NA       0        0     
- 4  0.171  -0.124    0.0219
- 5 NA       0        0     
- 6  0.286  -0.102    0.0301
- 7 NA       0        0     
- 8  0.0532 -0.000763 0.112 
- 9  0.738  -0.557    0.394 
-10 NA       0        0     
-# ℹ 32 more rows
-# ℹ Use `print(n = ...)` to see more rows
-
-Parcel regcoef_so:
-
-# A tibble: 42 × 12
-   runid variant cterm                          shown_term                          label     
-   <int> <chr>   <chr>                          <chr>                               <chr>     
- 1   226 so      (Intercept)                    _cons                               "Constant"
- 2   226 so      b_recycledb0_mc                b_recycledb0_mc                     ""        
- 3   226 so      b_recycledb0_mc#cost=0         0b.cost#co.b_recycledb0_mc          ""        
- 4   226 so      b_recycledb0_mc#cost=0#study=0 0b.cost#0b.study#co.b_recycledb0_mc ""        
- 5   226 so      b_recycledb0_mc#cost=0#study=1 0b.cost#1o.study#co.b_recycledb0_mc ""        
- 6   226 so      b_recycledb0_mc#cost=1         1.cost#c.b_recycledb0_mc            ""        
- 7   226 so      b_recycledb0_mc#cost=1#study=0 1o.cost#0b.study#co.b_recycledb0_mc ""        
- 8   226 so      b_recycledb0_mc#cost=1#study=1 1.cost#1.study#c.b_recycledb0_mc    ""        
- 9   226 so      b_recycledb0_mc#env=0          0b.env#co.b_recycledb0_mc           ""        
-10   226 so      b_recycledb0_mc#env=0#study=0  0b.env#0b.study#co.b_recycledb0_mc  ""        
-   eq       coef      se      t         p ci_low ci_up
-   <chr>   <dbl>   <dbl>  <dbl>     <dbl>  <dbl> <dbl>
- 1 ""     0.699   0.0289 24.2    1.28e-85  0.643 0.756
- 2 ""    -0.0812  0.242  -0.335  7.38e- 1 -0.557 0.394
- 3 ""    NA      NA      NA     NA         0     0    
- 4 ""    NA      NA      NA     NA         0     0    
- 5 ""    NA      NA      NA     NA         0     0    
- 6 ""     0.253   0.276   0.915  3.61e- 1 -0.290 0.796
- 7 ""    NA      NA      NA     NA         0     0    
- 8 ""    -0.0191  0.189  -0.101  9.19e- 1 -0.389 0.351
- 9 ""    NA      NA      NA     NA         0     0    
-10 ""    NA      NA      NA     NA         0     0    
-# ℹ 32 more rows
-# ℹ Use `print(n = ...)` to see more rows
-
-Parcel regcoef_rb:
-
-# A tibble: 12 × 12
-   runid variant cterm                            shown_term                         label eq   
-   <int> <chr>   <chr>                            <chr>                              <chr> <chr>
- 1   226 rb      (Intercept)                      (Intercept)                        ""    ""   
- 2   226 rb      env=1                            `env=1`                            ""    ""   
- 3   226 rb      cost=1                           `cost=1`                           ""    ""   
- 4   226 rb      hybrid=1                         `hybrid=1`                         ""    ""   
- 5   226 rb      study=1                          `study=1`                          ""    ""   
- 6   226 rb      env=1#study=1                    `env=1#study=1`                    ""    ""   
- 7   226 rb      cost=1#study=1                   `cost=1#study=1`                   ""    ""   
- 8   226 rb      hybrid=1#study=1                 `hybrid=1#study=1`                 ""    ""   
- 9   226 rb      b_recycledb0_mc                  b_recycledb0_mc                    ""    ""   
-10   226 rb      b_recycledb0_mc#env=1#study=1    `b_recycledb0_mc#env=1#study=1`    ""    ""   
-11   226 rb      b_recycledb0_mc#cost=1#study=1   `b_recycledb0_mc#cost=1#study=1`   ""    ""   
-12   226 rb      b_recycledb0_mc#hybrid=1#study=1 `b_recycledb0_mc#hybrid=1#study=1` ""    ""   
-       coef     se      t        p   ci_low  ci_up
-      <dbl>  <dbl>  <dbl>    <dbl>    <dbl>  <dbl>
- 1  0.708   0.0288 24.6   2.13e-87  0.652   0.765 
- 2 -0.0297  0.0384 -0.774 4.40e- 1 -0.105   0.0458
- 3 -0.0622  0.0368 -1.69  9.17e- 2 -0.134   0.0101
- 4 -0.0484  0.0339 -1.43  1.55e- 1 -0.115   0.0183
- 5  0.0523  0.0299  1.75  8.08e- 2 -0.00643 0.111 
- 6 -0.00893 0.0378 -0.236 8.13e- 1 -0.0832  0.0653
- 7  0.0636  0.0369  1.72  8.52e- 2 -0.00885 0.136 
- 8  0.0437  0.0343  1.28  2.03e- 1 -0.0236  0.111 
- 9  0.264   0.0646  4.08  5.22e- 5  0.137   0.390 
-10 -0.159   0.139  -1.14  2.55e- 1 -0.433   0.115 
-11  0.0188  0.0853  0.221 8.26e- 1 -0.149   0.186 
-12  0.0959  0.103   0.933 3.51e- 1 -0.106   0.298 
-
-Parcel regvar:
-
-# A tibble: 30 × 17
-   runid variant cterm  ia_cterm     basevar role  var_org_type var_reg_type ia_reg_type
-   <int> <chr>   <chr>  <chr>        <chr>   <chr> <chr>        <chr>        <chr>      
- 1   226 sb      env    env          env     exo   dummy        factor       factor     
- 2   226 sb      cost   cost         cost    exo   dummy        factor       factor     
- 3   226 sb      hybrid hybrid       hybrid  exo   dummy        factor       factor     
- 4   226 sb      study  study        study   exo   dummy        factor       factor     
- 5   226 sb      env    env#study    env     exo   dummy        factor       factor     
- 6   226 sb      study  env#study    study   exo   dummy        factor       factor     
- 7   226 sb      cost   cost#study   cost    exo   dummy        factor       factor     
- 8   226 sb      study  cost#study   study   exo   dummy        factor       factor     
- 9   226 sb      hybrid hybrid#study hybrid  exo   dummy        factor       factor     
-10   226 sb      study  hybrid#study study   exo   dummy        factor       factor     
-   absorbed_fe main_pos ia_pos ia_num ia_source_expr   var_source_expr transform transform_par
-   <lgl>          <int>  <int>  <int> <chr>            <chr>           <chr>     <chr>        
- 1 FALSE              2      1      1 i.env            i.env           i         1            
- 2 FALSE              3      1      1 i.cost           i.cost          i         1            
- 3 FALSE              4      1      1 i.hybrid         i.hybrid        i         1            
- 4 FALSE              5      1      1 i.study          i.study         i         1            
- 5 FALSE              7      1      2 i.env#i.study    i.env           i         1            
- 6 FALSE              7      2      2 i.env#i.study    i.study         i         1            
- 7 FALSE              8      1      2 i.cost#i.study   i.cost          i         1            
- 8 FALSE              8      2      2 i.cost#i.study   i.study         i         1            
- 9 FALSE              9      1      2 i.hybrid#i.study i.hybrid        i         1            
-10 FALSE              9      2      2 i.hybrid#i.study i.study         i         1            
-# ℹ 20 more rows
-# ℹ Use `print(n = ...)` to see more rows
-
-Parcel regxvar:
-
-# A tibble: 104 × 6
-   runid ia_cterm  cterm    role  in_regcoef org_coef
-   <int> <chr>     <chr>    <chr> <lgl>         <dbl>
- 1   226 env       env=0    exo   FALSE       NA     
- 2   226 env       env=1    exo   TRUE        -0.0198
- 3   226 cost      cost=0   exo   FALSE       NA     
- 4   226 cost      cost=1   exo   TRUE        -0.0508
- 5   226 hybrid    hybrid=1 exo   TRUE        -0.0358
- 6   226 hybrid    hybrid=0 exo   FALSE       NA     
- 7   226 study     study=0  exo   FALSE       NA     
- 8   226 study     study=1  exo   TRUE         0.0557
- 9   226 env#study env=0    exo   FALSE       NA     
-10   226 env#study env=1    exo   TRUE        -0.0198
-# ℹ 94 more rows
-# ℹ Use `print(n = ...)` to see more rows
-
-Parcel regcheck:
-
-# A tibble: 1 × 19
-  runid reg_ok so_raw_did_run sb_raw_did_run so_did_run sb_did_run rb_did_run sb_so_identical
-  <int> <lgl>  <lgl>          <lgl>          <lgl>      <lgl>      <lgl>      <lgl>          
-1   226 FALSE  TRUE           TRUE           TRUE       TRUE       TRUE       TRUE           
-  sb_so_coef_max_dev rb_sb_coef_same rb_sb_coef_max_dev rb_sb_se_same rb_sb_se_max_dev
-               <dbl> <lgl>                        <dbl> <lgl>                    <dbl>
-1                  0 FALSE                         1.33 FALSE                    0.177
-  rb_sb_share_coeff_same sb_num_coef repair_code cached_runid
-                   <dbl>       <int> <chr>              <int>
-1                   0.25          42 ""                    NA
-  problem                                              comment
-  <chr>                                                <chr>  
-1 R and Stata base coefficients differ by > tolerance. ""     
-
-Parcel reg_cmdpart:
-
-# A tibble: 23 × 6
-   runid parent    part    counter
-   <int> <chr>     <chr>     <dbl>
- 1   226 ""        main          0
- 2   226 "main"    cmd           0
- 3   226 "main"    varlist       0
- 4   226 "varlist" v             1
- 5   226 "varlist" v             2
- 6   226 "varlist" v             3
- 7   226 "varlist" v             4
- 8   226 "varlist" v             5
- 9   226 "varlist" v             6
-10   226 "varlist" v             7
-   content                                                                                        
-   <chr>                                                                                          
- 1 {{cmd}} {{varlist}} {{if_str}},{{opt_str1}}                                                    
- 2 reg                                                                                            
- 3 {{v1}} {{v2}} {{v3}} {{v4}} {{v5}} {{v6}} {{v7}} {{v8}} {{v9}} {{v10}} {{v11}} {{v12}} {{v13}}…
- 4 s_over50b                                                                                      
- 5 i.env                                                                                          
- 6 i.cost                                                                                         
- 7 i.hybrid                                                                                       
- 8 i.study                                                                                        
- 9 b_recycledb0_mc                                                                                
-10 i.env#i.study                                                                                  
-   tag     
-   <chr>   
- 1 ""      
- 2 "reg"   
- 3 ""      
- 4 "depvar"
- 5 "exo"   
- 6 "exo"   
- 7 "exo"   
- 8 "exo"   
- 9 "exo"   
-10 "exo"   
-# ℹ 13 more rows
-# ℹ Use `print(n = ...)` to see more rows
-
-Parcel reg:
-
-# A tibble: 1 × 19
-  runid variant lang 
-  <int> <chr>   <chr>
-1   226 sb      stata
-  cmdline                                                                                         
-  <chr>                                                                                           
-1 reg s_over50b i.env i.cost i.hybrid i.study b_recycledb0_mc i.env#i.study i.cost#i.study i.hybr…
-  cmd   ncoef  nobs nobs_org timevar panelvar tdelta iv_code se_category se_type se_args     
-  <chr> <int> <dbl>    <int> <chr>   <chr>     <int> <lgl>   <chr>       <chr>   <chr>       
-1 reg      42   976      976 study   fbc           1 FALSE   cluster     cluster cluster1=fbc
-  weights flags     r2 error_in_r
-  <chr>   <chr>  <dbl> <lgl>     
-1 <NA>    ""    0.0830 FALSE     

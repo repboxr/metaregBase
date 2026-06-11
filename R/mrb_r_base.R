@@ -276,6 +276,7 @@ mrb_run_r_base_step = function(mrb, pid, with_try = isTRUE(mrb$with_try), contin
 mrb_run_r_base = function(mrb, just_pids=NULL, make_parcels=TRUE, continue_on_error=FALSE) {
   restore.point("mrb_run_r")
 
+  repbox_problem_set_project_dir(mrb$project_dir)
 
   mrb$drf = drf_apply_loop_ignore(mrb$drf)
 
