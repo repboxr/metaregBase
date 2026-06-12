@@ -145,40 +145,43 @@ remove.unused.stata.prefixes = function(terms) {
 
 canonical.output.terms.stata.xi = function(terms, labels, do.subst=TRUE, xi.rows=NULL) {
   restore.point("canonical.output.stata.xi")
-  #stop()
-  # A term for fator using xi e.g. i.farmass
-  # _Ifarmass_2
+
+  # A term for factor using xi e.g. _Ifarmass_2
   if (is.null(xi.rows)) {
     xi.rows = which(startsWith(terms, "_I") & has.substr(labels,"=="))
     if (length(xi.rows)==0) return(terms)
   }
 
-
-  # To do: work with interaction terms
-  res = rep("", length(xi.rows))
   str = labels[xi.rows]
-  if (do.subst) {
-    str = gsub("(","", str, fixed=TRUE)
-    str = gsub(")","", str, fixed=TRUE)
-    str = gsub("*","&", str, fixed=TRUE)
+  # Remove parentheses that xi might wrap labels in
+  str = gsub("(","", str, fixed=TRUE)
+  str = gsub(")","", str, fixed=TRUE)
+
+  # Regex to match interaction separators:
+  # 1. " * " separates a factor and a continuous variable.
+  # 2. " & " only if followed by a valid factor variable assignment "var=="
+  # This prevents splitting factor levels that contain " & " like "Jammu & Kashmir".
+  sep_regex = "\\s*\\*\\s*|\\s*&\\s*(?=[a-zA-Z0-9_\\.@]+==)"
+
+  parse_xi_label = function(x) {
+    parts = stringi::stri_split_regex(x, sep_regex)[[1]]
+
+    parsed_parts = vapply(parts, function(p) {
+      if (has.substr(p, "==")) {
+        loc = stringi::stri_locate_first_fixed(p, "==")
+        base = substring(p, 1, loc[1,1]-1)
+        level = substring(p, loc[1,2]+1)
+        paste0(trimws(base), "=", trimws(level))
+      } else {
+        trimws(p)
+      }
+    }, character(1))
+
+    paste0(parsed_parts, collapse="#")
   }
 
-  ia.rows = which(has.substr(str,"&"))
-  if (length(ia.rows)>0) {
-    lhs = str.left.of(str[ia.rows], "&")
-    rhs = str.right.of(str[ia.rows], "&")
-    terms[xi.rows[ia.rows]] = paste0(
-      canonical.output.terms.stata.xi(lhs,lhs,  do.subst=FALSE, xi.rows = seq_along(ia.rows)),"#",
-      canonical.output.terms.stata.xi(rhs,rhs,  do.subst=FALSE, xi.rows = seq_along(ia.rows)))
-  }
-
-  rows = setdiff(which(has.substr(str,"==")), ia.rows)
-  if (length(rows)>0) {
-    loc = stringi::stri_locate_first_fixed(str[rows],"==")
-    base = substring(str[rows], 1, loc[,1]-1)
-    level = substring(str[rows], loc[,2]+1)
-    terms[xi.rows[rows]] = paste0(base, "=", level)
-  }
+  parsed_terms = vapply(str, parse_xi_label, character(1))
+  terms[xi.rows] = parsed_terms
 
   terms = trimws(terms)
   terms = remove.unused.stata.prefixes(terms)

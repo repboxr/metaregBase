@@ -212,7 +212,10 @@ mrb_run_r_base_step = function(mrb, pid, with_try = isTRUE(mrb$with_try), contin
   r2_val = if ("r2" %in% names(stats_wide)) as.numeric(stats_wide$r2) else if ("r2_p" %in% names(stats_wide)) as.numeric(stats_wide$r2_p) else NA_real_
 
   flags_vec = character()
-  if (any(startsWith(tolower(opts_df$opt), "nocon"))) {
+  # noc is also a used abbrevation for noconst, not documented
+  # but works but there are other options starting with noc
+  #if (any(startsWith(tolower(opts_df$opt), "nocon"))) {
+  if (any(tolower(opts_df$opt) %in% c("noc","noco","nocon","nocons","noconst"))) {
     flags_vec = c(flags_vec, "noconst")
   }
 

@@ -920,40 +920,43 @@ remove.unused.stata.prefixes = function(terms) {
 
 canonical.output.terms.stata.xi = function(terms, labels, do.subst=TRUE, xi.rows=NULL) {
   restore.point("canonical.output.stata.xi")
-  #stop()
-  # A term for fator using xi e.g. i.farmass
-  # _Ifarmass_2
+
+  # A term for factor using xi e.g. _Ifarmass_2
   if (is.null(xi.rows)) {
     xi.rows = which(startsWith(terms, "_I") & has.substr(labels,"=="))
     if (length(xi.rows)==0) return(terms)
   }
 
-
-  # To do: work with interaction terms
-  res = rep("", length(xi.rows))
   str = labels[xi.rows]
-  if (do.subst) {
-    str = gsub("(","", str, fixed=TRUE)
-    str = gsub(")","", str, fixed=TRUE)
-    str = gsub("*","&", str, fixed=TRUE)
+  # Remove parentheses that xi might wrap labels in
+  str = gsub("(","", str, fixed=TRUE)
+  str = gsub(")","", str, fixed=TRUE)
+
+  # Regex to match interaction separators:
+  # 1. " * " separates a factor and a continuous variable.
+  # 2. " & " only if followed by a valid factor variable assignment "var=="
+  # This prevents splitting factor levels that contain " & " like "Jammu & Kashmir".
+  sep_regex = "\\s*\\*\\s*|\\s*&\\s*(?=[a-zA-Z0-9_\\.@]+==)"
+
+  parse_xi_label = function(x) {
+    parts = stringi::stri_split_regex(x, sep_regex)[[1]]
+
+    parsed_parts = vapply(parts, function(p) {
+      if (has.substr(p, "==")) {
+        loc = stringi::stri_locate_first_fixed(p, "==")
+        base = substring(p, 1, loc[1,1]-1)
+        level = substring(p, loc[1,2]+1)
+        paste0(trimws(base), "=", trimws(level))
+      } else {
+        trimws(p)
+      }
+    }, character(1))
+
+    paste0(parsed_parts, collapse="#")
   }
 
-  ia.rows = which(has.substr(str,"&"))
-  if (length(ia.rows)>0) {
-    lhs = str.left.of(str[ia.rows], "&")
-    rhs = str.right.of(str[ia.rows], "&")
-    terms[xi.rows[ia.rows]] = paste0(
-      canonical.output.terms.stata.xi(lhs,lhs,  do.subst=FALSE, xi.rows = seq_along(ia.rows)),"#",
-      canonical.output.terms.stata.xi(rhs,rhs,  do.subst=FALSE, xi.rows = seq_along(ia.rows)))
-  }
-
-  rows = setdiff(which(has.substr(str,"==")), ia.rows)
-  if (length(rows)>0) {
-    loc = stringi::stri_locate_first_fixed(str[rows],"==")
-    base = substring(str[rows], 1, loc[,1]-1)
-    level = substring(str[rows], loc[,2]+1)
-    terms[xi.rows[rows]] = paste0(base, "=", level)
-  }
+  parsed_terms = vapply(str, parse_xi_label, character(1))
+  terms[xi.rows] = parsed_terms
 
   terms = trimws(terms)
   terms = remove.unused.stata.prefixes(terms)
@@ -1760,7 +1763,10 @@ mrb_run_r_base_step = function(mrb, pid, with_try = isTRUE(mrb$with_try), contin
   r2_val = if ("r2" %in% names(stats_wide)) as.numeric(stats_wide$r2) else if ("r2_p" %in% names(stats_wide)) as.numeric(stats_wide$r2_p) else NA_real_
 
   flags_vec = character()
-  if (any(startsWith(tolower(opts_df$opt), "nocon"))) {
+  # noc is also a used abbrevation for noconst, not documented
+  # but works but there are other options starting with noc
+  #if (any(startsWith(tolower(opts_df$opt), "nocon"))) {
+  if (any(tolower(opts_df$opt) %in% c("noc","noco","nocon","nocons","noconst"))) {
     flags_vec = c(flags_vec, "noconst")
   }
 
@@ -8428,7 +8434,11 @@ drf_add_scalar_map = function(drf) {
 
   drf$scalar_map = scalar_map %>%
     left_join(
-      scalar_df %>% select(scalar_var, source_runid=runid,scalar_val),
+      scalar_df %>%
+        select(scalar_var, source_runid=runid, scalar_val) %>%
+        group_by(scalar_var, source_runid) %>%
+        slice_tail(n = 1) %>%
+        ungroup(),
       by = join_by(
         scalar_var,
         closest(runid >= source_runid)
@@ -9226,6 +9236,17 @@ drf_make_paths = function(drf) {
 
   # Split run_df by root_file_path and compute path_df
   # Then merge path_df again for all run_df
+
+  # FIX: Prevent split() from dropping NA roots.
+  # Fall back to file_path to isolate lost executions correctly.
+
+  if (anyNA(run_df$root_file_path)) {
+    repbox_problem(msg="Some run_df$root_file_path were NA set to file_path to generate drf$path_df. Might be problematic if do files cannot be run independently from each other.",type="drf_root_file_path_NA", fail_action="msg", project_dir=drf$project_dir, runid=NA)
+    run_df = run_df %>%
+      mutate(root_file_path = ifelse(is.na(root_file_path), file_path, root_file_path))
+
+  }
+
   srun_li = split(run_df,run_df$root_file_path)
   path_li = lapply(srun_li, find_one_root_data_paths, pids=pids)
   path_df = bind_rows(path_li)
@@ -12522,9 +12543,9 @@ stata_to_r_code_fixest = function(reg, regvar, regxvar, cmdpart, opts=code_optio
 fixest_vcov_code_from_regdb = function(se_type, se_args, vcov_type=fixest_vcov_type_from_regdb(se_type,se_args), quote=TRUE, reg=NULL) {
   restore.point("fixest_vcov_code_from_regdb")
 
-  if (vcov_type %in% c("cluster","twoway")) {
+  if (vcov_type %in% c("cluster","twoway", "multiway")) {
     clustervar = extract_clustervar_from_se_args(se_args)
-    # Return as a formula (~ var1 + var2) natively supported by fixest
+    # Return as a formula (~ var1 + var2 + ...) natively supported by fixest
     code = paste0("~ ", paste0("`", clustervar, "`", collapse = " + "))
     return(code)
   }
@@ -12574,7 +12595,7 @@ fixest_vcov_type_from_regdb = function(se_type, se_args) {
   restore.point("se_type_to_fixest_vcov")
   if (se_type == "hc1") return("hetero")
   if (se_type %in%  c("cluster")) return(se_type)
-  if (se_type %in%  c("iid","cluster","twoway", "conley")) return(se_type)
+  if (se_type %in%  c("iid","cluster","twoway", "multiway", "conley")) return(se_type)
   if (se_type %in% c("nw", "dk")) return(toupper(se_type))
   return("sandwich")
 }
@@ -12588,7 +12609,7 @@ fixest_ssc_code_from_reg = function(reg, vcov_type = fixest_vcov_type_from_regdb
 
   is_ml = reg$cmd %in% c("logit", "xtlogit", "probit", "xtprobit", "dprobit", "poisson", "xtpoisson", "nbreg", "gnbreg", "clogit")
 
-  if (vcov_type %in% c("cluster", "twoway", "DK", "NW")) {
+  if (vcov_type %in% c("cluster", "twoway", "multiway", "DK", "NW")) {
     if (reg$cmd == "areg") {
       return('fixest::ssc(K.adj = TRUE, K.fixef = "full", G.adj = TRUE)')
     }
@@ -13180,7 +13201,7 @@ get_stata_to_r_cmd = function(cmd, prefer = NULL) {
 stata_to_r_cmds_df = function(cmd) {
   li = list(
     # If you add commands here make to sure that you update the to_r_fixest.R code
-    fixest.. = c("regress","reg", "ivregress","ivreg","ivreg2","xtivreg", "xtivreg2", "reghdfe","ivreghdfe", "xtreg","areg","ppmlhdfe","logit","xtlogit","probit","xtprobit","dprobit", "newey", "nbreg", "gnbreg", "poisson", "xtpoisson", "clogit"),
+    fixest.. = c("regress","reg", "cgmreg", "ivregress","ivreg","ivreg2","xtivreg", "xtivreg2", "reghdfe","ivreghdfe", "xtreg","areg","ppmlhdfe","logit","xtlogit","probit","xtprobit","dprobit", "newey", "nbreg", "gnbreg", "poisson", "xtpoisson", "clogit"),
     lm.. = c("regress","reg", "newey"),
     ivreg.. = c("ivregress","ivreg","ivreg2", "xtivreg", "xtivreg2"),
     quantreg.. = c("qreg"),
@@ -13456,8 +13477,8 @@ stata_to_r_code_tobit = function(reg, regvar, regxvar, cmdpart, opts=code_option
   } else if (reg$se_category == "cluster") {
     clustervar = extract_clustervar_from_se_args(reg$se_args)
     arg_str = paste0('cluster = "', clustervar[1],'"')
-    if (reg$se_type == "twoway") {
-      stop("Two way clusters not yet implemented for tobit in R")
+    if (reg$se_type %in% c("twoway", "multiway")) {
+      stop("Multiway clusters not yet implemented for tobit in R")
     }
   }
   arg_str = c(
