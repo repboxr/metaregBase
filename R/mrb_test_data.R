@@ -41,8 +41,8 @@ mrb_test_data_preview_text = function(runid, drf, parcels, n = 5, opts=mrb_test_
     if (NROW(df) == 0) return(paste0(title, " is empty."))
 
     # Put regression columns first
-    if (put_reg_cols_first && NROW(regvar) > 0) {
-      cols = unique(c(regvar$basevar, regvar$cterm, regxvar$cterm))
+    if (put_reg_cols_first && exists("regvar") && NROW(regvar) > 0) {
+      cols = unique(c(regvar$basevar, regvar$cterm, if (exists("regxvar")) regxvar$cterm else NULL))
       cols = intersect(cols, colnames(df))
       df = df[, union(cols, names(df))]
     }
@@ -92,13 +92,13 @@ mrb_test_data_preview_text = function(runid, drf, parcels, n = 5, opts=mrb_test_
     res = c(res, format_df_sample(dat, "## Regression Data (fully prepared)", put_reg_cols_first = TRUE), "")
   }
   if (opts$show_pre_reg_data) {
-    dat = try(repboxDRF::drf_get_data(runid=runid, drf = drf, before=TRUE,filtered = TRUE), silent = TRUE)
+    dat = try(repboxDRF::drf_get_data(runid=runid, drf = drf, filtered = TRUE), silent = TRUE)
     res = c(res, format_df_sample(dat, "## Data before regression command (filtered)", put_reg_cols_first = TRUE), "")
   }
 
   if (opts$show_org_data) {
     # 1. Fetch Original Data
-    dat = try(repboxDRF::drf_get_data(first_runid, drf = drf, before=FALSE), silent = TRUE)
+    dat = try(repboxDRF::drf_get_data(first_runid, drf = drf), silent = TRUE)
     res = c(res, format_df_sample(dat, "## Original Data (First Step)"), "")
   }
 

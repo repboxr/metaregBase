@@ -88,7 +88,7 @@ mrb_run_r_base_step = function(mrb, pid, with_try = isTRUE(mrb$with_try), contin
   }
 
   all_codes = c(scalar_code, pid_load_code, filter_code)
-
+  library(stata2r)
   if (length(all_codes) > 0 && any(nzchar(all_codes))) {
     for (code in all_codes) {
       if (nzchar(code)) {
