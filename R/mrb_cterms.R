@@ -186,6 +186,10 @@ canonical.output.terms.stata.xi = function(terms, labels, do.subst=TRUE, xi.rows
   terms = trimws(terms)
   terms = remove.unused.stata.prefixes(terms)
   terms = adapt.stata.prefix.notation(terms)
+
+  # Ensure the resulting interactions are properly sorted natively
+  terms = sort_interaction_terms(terms)
+
   terms
 }
 
