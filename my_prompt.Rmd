@@ -13726,6 +13726,36 @@ is_negative = function(n) {
 # Your Task
 ##################################
 
+I have a problem in my recent example regressions like 
+
+reg lrealwage l.lMigEXR4_totstock_real   l.ltotstockoecd  MigEXR4_ltotstockoecd    $cont3     if e(sample);
+
+had different coefs in the R translation than in Stata. When I create the test_pid_98.R file I have the following two commands:
+
+```
+stata2r_env$e_sample = repboxDRF::drf_load_e_r_dependency(project_dir,"e_97_sample.dta","e(sample)")
+data = stata2r::scmd_keep(data, r_if_cond = "stata2r_env$e_sample")
+```
+
+But could I looked inside `mrb_get_regression_data` and found there:
+
+```
+    filter_code = repboxDRF::drf_get_filter_code(runid, drf, parcels = parcels)
+
+> filter_code
+[1] "data = stata2r::scmd_keep(data, r_if_cond = \"stata2r_env$e_sample\")"
+```
+
+So could it be that the 
+
+```
+stata2r_env$e_sample = repboxDRF::drf_load_e_r_dependency(project_dir,"e_97_sample.dta","e(sample)")
+```
+
+command is forgotten? But possibly my analysis is wrong. Think about it and also think what would be the most elegant way to change the code to solve the issue. Explain your analysis and proposed changes before making a code suggestion.
+
+
+
 
 
 

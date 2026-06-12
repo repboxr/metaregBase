@@ -84,11 +84,17 @@ mrb_test_code_path = function(project_dir, pid, parcels, drf=drf_load(project_di
     if (r_id == pid) {
       # This is the final analysis target / regression command.
 
+      scalar_code = NULL
+      if (r_id %in% drf$scalar_code$runid) {
+        rows = which(drf$scalar_code$runid == r_id)
+        scalar_code = drf$scalar_code$scalar_r_code[rows]
+      }
+
       # Explicit dependency load logic and filter translation from drf_get_data()
       pid_load_code = repboxDRF:::drf_get_dependency_load_code(r_id, drf)
       filter_code = repboxDRF::drf_get_filter_code(r_id, drf, parcels = parcels)
 
-      final_step_drf_code = c(pid_load_code, filter_code)
+      final_step_drf_code = c(scalar_code, pid_load_code, filter_code)
       final_step_drf_code = final_step_drf_code[!is.na(final_step_drf_code) & nzchar(final_step_drf_code)]
 
       # Also add the direct regression-ready data construction so the block is runnable as-is.

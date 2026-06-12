@@ -77,9 +77,20 @@ mrb_run_r_base_step = function(mrb, pid, with_try = isTRUE(mrb$with_try), contin
 
   # 4. Apply filter safely
   data = dat_full # The evaluated filter code expects the variable to be named 'data'
+
+  pid_load_code = repboxDRF::drf_get_dependency_load_code(pid, mrb$drf)
   filter_code = repboxDRF::drf_get_filter_code(pid, mrb$drf, parcels = mrb$parcels)
-  if (length(filter_code) > 0 && any(nzchar(filter_code))) {
-    for (code in filter_code) {
+
+  scalar_code = NULL
+  if (pid %in% mrb$drf$scalar_code$runid) {
+    rows = which(mrb$drf$scalar_code$runid == pid)
+    scalar_code = mrb$drf$scalar_code$scalar_r_code[rows]
+  }
+
+  all_codes = c(scalar_code, pid_load_code, filter_code)
+
+  if (length(all_codes) > 0 && any(nzchar(all_codes))) {
+    for (code in all_codes) {
       if (nzchar(code)) {
         eval(parse(text = code))
       }

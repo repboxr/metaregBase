@@ -238,10 +238,21 @@ mrb_get_regression_data = function(runid, drf, reg=NULL, regvar, regxvar = NULL,
 
   # Phase 2: Apply the regression filter AFTER generating the time-series variables
   if (!is.null(parcels)) {
+    pid_load_code = repboxDRF::drf_get_dependency_load_code(runid, drf)
     filter_code = repboxDRF::drf_get_filter_code(runid, drf, parcels = parcels)
-    if (length(filter_code) > 0 && any(nzchar(filter_code))) {
+
+    scalar_code = NULL
+    if (runid %in% drf$scalar_code$runid) {
+      rows = which(drf$scalar_code$runid == runid)
+      scalar_code = drf$scalar_code$scalar_r_code[rows]
+    }
+
+    all_codes = c(scalar_code, pid_load_code, filter_code)
+
+    if (length(all_codes) > 0 && any(nzchar(all_codes))) {
+      project_dir = drf$project_dir # Ensure project_dir is in scope for the eval
       data = dat # The evaluated filter code safely acts on the local variable 'data'
-      for (code in filter_code) {
+      for (code in all_codes) {
         if (nzchar(code)) {
           eval(parse(text = code))
         }
