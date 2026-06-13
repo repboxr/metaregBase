@@ -457,13 +457,40 @@ cmdpart_to_regvar = function(cmdpart, dat, opts_df, se_info) {
     ia_reg_type = ifelse(role == "cluster", "factor", ia_reg_type)
   )
 
+  # To deal with Stata formulas that add same explanatory variables twice as in aejmac_5_1_3
+  vi = remove_regvar_duplicates(vi)
+
+
   # Ensure column order is clean
   vi = vi %>% dplyr::select(
     ia_expr, var_expr, var, role, prefix, option, class, fe_type, is_fe,
     distinct_num, ia_num, ia_pos, main_pos, ia_cterm, cterm, basevar, dplyr::everything()
   )
 
+
   return(vi)
+}
+
+# only relevant for formulas where the same explanatory variables are used more than once
+
+# real world example in aejmac_5_1_3:
+# xi: xtreg `i' i.year_1931*i.industrycode st_louis_fed_1931 i.year_1931*i.industrycode if (censusyear==1929|censusyear==1931) & num_products==1 & cut, fe vce(robust)
+remove_regvar_duplicates = function(regvar) {
+  names(regvar)
+  if (NROW(regvar)<=1) return(regvar)
+  dupl = which(duplicated(regvar[,c("ia_expr","role","var_expr")]))
+  if (length(dupl)==0) return(regvar)
+
+
+  try(repbox_problem("Removed duplicates in regvar, should only be the case if Stata formula duplicated explanatory variables",type = "regvar_duplicates",fail_action = "msg"))
+  res = regvar[-dupl, ]
+
+  res = res %>%
+    dplyr::group_by(ia_expr) %>%
+    dplyr::mutate(ia_num = dplyr::n(), ia_pos = seq_len(dplyr::n())) %>%
+    dplyr::ungroup()
+
+  res
 }
 
 mrb_get_panelvar = function(reg, opts_df, xtvar = NULL) {

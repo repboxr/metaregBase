@@ -26,6 +26,7 @@ make_regxvar = function(regvar, dat,  regcoef=NULL) {
   ia_cterms = unique(regvar$ia_cterm)
 
   res_li = lapply(ia_cterms, function(ia_term) {
+    #restore.point("hsfhsj")
     rows = which(regvar$ia_cterm == ia_term)
     if (length(rows)==1) {
       res = make_regxvar_ia1(regvar[rows,],factor_levels)
