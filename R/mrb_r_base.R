@@ -453,7 +453,18 @@ mrb_make_r_base_parcels = function(mrb, save=TRUE, is_partial_run = isTRUE(mrb$i
 }
 
 
+# Make sure to clear stuff needed for a clean re-run of mrb_base
+mrb_clean_for_rerun = function(project_dir) {
+  drf_clear_r_err_runids(project_dir)
 
+  rm_parcels = c("regrepair","regcheck")
+  rm_parcel_files = paste0(project_dir, "/repdb/",rm_parcels, ".Rds")
+  rm_parcel_files = rm_parcel_files[file.exists(rm_parcel_files)]
+
+  if (length(rm_parcel_files)>0)
+    file.remove(rm_parcel_files)
+
+}
 
 
 
