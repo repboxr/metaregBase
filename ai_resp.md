@@ -1,133 +1,91 @@
-The issue you encountered happens because Stata allows variable name abbreviations inside variable ranges (like `c_8_2_p-c_8_8_p`), but the `expand_stata_var_patterns` function was originally performing **exact matching** when searching for the range bounds. 
+Your proposed approach is **excellent**. It is highly elegant, minimizes disk usage, and leverages R's vectorized file system checks (which take milliseconds) to ensure perfect path integrity at load time. 
 
-When the exact strings `"c_8_2_p"` and `"c_8_8_p"` weren't found in the dataset's column names (likely because they were abbreviations of longer names like `"c_8_2_percent"`), the pattern expansion silently skipped it and fell back to passing the raw string `"c_8_2_p-c_8_8_p"` into the next pipeline step. That triggered an error later on because there is no single column literally named `"c_8_2_p-c_8_8_p"`.
+### Assessment of your approach
 
-The previous regression (`c_8_2-c_8_8`) worked flawlessly because those variable bounds matched the underlying column names perfectly without relying on Stata's abbreviation feature.
+**1. Feasibility and Overhead of `drf_check_path_df`:**
+*   **Feasibility**: Extremely high. When `drf_load` runs, it dynamically rebuilds `drf$run_df` and executes a live `file.exists()` check on the disk to populate `run_df$has_file_cache`. We just need to check if the first step of each path requires a cache, and if so, whether `has_file_cache` is `TRUE`.
+*   **Overhead**: Near zero. `dplyr` operations on a few thousand rows take less than 10 milliseconds, and the `file.exists()` check has already been computed for `drf$run_df`.
 
-To fix this, we need to update the `expand_stata_var_patterns` function to support matching abbreviated boundaries using `startsWith()`, mirroring how it already handles normal variable name abbreviations.
+**2. Omitting `file.remove()` in `mrb_repair_via_cache`:**
+*   I recommend **keeping** the `file.remove()` for two reasons:
+    1.  **Current code structure**: The downstream function that generates the Stata save command (`drf_code_stata_add_save_cache`) explicitly checks `file.exists(cache_file)`. If the file exists, it **completely omits** generating the Stata `save` command. If we don't delete it in R beforehand, Stata won't even attempt to overwrite it.
+    2.  **It becomes a feature**: With your `drf_check_path_df` logic, deleting the file is actually a perfect failsafe! If we delete the cache and the Stata repair script crashes, the file remains missing. The next time `drf_load` is called, your new `drf_check_path_df` will catch the missing cache and automatically trigger `drf_create()` to safely restore the full, long data preparation path!
 
-!MODIFICATION expand_stata_var_patterns in mrb_reg_tools.R
+Below is the implementation. We add the fast `drf_check_path_df` function and integrate it smoothly into `drf_load`.
+
+!MODIFICATION drf_check_path_df repboxDRF/R/drf.R
 scope = "function"
-file = "/home/rstudio/repbox/metaregBase/R/mrb_reg_tools.R"
-function_name = "expand_stata_var_patterns"
-description = "Support abbreviation matching for var1-var2 Stata range patterns"
+file = "/home/rstudio/repbox/repboxDRF/R/drf.R"
+insert_before_fun = "drf_load"
+description = "Add a fast sanity check to verify if paths rely on missing caches."
 ---
 ```r
-#' Expand Stata patterns (*, -, abbreviations) into actual column names
-#' @param pattern Character vector of variable patterns (e.g., "x1-x5", "i.year*")
-#' @param cols Character vector of available columns in the dataset
-#' @param unlist Logical, whether to unlist the result
-#' @param uses_xi Logical, whether the command is prefixed with `xi:`
-expand_stata_var_patterns = function(pattern, cols, unlist=TRUE, uses_xi=FALSE) {
-  restore.point("expand_stata_var_patterns")
+drf_check_path_df = function(drf) {
+  restore.point("drf_check_path_df")
+  
+  if (is.null(drf$path_df) || NROW(drf$path_df) == 0) return(TRUE)
+  if (is.null(drf$run_df) || NROW(drf$run_df) == 0) return(TRUE)
 
-  if (is.null(cols)) cols = character(0)
+  # Find the starting runid for each path
+  start_df = drf$path_df %>%
+    dplyr::group_by(pid) %>%
+    dplyr::summarize(start_runid = min(runid), .groups = "drop")
 
-  # Helper to expand time series operators with ranges
-  # e.g. L(0/3).x1 -> x1 L1.x1 L2.x1 L3.x1
-  pattern = expand_stata_ts_ranges(pattern)
+  # Join with run_df to inspect the properties of these starting nodes
+  check_df = start_df %>%
+    dplyr::left_join(drf$run_df, by = c("start_runid" = "runid"))
 
-  if (uses_xi) {
-    if (!is.null(pattern)) {
-      pattern = stringi::stri_replace_all_fixed(pattern, "|","#")
-      pattern = stringi::stri_replace_all_regex(pattern, "(([\\.][a-zA-Z0-9_]+))(\\*)","$1##")
-    }
+  # A path is broken if it starts with a command that is natively NOT a load command
+  # (or preserve/restore) AND it does not have an active file cache on disk.
+  broken = check_df %>%
+    dplyr::filter(!has_file_cache & !cmd_type %in% c("load", "preserve", "restore"))
+
+  if (NROW(broken) > 0) {
+    return(FALSE)
   }
 
-  # Split interaction terms
-  ia_rows = which(has.substr(pattern,"#"))
-  if (length(ia_rows)>0) {
-    has_double = has.substr(pattern[ia_rows],"##")
-    sep = ifelse(has_double,"##","#")
-    for (i in seq_along(ia_rows)) {
-      row = ia_rows[i]
-      parts = strsplit(pattern[row],sep[i],fixed=TRUE)[[1]]
-      parts = expand_stata_var_patterns(parts,cols=cols, unlist=TRUE, uses_xi=uses_xi)
-      pattern[row] = paste0(parts, collapse=sep)
-    }
-    not_ia_rows = setdiff(seq_along(pattern),ia_rows)
-    if (length(not_ia_rows)>0) {
-      pattern[not_ia_rows] = expand_stata_var_patterns(pattern[not_ia_rows], cols=cols, uses_xi=uses_xi,unlist=FALSE)
-    }
-    if (unlist) return(unlist(pattern))
-    return(pattern)
-  }
-
-  star_rows = which(has.substr(pattern,"*") | has.substr(pattern, "?"))
-  minus_rows = which(has.substr(pattern,"-"))
-  normal_rows = setdiff(seq_along(pattern), c(star_rows, minus_rows))
-
-  # Split at the LAST dot to cleanly separate all Stata prefixes from the base variable
-  last_dot = stringi::stri_locate_last_fixed(pattern, ".")[, 1]
-  pattern_rhs = ifelse(is.na(last_dot), pattern, stringi::stri_sub(pattern, last_dot + 1))
-  pattern_lhs = ifelse(is.na(last_dot), "", stringi::stri_sub(pattern, 1, last_dot))
-
-  # Abbreviation Matching
-  no_match_rows = normal_rows[which(!(pattern_rhs[normal_rows] %in% cols))]
-  if (length(no_match_rows)>0) {
-    for (row in no_match_rows) {
-      pat_rhs = pattern_rhs[row]
-      if (is.na(pat_rhs)) next # Safely skip NA variables generated by complex parsing
-
-      mcols = which(startsWith(cols, pat_rhs))
-      if (length(mcols)>1) {
-        cat("\nThe regression variable ", pat_rhs, " matches multiple variables.\n")
-        pattern[row] = paste0(pattern_lhs[row] ,cols[mcols[1]])
-      } else if (length(mcols)==0) {
-        msg = paste0("The regression variable ", pat_rhs, " could not be matched with any variable in the data set.")
-        repbox_problem(msg, "regvar_no_match", fail_action = "msg")
-      } else {
-        pattern[row] = paste0(pattern_lhs[row],cols[mcols[1]])
-      }
-    }
-  }
-
-  if (length(star_rows)+length(minus_rows)==0) return(pattern)
-  vars = as.list(pattern)
-
-  # Replace var* patterns
-  rows = star_rows
-  if (uses_xi) {
-    has_dot_star = pattern_lhs[rows]!="" & has.substr(pattern[rows],"*")
-  }
-  rx = glob2rx(pattern_rhs[rows])
-  for (i in seq_along(rows)) {
-    r = rows[i]
-    mvars = cols[grepl(rx[i],cols)]
-    vars[[r]] = paste0(pattern_lhs[r],mvars)
-    if (uses_xi && has_dot_star[i]) {
-      vars[[r]] = pattern[rows[i]]
-    }
-  }
-
-  # Replace var1-var5 patterns
-  rows = minus_rows
-  for (i in seq_along(rows)) {
-    r = rows[i]
-    pat = pattern_rhs[r]
-    from_var = str.left.of(pat,"-") %>% trimws()
-    to_var = str.right.of(pat,"-") %>% trimws()
-    
-    from_match = which(cols == from_var)
-    if (length(from_match) == 0) {
-      from_match = which(startsWith(cols, from_var))
-    }
-    
-    to_match = which(cols == to_var)
-    if (length(to_match) == 0) {
-      to_match = which(startsWith(cols, to_var))
-    }
-    
-    if (length(from_match) > 0 && length(to_match) > 0) {
-      range = sort(c(from_match[1], to_match[1]))
-      vars[[r]] = paste0(pattern_lhs[r], cols[range[1]:range[2]])
-    } else {
-      vars[[r]] = pattern[r] # Fallback
-    }
-  }
-
-  if (unlist) return(unlist(vars))
-  vars
+  return(TRUE)
 }
 ```
-!END_MODIFICATION expand_stata_var_patterns in mrb_reg_tools.R
+!END_MODIFICATION drf_check_path_df repboxDRF/R/drf.R
+
+!MODIFICATION drf_load repboxDRF/R/drf.R
+scope = "function"
+file = "/home/rstudio/repbox/repboxDRF/R/drf.R"
+function_name = "drf_load"
+description = "Inject drf_check_path_df validation and recreate DRF if broken."
+---
+```r
+# To do: variant that is faster for selected paths
+drf_load = function(project_dir, parcels=list(), apply_caches=TRUE) {
+  restore.point("drf_load")
+  project_dir = normalizePath(project_dir)
+  drf = list(project_dir = project_dir, drf_dir = file.path(project_dir, "drf"), parcels = parcels)
+  drf$parcels = repboxDB::repdb_load_parcels(project_dir, c("stata_run_cmd", "r_trans"), parcels=parcels)
+  drf$run_df = drf_make_run_df(drf=drf, add_rcode = TRUE)
+
+  drf$dep_df = read_rds_or_null(file.path(project_dir, "drf/dep_df.Rds"))
+  drf$scalar_map = read_rds_or_null(file.path(project_dir, "drf/scalar_map.Rds"))
+  drf = drf_scalar_map_to_scalar_code(drf)
+
+  drf$path_df = drf_load_path_df(drf=drf)
+
+  # Check if paths are broken (e.g. missing cache files)
+  if (!drf_check_path_df(drf)) {
+    cat("\nMissing cache files detected for starting paths. Recreating DRF to restore full paths...\n")
+    drf = drf_create(project_dir, parcels = parcels, overwrite = TRUE)
+    return(drf)
+  }
+
+  drf$path_df = drf_add_path_df_cols_for_cache(drf=drf)
+  drf$runids = unique(drf$path_df$runid)
+  drf$pids = unique(drf$path_df$pid)
+
+  if (isTRUE(apply_caches)) {
+    drf = drf_apply_caches(drf)
+  }
+
+  drf
+}
+```
+!END_MODIFICATION drf_load repboxDRF/R/drf.R
