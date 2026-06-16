@@ -215,3 +215,11 @@ Here the [] are used like (). This somehow works with the Stata parser but is no
 ## Standard errors for iw, pw or fw weights
 
 The `regtranslate` translation for regressions with iw, pw or fw weights will often yield different standard errors than Stata. Details are in `weights_explained.md`. We keep this issue as it is, not trying to repair.
+
+
+
+# Smaller research / check ideas:
+
+- NA handling: check where idiosyncratic NA handling in Stata changes results compared to proper NA handling (if proper can be well defined)
+
+- xtreg random effects vs fixed effects. xtreg without options uses random effects estimator. Are users aware of that or did they actually want to run a fixed effects estimator? Needs also AI to assess whether FE was intendet.

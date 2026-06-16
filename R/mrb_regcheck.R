@@ -124,6 +124,10 @@ mrb_make_regcheck_parcel = function(
       co_sb = parcels$regcoef[parcels$regcoef$runid == pid, , drop = FALSE]
       co_so = parcels$regcoef_so[parcels$regcoef_so$runid == pid, , drop = FALSE]
 
+      co_sb = remove_dropped_duplicated_coef(co_sb)
+      co_so = remove_dropped_duplicated_coef(co_so)
+
+
       diff_so = coef_diff_table(co_sb, co_so, cmd = run_cmd)
       ev_so = mrb_regcheck_diff_eval(
         diff_so,
@@ -147,6 +151,9 @@ mrb_make_regcheck_parcel = function(
     if (has_sb_coef && rb_did_run && has_rb_coef) {
       co_sb = parcels$regcoef[parcels$regcoef$runid == pid, , drop = FALSE]
       co_rb = parcels$regcoef_rb[parcels$regcoef_rb$runid == pid, , drop = FALSE]
+
+      co_sb = remove_dropped_duplicated_coef(co_sb)
+      co_rb = remove_dropped_duplicated_coef(co_rb)
 
       diff_rb = coef_diff_table(co_sb, co_rb, cmd = run_cmd)
       ev_rb = mrb_regcheck_diff_eval(
@@ -267,6 +274,21 @@ mrb_make_regcheck_parcel = function(
 
   mrb$parcels$regcheck = regcheck
   return(mrb)
+}
+
+# In some Stata formulas a variable is mentione twice
+# then it appears once dropped in the output
+# like in aejmic_4_2_8 runid=153 where we have
+# difference_belief and o.difference_belief
+# this is problematic when comparing to R results
+remove_dropped_duplicated_coef = function(co) {
+  if (!anyDuplicated(co$cterm)) return(co)
+
+  co %>%
+    group_by(cterm) %>%
+    arrange(is.na(coef)) %>%
+    slice(1) %>%
+    ungroup()
 }
 
 mrb_regcheck_numeric_same = function(

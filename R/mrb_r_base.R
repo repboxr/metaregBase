@@ -223,11 +223,28 @@ mrb_run_r_base_step = function(mrb, pid, with_try = isTRUE(mrb$with_try), contin
   r2_val = if ("r2" %in% names(stats_wide)) as.numeric(stats_wide$r2) else if ("r2_p" %in% names(stats_wide)) as.numeric(stats_wide$r2_p) else NA_real_
 
   flags_vec = character()
-  # noc is also a used abbrevation for noconst, not documented
-  # but works but there are other options starting with noc
-  #if (any(startsWith(tolower(opts_df$opt), "nocon"))) {
+
   if (any(tolower(opts_df$opt) %in% c("noc","noco","nocon","nocons","noconst"))) {
     flags_vec = c(flags_vec, "noconst")
+  }
+
+  if (cmd %in% c("xtreg", "xtivreg", "xtivreg2")) {
+    if (any(opts_df$opt == "re")) {
+      flags_vec = c(flags_vec, "re")
+    } else if (any(opts_df$opt == "fe")) {
+      flags_vec = c(flags_vec, "fe")
+    } else if (any(opts_df$opt == "be")) {
+      flags_vec = c(flags_vec, "be")
+    } else if (any(opts_df$opt == "pa")) {
+      flags_vec = c(flags_vec, "pa")
+    } else if (any(opts_df$opt == "mle")) {
+      flags_vec = c(flags_vec, "mle")
+    } else if (any(opts_df$opt %in% c("fd", "sd"))) {
+      flags_vec = c(flags_vec, opts_df$opt[opts_df$opt %in% c("fd", "sd")][1])
+    } else if (cmd != "xtivreg2") {
+      # Stata default for xtreg and xtivreg is re
+      flags_vec = c(flags_vec, "re")
+    }
   }
 
   w_df = cmdpart %>% filter(part == "weight_var")
@@ -316,6 +333,7 @@ mrb_run_r_base = function(mrb, just_pids=NULL, make_parcels=TRUE, continue_on_er
 
   all_step_parcels = list()
 
+  pid = pids[1]
   cat("\nmrb_r_base processing runids: ")
   for (pid in pids) {
     cat(paste0(pid," "))
