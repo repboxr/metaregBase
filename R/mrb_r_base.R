@@ -315,18 +315,28 @@ mrb_run_r_base = function(mrb, just_pids=NULL, make_parcels=TRUE, continue_on_er
   mrb$parcels = repboxDB::repdb_load_parcels(mrb$project_dir, c("reg_cmdpart", "xtvar"))
 
   pids = mrb$drf$pids
+  run_df = mrb$drf$run_df
+  if (!is.null(run_df) && "cmd_type" %in% names(run_df)) {
+    pids = intersect(pids, run_df$runid[run_df$cmd_type == "reg"])
+  }
+
   if (length(pids) == 0) {
-    cat("\nNo pids to process.\n")
+    cat("\nNo reg pids to process.\n")
     return(mrb)
   }
 
   all_pids = pids
   if (!is.null(just_pids)) {
-    pids = just_pids
+    pids = intersect(just_pids, pids)
     mrb$is_partial_run = TRUE
-    mrb$partial_pids = just_pids
+    mrb$partial_pids = pids
   } else {
     mrb$is_partial_run = FALSE
+  }
+
+  if (length(pids) == 0) {
+    cat("\nNo reg pids to process in just_pids.\n")
+    return(mrb)
   }
 
   mrb = mrb_agg_stata(mrb, skip_if_has = TRUE)

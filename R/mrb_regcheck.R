@@ -33,6 +33,12 @@ mrb_make_regcheck_parcel = function(
     if (!is.null(mrb$drf$pids)) mrb$drf$pids else integer()
   )))
 
+  run_df = mrb$drf$run_df
+  if (!is.null(run_df) && "cmd_type" %in% names(run_df)) {
+    reg_runids = run_df$runid[run_df$cmd_type == "reg"]
+    pids = intersect(pids, reg_runids)
+  }
+
   if (length(pids) == 0) {
     if (for_regrepair) return(NULL)
     return(mrb)
@@ -249,7 +255,7 @@ mrb_make_regcheck_parcel = function(
   }
 
 
-  if (!has_col(regcheck, "cached_runid"))
+  if (!repboxUtils::has_col(regcheck, "cached_runid"))
     regcheck$cached_runid = rep(NA_integer_, NROW(regcheck))
 
   cached_runid_df = drf_get_cached_runids_by_pid(drf=mrb$drf, pids=pids)
@@ -260,8 +266,8 @@ mrb_make_regcheck_parcel = function(
 
   if (!is.null(just_pids)) {
     parcels = repboxDB::repdb_load_parcels(mrb$project_dir, "regcheck", parcels)
-    old_regcheck = parcels$regcheck %>% anti_join(regcheck, by = "runid")
-    regcheck = bind_rows(regcheck, old_regcheck) %>% arrange(runid)
+    old_regcheck = parcels$regcheck %>% dplyr::anti_join(regcheck, by = "runid")
+    regcheck = dplyr::bind_rows(regcheck, old_regcheck) %>% dplyr::arrange(runid)
   }
 
   if (save) {

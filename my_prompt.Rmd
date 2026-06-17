@@ -9562,6 +9562,38 @@ add_load_blocks_to_run_df = function(run_df) {
 -----------------------------------------------------------
 
 
+# FILE: /home/rstudio/repbox/repboxDRF/R/drf_post_reg.R
+```
+#' Get the associated regression runid for post-regression commands
+#'
+#' Uses a fast heuristic: maps each post_reg command to the most recent
+#' preceding reg or quasi_reg command in the execution sequence (run_df).
+#' Note: This relies on execution sequence and does not yet trace 'estimates restore' calls.
+drf_get_post_reg_reg_runid = function(run_df) {
+  restore.point("drf_get_post_reg_reg_runid")
+
+  reg_df = run_df %>%
+    dplyr::filter(cmd_type %in% c("reg", "quasi_reg")) %>%
+    dplyr::select(reg_runid = runid)
+
+  post_df = run_df %>%
+    dplyr::filter(cmd_type == "post_reg") %>%
+    dplyr::select(runid)
+
+  if (NROW(post_df) == 0) return(dplyr::tibble(runid = integer(0), reg_runid = integer(0)))
+  if (NROW(reg_df) == 0) return(post_df %>% dplyr::mutate(reg_runid = NA_integer_))
+
+  post_df = post_df %>%
+    dplyr::left_join(reg_df, by = dplyr::join_by(dplyr::closest(runid > reg_runid)))
+
+  post_df
+}
+```
+# END OF FILE: /home/rstudio/repbox/repboxDRF/R/drf_post_reg.R
+
+-----------------------------------------------------------
+
+
 # FILE: /home/rstudio/repbox/repboxDRF/R/drf.R
 ```
 example = function() {
@@ -16710,6 +16742,9 @@ example = function() {
 # Stores cmdpart parcels and internal reg info in repbox/stata dir
 # we cannot yet store any regcoef etc parcels
 # since that requires metaregBase semantic parsing with data set info
+# Stores cmdpart parcels and internal reg info in repbox/stata dir
+# we cannot yet store any regcoef etc parcels
+# since that requires metaregBase semantic parsing with data set info
 rsr_make_reg_info = function(project_dir, overwrite=FALSE, parcels=list(), repbox_results=repbox_load_internal_repbox_results(project_dir)) {
   restore.point("rsr_make_reg_info")
   parcels = repdb_load_parcels(project_dir, "stata_run_cmd")
@@ -16717,6 +16752,9 @@ rsr_make_reg_info = function(project_dir, overwrite=FALSE, parcels=list(), repbo
   parcels = rsr_make_cmdpart_parcels(project_dir = project_dir, overwrite=overwrite, run_df=run_df)
   rsr_make_stata_reg_run_info_parcel(project_dir, parcels=parcels,repbox_results=repbox_results)
   regtab = rsr_extract_stata_reg_output(project_dir)
+
+  # Extract quasi and post reg parcels from the original run
+  parcels = rsr_make_quasi_and_post_reg_parcels(project_dir, parcels=parcels, run_df=run_df)
 
   parcels
 }
@@ -16849,6 +16887,60 @@ rsr_make_stata_reg_run_info_parcel = function(project_dir, parcels=list(), repbo
 
   repdb_save_parcels(parcels[c("stata_reg_run_info")], file.path(project_dir, "repdb") )
   invisible(parcels)
+}
+#' Generate quasi_reg and post_reg parcels
+rsr_make_quasi_and_post_reg_parcels = function(project_dir, parcels = list(), run_df = NULL) {
+  restore.point("rsr_make_quasi_and_post_reg_parcels")
+
+  if (is.null(run_df)) {
+    parcels = repboxDB::repdb_load_parcels(project_dir, "stata_run_cmd", parcels = parcels)
+    run_df = repboxDRF::repbox_get_run_df(project_dir = project_dir, parcels = parcels)
+  }
+
+  if (is.null(run_df) || NROW(run_df) == 0) return(parcels)
+
+  repdb_dir = file.path(project_dir, "repdb")
+
+  # 1. quasi_reg parcel
+  qrows = which(run_df$cmd_type == "quasi_reg")
+  if (length(qrows) > 0) {
+    quasi_reg = run_df[qrows, , drop = FALSE] %>%
+      dplyr::transmute(
+        runid = as.integer(runid),
+        variant = "so", # "so" because this is based on the Stata Original run
+        cmd = as.character(cmd),
+        cmdline = as.character(cmdline),
+        flags = "",
+        has_err = errcode != 0,
+        timevar = as.character(repboxUtils::na.val(timevar, "")),
+        panelvar = as.character(repboxUtils::na.val(panelvar, "")),
+        tdelta = as.character(repboxUtils::na.val(tdelta, ""))
+      )
+    parcels[["quasi_reg"]] = quasi_reg
+    repboxDB::repdb_save_parcels(parcels["quasi_reg"], dir = repdb_dir, check = FALSE)
+  }
+
+  # 2. post_reg parcel
+  prows = which(run_df$cmd_type == "post_reg")
+  if (length(prows) > 0) {
+    map_df = repboxDRF::drf_get_post_reg_reg_runid(run_df)
+
+    post_reg = run_df[prows, , drop = FALSE] %>%
+      dplyr::left_join(map_df, by = "runid") %>%
+      dplyr::transmute(
+        runid = as.integer(runid),
+        variant = "so",
+        reg_runid = as.integer(reg_runid),
+        cmd = as.character(cmd),
+        cmdline = as.character(cmdline),
+        flags = "",
+        has_err = errcode != 0
+      )
+    parcels[["post_reg"]] = post_reg
+    repboxDB::repdb_save_parcels(parcels["post_reg"], dir = repdb_dir, check = FALSE)
+  }
+
+  parcels
 }
 ```
 # END OF FILE: /home/rstudio/repbox/repboxStataReg/R/rsr.R
@@ -17167,81 +17259,78 @@ is_negative = function(n) {
 # Your Task
 ##################################
 
-I would like to store information of quasi regs and post regs
+I recently implemented the creation of the quasi_reg and post_reg parcels. quasi_reg shall also have timevar, panelvar and tdelta like reg parcel. Yet, that is not correctly implemented. Here an error:
 
-quasi regs are Stata commands like `rd` that are similar to regression analysis but will not be handled by our full mrb pipeline since output is different from normal regressions. 
+3 of the 2503 run commands without missing data threw an error.
+Error in `dplyr::transmute()`:
+ℹ In argument: `timevar = as.character(repboxUtils::na.val(timevar, ""))`.
+Caused by error in `repboxUtils::na.val()`:
+! object 'timevar' not found
+Run `rlang::last_trace()` to see where the error occurred.
+> traceback()
+23: stop(fallback)
+22: signal_abort(cnd, .file)
+21: abort(message, class = error_class, parent = parent, call = error_call)
+20: h(simpleError(msg, call))
+19: .handleSimpleError(function (cnd) 
+    {
+        local_error_context(dots, i = frame[[i_sym]], mask = mask)
+        if (inherits(cnd, "dplyr:::internal_error")) {
+            parent <- error_cnd(message = bullets(cnd))
+        }
+        else {
+            parent <- cnd
+        }
+        message <- c(cnd_bullet_header(action), i = if (has_active_group_context(mask)) cnd_bullet_cur_group_label())
+        abort(message, class = error_class, parent = parent, call = error_call)
+    }, "object 'timevar' not found", base::quote(repboxUtils::na.val(timevar, 
+        ""))) at tools.R#408
+18: repboxUtils::na.val(timevar, "")
+17: .Call(dplyr_mask_eval_all_mutate, quo, private)
+16: eval()
+15: mask$eval_all_mutate(quo)
+14: mutate_col(dots[[i]], data, mask, new_columns)
+13: withCallingHandlers(for (i in seq_along(dots)) {
+        poke_error_context(dots, i, mask = mask)
+        context_poke("column", old_current_column)
+        new_columns <- mutate_col(dots[[i]], data, mask, new_columns)
+    }, error = dplyr_error_handler(dots = dots, mask = mask, bullets = mutate_bullets, 
+        error_call = error_call, error_class = "dplyr:::mutate_error"), 
+        warning = dplyr_warning_handler(state = warnings_state, mask = mask, 
+            error_call = error_call))
+12: mutate_cols(.data, dots, by)
+11: transmute.data.frame(., runid = as.integer(runid), variant = "so", 
+        cmd = as.character(cmd), cmdline = as.character(cmdline), 
+        flags = "", has_err = errcode != 0, timevar = as.character(repboxUtils::na.val(timevar, 
+            "")), panelvar = as.character(repboxUtils::na.val(panelvar, 
+            "")), tdelta = as.character(repboxUtils::na.val(tdelta, 
+            "")))
+10: dplyr::transmute(., runid = as.integer(runid), variant = "so", 
+        cmd = as.character(cmd), cmdline = as.character(cmdline), 
+        flags = "", has_err = errcode != 0, timevar = as.character(repboxUtils::na.val(timevar, 
+            "")), panelvar = as.character(repboxUtils::na.val(panelvar, 
+            "")), tdelta = as.character(repboxUtils::na.val(tdelta, 
+            "")))
+9: run_df[qrows, , drop = FALSE] %>% dplyr::transmute(runid = as.integer(runid), 
+       variant = "so", cmd = as.character(cmd), cmdline = as.character(cmdline), 
+       flags = "", has_err = errcode != 0, timevar = as.character(repboxUtils::na.val(timevar, 
+           "")), panelvar = as.character(repboxUtils::na.val(panelvar, 
+           "")), tdelta = as.character(repboxUtils::na.val(tdelta, 
+           ""))) at rsr.R#179
+8: rsr_make_quasi_and_post_reg_parcels(project_dir, parcels = parcels, 
+       run_df = run_df) at rsr.R#29
+7: rsr_make_reg_info(project_dir = project_dir, overwrite = overwrite, 
+       parcels = parcels, repbox_results = repbox_results)
+6: rb_postprocess_stata_reproduction(rb = rb, overwrite = overwrite) at run_post_gha.R#37
+5: run_all_post_gha() at run_post_gha.R#52
+4: eval(ei, envir)
+3: eval(ei, envir)
+2: withVisible(eval(ei, envir))
+1: source("~/repbox/projects/aejapp_10_4_6/run/run_post_gha.R")
 
-post regs are post regression commands, like tests associated with regressions.
 
-I created two new parcel descriptions:
+I think repboxStata or repboxStataReg probably needs to write those variables in the original reproduction run, as is done for regressions. They then end up in the xtvar parcel and also need to be obtained from them. But that pipeline is not yet correctly implemented for quasi_reg. (post_reg is fine, we don't store timevar etc for that parcel).
 
-```
-name: quasi_reg
-
-descr: |
-  Basic for quasi regression commands.
-
-unique_index:
-  main_index: [runid, variant]
-
-fields:
-  runid:
-    type: int
-
-  cmd:
-    descr: Name of the regression command, e.g. ivreg2 in Stata.
-
-  cmdline:
-    descr: Code that calls the regression command
-
-  flags:
-    descr: |
-      Possibly flags that contain some info
-
-  has_err:
-    type: bool
-    descr: did the stata command run without error in the original replication
-```
-
-```
-name: post_reg
-
-descr: |
-  Basic information for post-regression commands.
-
-unique_index:
-  main_index: [runid, variant]
-
-fields:
-  runid:
-    type: int
-
-  reg_runid:
-    type: int
-    descr: The runid of the associated regression command
-
-  cmd:
-
-  cmdline:
-
-  flags:
-    descr: |
-      Possibly flags that contain some info
-
-  has_err:
-    type: bool
-    descr: did the stata command run without error in the original replication
-```
-
-I would like to adapt our mrb pipeline so that these parcels are generated. They provide only very little infos but can still be helpful for more customized meta studies that analyse these quasi regressions or some post regressions.
-
-Can you implement the parcel generation?
-
-1. For post_reg I want a fast functions that determines the reg_runid based on our run_df. This function could also be part of repbox_drf. Perhaps we may even generate a complete drf_post_reg.R file that has more post_reg utilities, like generating a drf object for post_reg commands that allows to build a path_df for post reg commands. But by default we don't want to generate such paths.
-
-2. I was thinking whether for quasi regs we should also store timevar, panelvar and tdelta info, as we do for regressions. This would require likely modification of repboxStata or repboxStataReg. But that might be helpful. What do you think?
-
-Please discuss, make a code proposal and explain.
-
+Analyse, propose a fix and explain.
 
 

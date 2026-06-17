@@ -1,135 +1,429 @@
-To solve this, we can take advantage of the fact that `plm`'s `index` argument simply tells `plm` which columns in the data frame to use as the panel and time identifiers. When `plm` receives these columns, it internally converts them to factors in a `pdata.frame`. 
+The error you encountered happens because `drf$pids` tracks analysis commands based on `drf$acmds`. `drf$acmds` rightfully includes both `reg` and `quasi_reg` commands to ensure `repboxDRF` builds correct data preparation paths for all estimators. 
 
-If we use the original `period` column as the index, `plm` transforms `period` to a factor. Since `period` is also in the formula, the formula evaluator picks up the transformed factor version instead of the numeric original!
+However, the `metaregBase` pipeline (`mrb_run_r_base` and `mrb_run_r_reg`) relies heavily on standard regression canonical structures like `reg_cmdpart`, which are deliberately not generated for quasi-regressions (they have a separate `quasi_reg_cmdpart` instead). Thus, passing a `quasi_reg` PID into `mrb_run_r_base_step` attempts to access a non-existent `reg_cmdpart` row and triggers a fatal crash.
 
-The fix is elegant: we duplicate the panel and time variables into hidden columns (e.g., `.plm.id` and `.plm.time`) and pass *those* to `index`. `plm` will convert the hidden columns to factors for panel structure, but leave the original variables completely untouched, allowing them to be evaluated as numeric regressors in the formula, exactly mimicking Stata's behavior.
+The solution is to filter `pids` in `mrb_run_r_base`, `mrb_run_r_reg`, and `mrb_make_regcheck_parcel` immediately at the top of these functions, restricting processing exclusively to `cmd_type == "reg"`. This leaves `quasi_reg` paths intact in DRF while successfully bypassing them in the metareg reconstruction pipeline.
 
-Here is the update for the `plm` code translator to implement this fix.
+Here are the fixes:
 
-!MODIFICATION stata_to_r_code_plm in to_r_plm.R
+!MODIFICATION mrb_run_r_base in metaregBase/R/mrb_r_base.R
 scope = "function"
-file = "/home/rstudio/repbox/regtranslate/R/to_r_plm.R"
-function_name = "stata_to_r_code_plm"
-description = "Update stata_to_r_code_plm to duplicate index variables to prevent auto-conversion to factors when used as regressors."
+file = "/home/rstudio/repbox/metaregBase/R/mrb_r_base.R"
+function_name = "mrb_run_r_base"
+description = "Skip quasi_regs directly by filtering pids to only those with cmd_type == 'reg'."
 ---
 ```r
-stata_to_r_code_plm = function(reg, regvar, regxvar, cmdpart, opts=code_options(), parts = list()) {
-  restore.point("stata_to_r_code_plm")
+#' Extract Stata metaregBase results and create corresponding metaregBase parcels
+mrb_run_r_base = function(mrb, just_pids=NULL, make_parcels=TRUE, continue_on_error=FALSE) {
+  restore.point("mrb_run_r")
 
-  org_depvars = regvar$cterm[regvar$role=="dep"]
-  mod_depvars = replace_cterm_special_symbols(org_depvars)
+  repbox_problem_set_project_dir(mrb$project_dir)
 
-  formula = regvar_to_formula_plm(regvar, regxvar, cmdpart, reg = reg)
+  mrb$drf = drf_apply_loop_ignore(mrb$drf)
 
-  command = "plm"
-  arg_str = c(
-    paste0("formula = formula"),
-    paste0("data = dat")
-  )
+  mrb$artid = basename(mrb$project_dir)
+  mrb$parcels = repboxDB::repdb_load_parcels(mrb$project_dir, c("reg_cmdpart", "xtvar"))
 
-  rcmd_code = paste0('rcmd = "',command,'"')
-
-  # Prepare data modifications in correct order
-  data_code_parts = character(0)
-
-  if (any(org_depvars != mod_depvars)) {
-    data_code_parts = c(data_code_parts, paste0('dat[["', mod_depvars,'"]] = dat[["', org_depvars,'"]]', collapse="\n"))
+  pids = mrb$drf$pids
+  run_df = mrb$drf$run_df
+  if (!is.null(run_df) && "cmd_type" %in% names(run_df)) {
+    pids = intersect(pids, run_df$runid[run_df$cmd_type == "reg"])
   }
 
-  lw_code = r_listwise_deletion_code(regvar)
-  if (nzchar(lw_code)) data_code_parts = c(data_code_parts, lw_code)
-
-  wt = r_weight_code(reg, template = "dat[['%s']]")
-  if (nzchar(wt$data_code)) data_code_parts = c(data_code_parts, wt$data_code)
-  if (nzchar(wt$weight_arg)) arg_str = c(arg_str, wt$weight_arg)
-
-  # Duplicate index variables for plm so they don't get cast to factors if used as regressors
-  panelvar = reg$panelvar[1]
-  timevar = reg$timevar[1]
-  if (!is.na(panelvar) && nzchar(panelvar)) {
-    data_code_parts = c(data_code_parts, paste0("dat[['.plm.id']] = dat[['", panelvar, "']]"))
-    if (!is.na(timevar) && nzchar(timevar)) {
-      data_code_parts = c(data_code_parts, paste0("dat[['.plm.time']] = dat[['", timevar, "']]"))
-      arg_str = c(arg_str, "index = c('.plm.id', '.plm.time')")
-    } else {
-      arg_str = c(arg_str, "index = '.plm.id'")
-    }
+  if (length(pids) == 0) {
+    cat("\nNo reg pids to process.\n")
+    return(mrb)
   }
 
-  # Model type
-  flags = if (!is.null(reg$flags) && !is.na(reg$flags)) strsplit(reg$flags, ",\\s*")[[1]] else character(0)
-  if ("re" %in% flags) {
-    arg_str = c(arg_str, "model = 'random'")
-  } else if ("fe" %in% flags) {
-    arg_str = c(arg_str, "model = 'within'")
-  } else if ("be" %in% flags) {
-    arg_str = c(arg_str, "model = 'between'")
-  } else if ("fd" %in% flags) {
-    arg_str = c(arg_str, "model = 'fd'")
+  all_pids = pids
+  if (!is.null(just_pids)) {
+    pids = intersect(just_pids, pids)
+    mrb$is_partial_run = TRUE
+    mrb$partial_pids = pids
+  } else {
+    mrb$is_partial_run = FALSE
   }
 
-  # Rename columns to avoid plm choking on `#` and `=`
-  data_code_parts = c(data_code_parts, "dat = regtranslate::cterm_to_saveterm_cols(dat)")
-  
-  data_code = paste0(data_code_parts, collapse = "\n")
-
-  formula_code = paste0('formula = ', formula)
-  reg_code = paste0('reg = ', command, "(", paste0(arg_str, collapse=","),")")
-
-  library_code = "library(plm)"
-
-  code_df = tibble(part = c("library", "rcmd","data","formula", "reg"), code = c(library_code, rcmd_code,data_code, formula_code, reg_code))
-
-  use_summary = TRUE
-  sum_code = "sum = summary(reg)"
-
-  # Handle VCOV for robust/cluster
-  vcov_type = fixest_vcov_type_from_regdb(reg$se_type, reg$se_args)
-  if (vcov_type %in% c("cluster", "twoway", "multiway")) {
-    clustervar = extract_clustervar_from_se_args(reg$se_args)
-    if (length(clustervar) > 0) {
-      if (clustervar[1] == panelvar) {
-        # plm default for cluster="group" is robust to panel correlation
-        sum_code = "sum = lmtest::coeftest(reg, vcov = plm::vcovHC(reg, type = 'HC1', cluster = 'group'))"
-        library_code = paste0(library_code, "\nlibrary(lmtest)")
-        code_df$code[1] = library_code
-      } else {
-        # Fallback to vcovHC for group if it's single cluster
-        sum_code = paste0("sum = lmtest::coeftest(reg, vcov = plm::vcovHC(reg, type = 'HC1', cluster = 'group'))")
-        library_code = paste0(library_code, "\nlibrary(lmtest)")
-        code_df$code[1] = library_code
-      }
-    }
-  } else if (vcov_type == "hetero") {
-     sum_code = "sum = lmtest::coeftest(reg, vcov = plm::vcovHC(reg, type = 'HC1', cluster = 'time'))"
-     library_code = paste0(library_code, "\nlibrary(lmtest)")
-     code_df$code[1] = library_code
+  if (length(pids) == 0) {
+    cat("\nNo reg pids to process in just_pids.\n")
+    return(mrb)
   }
 
-  code_df = bind_rows(
-    code_df,
-    tibble(part = c("sum"), code = c(sum_code))
-  )
+  mrb = mrb_agg_stata(mrb, skip_if_has = TRUE)
 
-  if (opts$add_broom) {
-    code_df = add_reg_broom_code(code_df, use_summary=use_summary, use_conf_int=TRUE)
+  all_step_parcels = list()
 
-    # broom::glance doesn't work well on coeftest. If sum is coeftest, we run glance on reg instead.
-    glance_idx = which(code_df$part == "glance")
-    if (length(glance_idx) > 0) {
-      code_df$code[glance_idx] = "glance = broom::glance(reg)"
-    }
-    
-    # Restore original cterms for broom::tidy output
-    code_df = bind_rows(
-      code_df,
-      tibble(part = "ct_fix", code = "ct$term = regtranslate::saveterm_to_cterm(ct$term)")
-    )
+  pid = pids[1]
+  cat("\nmrb_r_base processing runids: ")
+  for (pid in pids) {
+    cat(paste0(pid," "))
+    step_parcels = mrb_run_r_base_step(mrb, pid, continue_on_error=continue_on_error)
+    all_step_parcels[[as.character(pid)]] = step_parcels
   }
-  if (opts$add_function) {
-    code_df = add_reg_function_code(code_df)
+  cat("\n")
+
+  mrb$all_step_parcels = all_step_parcels
+  if (make_parcels) {
+    mrb = mrb_make_r_base_parcels(mrb)
   }
-  code_df
+
+  mrb
 }
 ```
-!END_MODIFICATION stata_to_r_code_plm in to_r_plm.R
+!END_MODIFICATION mrb_run_r_base in metaregBase/R/mrb_r_base.R
+
+
+!MODIFICATION mrb_run_r_reg in metaregBase/R/mrb_r_reg.R
+scope = "function"
+file = "/home/rstudio/repbox/metaregBase/R/mrb_r_reg.R"
+function_name = "mrb_run_r_reg"
+description = "Skip quasi_regs directly by filtering pids to only those with cmd_type == 'reg'."
+---
+```r
+#' Run translated r regressions, store results and compare with Stata results
+#' uses the parcels already generated by mrb_run_r_base and regtranslate for
+#' regression translation
+mrb_run_r_reg = function(mrb, just_pids=NULL, continue_on_error=FALSE) {
+  restore.point("mrb_run_r_reg")
+
+  mrb$drf = drf_apply_loop_ignore(mrb$drf)
+
+  mrb$artid = basename(mrb$project_dir)
+  mrb$parcels = repboxDB::repdb_load_parcels(mrb$project_dir, c("reg_cmdpart", "reg","regvar","regxvar","regcoef", "regcoef_so"))
+
+  pids = mrb$drf$pids
+  run_df = mrb$drf$run_df
+  if (!is.null(run_df) && "cmd_type" %in% names(run_df)) {
+    pids = intersect(pids, run_df$runid[run_df$cmd_type == "reg"])
+  }
+
+  if (length(pids) == 0) {
+    cat("\nNo reg pids to process.\n")
+    return(mrb)
+  }
+
+  all_pids = pids
+  if (!is.null(just_pids)) {
+    pids = intersect(just_pids, pids)
+    mrb$is_partial_run = TRUE
+    mrb$partial_pids = pids
+  } else {
+    mrb$is_partial_run = FALSE
+  }
+
+  if (length(pids) == 0) {
+    cat("\nNo reg pids to process in just_pids.\n")
+    return(mrb)
+  }
+
+  all_step_parcels = list()
+
+  cat("\nmrb_r_reg processing runids: ")
+  for (pid in pids) {
+    cat(paste0(pid," "))
+    step_parcels = mrb_run_r_reg_step(mrb, pid, continue_on_error=continue_on_error)
+    all_step_parcels[[as.character(pid)]] = step_parcels
+  }
+  cat("\n")
+  mrb$all_step_parcels = all_step_parcels
+
+  mrb = mrb_make_r_reg_parcels(mrb)
+
+  mrb
+}
+```
+!END_MODIFICATION mrb_run_r_reg in metaregBase/R/mrb_r_reg.R
+
+
+!MODIFICATION mrb_make_regcheck_parcel in metaregBase/R/mrb_regcheck.R
+scope = "function"
+file = "/home/rstudio/repbox/metaregBase/R/mrb_regcheck.R"
+function_name = "mrb_make_regcheck_parcel"
+description = "Skip quasi_regs directly by filtering pids to only those with cmd_type == 'reg'."
+---
+```r
+#' Assemble the 'regcheck' parcel checking cross-language replication success
+#'
+#' Evaluates the success of regression outputs and maps any mismatches
+#' to a standardized `regcheck` parcel.
+mrb_make_regcheck_parcel = function(
+  mrb,
+  save = TRUE,
+  just_pids = NULL,
+  repair_code = "",
+  max_rel_diff_tol = 1e-4,
+  max_deviation_tol = 1e-5,
+  rb_max_rel_diff_tol = 0.01,
+  rb_max_deviation_tol = 1e-5,
+  for_regrepair = FALSE
+) {
+  restore.point("mrb_make_regcheck_parcel")
+
+  if (!is.null(just_pids) & length(just_pids) == 0)
+    return(mrb)
+
+  mrb$parcels = parcels = repboxDB::repdb_load_parcels(
+    mrb$project_dir,
+    c("reg", "reg_rb", "regcoef", "regcoef_so", "regcoef_rb"),
+    mrb$parcels
+  )
+
+  pids = sort(unique(c(
+    if (!is.null(parcels$reg)) parcels$reg$runid else integer(),
+    if (!is.null(parcels$reg_rb)) parcels$reg_rb$runid else integer(),
+    if (!is.null(parcels$regcoef)) parcels$regcoef$runid else integer(),
+    if (!is.null(parcels$regcoef_so)) parcels$regcoef_so$runid else integer(),
+    if (!is.null(parcels$regcoef_rb)) parcels$regcoef_rb$runid else integer(),
+    if (!is.null(mrb$drf$pids)) mrb$drf$pids else integer()
+  )))
+
+  run_df = mrb$drf$run_df
+  if (!is.null(run_df) && "cmd_type" %in% names(run_df)) {
+    reg_runids = run_df$runid[run_df$cmd_type == "reg"]
+    pids = intersect(pids, reg_runids)
+  }
+
+  if (length(pids) == 0) {
+    if (for_regrepair) return(NULL)
+    return(mrb)
+  }
+
+  if (!is.null(just_pids)) {
+    pids = intersect(pids, just_pids)
+  }
+
+  run_df = mrb$drf$run_df
+
+  get_run_cmd = function(pid) {
+    cmd = ""
+
+    if (!is.null(parcels$reg) && "cmd" %in% names(parcels$reg) && pid %in% parcels$reg$runid) {
+      reg_row = parcels$reg[parcels$reg$runid == pid, , drop = FALSE][1, ]
+      cmd = as.character(reg_row$cmd[1])
+      if (!is.na(cmd) && nzchar(cmd)) {
+        return(cmd)
+      }
+    }
+
+    if (!is.null(parcels$reg_rb) && "cmd" %in% names(parcels$reg_rb) && pid %in% parcels$reg_rb$runid) {
+      reg_row = parcels$reg_rb[parcels$reg_rb$runid == pid, , drop = FALSE][1, ]
+      cmd = as.character(reg_row$cmd[1])
+      if (!is.na(cmd) && nzchar(cmd)) {
+        return(cmd)
+      }
+    }
+
+    if (!is.null(run_df) && "cmd" %in% names(run_df) && pid %in% run_df$runid) {
+      run_row = run_df[run_df$runid == pid, , drop = FALSE][1, ]
+      cmd = as.character(run_row$cmd[1])
+      if (!is.na(cmd) && nzchar(cmd)) {
+        return(cmd)
+      }
+    }
+
+    ""
+  }
+
+  res_li = lapply(pids, function(pid) {
+    so_did_run = !is.null(parcels$regcoef_so) && pid %in% parcels$regcoef_so$runid
+
+    has_sb_coef = !is.null(parcels$regcoef) && pid %in% parcels$regcoef$runid
+    has_sb_reg = !is.null(parcels$reg) && pid %in% parcels$reg$runid
+    sb_did_run = has_sb_coef || has_sb_reg
+
+    sb_num_coef = NA_integer_
+    if (has_sb_coef) {
+      sb_num_coef = as.integer(NROW(parcels$regcoef[parcels$regcoef$runid == pid, , drop = FALSE]))
+    }
+
+    run_cmd = get_run_cmd(pid)
+
+    rb_did_run = FALSE
+    error_msg = ""
+    if (!is.null(parcels$reg_rb) && pid %in% parcels$reg_rb$runid) {
+      rb_row = parcels$reg_rb[parcels$reg_rb$runid == pid, , drop = FALSE][1, ]
+      rb_did_run = !isTRUE(rb_row$error_in_r)
+
+      if ("error_msg" %in% names(rb_row) && !is.na(rb_row$error_msg[1])) {
+        error_msg = as.character(rb_row$error_msg[1])
+      }
+    }
+
+    has_rb_coef = !is.null(parcels$regcoef_rb) && pid %in% parcels$regcoef_rb$runid
+
+    sb_so_identical = NA
+    sb_so_coef_same = NA
+    sb_so_coef_max_dev = NA_real_
+    sb_so_coef_max_rel = NA_real_
+    sb_so_se_same = NA
+    sb_so_se_max_dev = NA_real_
+    sb_so_se_max_rel = NA_real_
+
+    rb_sb_coef_same = NA
+    rb_sb_share_coeff_same = NA_real_
+    rb_sb_coef_max_dev = NA_real_
+    rb_sb_coef_max_rel = NA_real_
+    rb_sb_se_same = NA
+    rb_sb_se_max_dev = NA_real_
+    rb_sb_se_max_rel = NA_real_
+
+    problem = ""
+    comment = ""
+
+    if (has_sb_coef && so_did_run) {
+      co_sb = parcels$regcoef[parcels$regcoef$runid == pid, , drop = FALSE]
+      co_so = parcels$regcoef_so[parcels$regcoef_so$runid == pid, , drop = FALSE]
+
+      co_sb = remove_dropped_duplicated_coef(co_sb)
+      co_so = remove_dropped_duplicated_coef(co_so)
+
+
+      diff_so = coef_diff_table(co_sb, co_so, cmd = run_cmd)
+      ev_so = mrb_regcheck_diff_eval(
+        diff_so,
+        max_rel_diff_tol = max_rel_diff_tol,
+        max_deviation_tol = max_deviation_tol
+      )
+
+      sb_so_identical = ev_so$all_same
+      sb_so_coef_same = ev_so$coef_same
+
+      # The regcheck parcel spec defines sb_so_coef_max_dev as the
+      # maximum relative coefficient deviation between sb and so.
+      sb_so_coef_max_dev = ev_so$coef_max_rel
+      sb_so_coef_max_rel = ev_so$coef_max_rel
+
+      sb_so_se_same = ev_so$se_same
+      sb_so_se_max_dev = ev_so$se_max_dev
+      sb_so_se_max_rel = ev_so$se_max_rel
+    }
+
+    if (has_sb_coef && rb_did_run && has_rb_coef) {
+      co_sb = parcels$regcoef[parcels$regcoef$runid == pid, , drop = FALSE]
+      co_rb = parcels$regcoef_rb[parcels$regcoef_rb$runid == pid, , drop = FALSE]
+
+      co_sb = remove_dropped_duplicated_coef(co_sb)
+      co_rb = remove_dropped_duplicated_coef(co_rb)
+
+      diff_rb = coef_diff_table(co_sb, co_rb, cmd = run_cmd)
+      ev_rb = mrb_regcheck_diff_eval(
+        diff_rb,
+        max_rel_diff_tol = rb_max_rel_diff_tol,
+        max_deviation_tol = rb_max_deviation_tol
+      )
+
+      rb_sb_coef_same = ev_rb$coef_same
+      rb_sb_share_coeff_same = ev_rb$coef_same_share
+      rb_sb_coef_max_dev = ev_rb$coef_max_dev
+      rb_sb_coef_max_rel = ev_rb$coef_max_rel
+      rb_sb_se_same = ev_rb$se_same
+      rb_sb_se_max_dev = ev_rb$se_max_dev
+      rb_sb_se_max_rel = ev_rb$se_max_rel
+    }
+
+    if (!rb_did_run & !sb_did_run & !so_did_run) {
+      problem = "All reproductions failed: so, sb and rb"
+    } else if (so_did_run & !sb_did_run & !rb_did_run) {
+      problem = "Original Stata reproduction succeeded, but metaregBase reproductions failed: sb and rb"
+    } else if (!sb_did_run & !rb_did_run) {
+      problem = "metaregBase reproductions failed: sb and rb"
+    } else if (!rb_did_run) {
+      problem = paste0("R replication rb failed: ", error_msg)
+    } else if (!sb_did_run) {
+      problem = "Stata base sb replication failed, but rb did run."
+    } else if (!so_did_run) {
+      problem = "Original Stata reproduction results missing."
+    } else if (sb_did_run & !has_sb_coef) {
+      problem = "Stata base sb metadata exists, but sb coefficients are missing."
+    } else if (rb_did_run & !has_rb_coef) {
+      problem = "R replication rb metadata exists, but rb coefficients are missing."
+    } else if (isTRUE(!rb_sb_coef_same)) {
+      problem = "R and Stata base coefficients differ by > tolerance."
+    } else if (isTRUE(!rb_sb_se_same)) {
+      problem = "R and Stata base standard errors differ by > tolerance."
+    } else if (isTRUE(!sb_so_identical)) {
+      problem = "Stata base differs from Stata original."
+    }
+
+    reg_ok = isTRUE(so_did_run) &&
+      isTRUE(sb_did_run) &&
+      isTRUE(rb_did_run) &&
+      isTRUE(has_sb_coef) &&
+      isTRUE(has_rb_coef) &&
+      isTRUE(sb_so_identical) &&
+      isTRUE(rb_sb_coef_same) &&
+      isTRUE(rb_sb_se_same)
+
+    dplyr::tibble(
+      runid = as.integer(pid),
+      cmd = run_cmd,
+      reg_ok = reg_ok,
+      so_did_run = so_did_run,
+      sb_did_run = sb_did_run,
+      rb_did_run = rb_did_run,
+
+      sb_num_coef = sb_num_coef,
+
+      sb_so_identical = sb_so_identical,
+      sb_so_coef_same = sb_so_coef_same,
+      sb_so_coef_max_dev = sb_so_coef_max_dev,
+      sb_so_coef_max_rel = sb_so_coef_max_rel,
+      sb_so_se_same = sb_so_se_same,
+      sb_so_se_max_dev = sb_so_se_max_dev,
+      sb_so_se_max_rel = sb_so_se_max_rel,
+
+      rb_sb_coef_same = rb_sb_coef_same,
+      rb_sb_share_coeff_same = rb_sb_share_coeff_same,
+      rb_sb_coef_max_dev = rb_sb_coef_max_dev,
+      rb_sb_coef_max_rel = rb_sb_coef_max_rel,
+      rb_sb_se_same = rb_sb_se_same,
+      rb_sb_se_max_dev = rb_sb_se_max_dev,
+      rb_sb_se_max_rel = rb_sb_se_max_rel,
+
+      repair_code = repair_code,
+      problem = problem,
+      comment = comment
+    )
+  })
+
+  regcheck = dplyr::bind_rows(res_li)
+
+  regcheck$so_raw_did_run = regcheck$so_did_run
+  if (!is.null(mrb$regtab_so) && "runid" %in% names(mrb$regtab_so)) {
+    regcheck$so_raw_did_run = regcheck$so_raw_did_run | regcheck$runid %in% mrb$regtab_so$runid
+  }
+
+  regcheck$sb_raw_did_run = regcheck$sb_did_run
+  if (!is.null(mrb$stata_ct_sb) && "runid" %in% names(mrb$stata_ct_sb)) {
+    regcheck$sb_raw_did_run = regcheck$sb_raw_did_run | regcheck$runid %in% mrb$stata_ct_sb$runid
+  }
+
+
+  if (!repboxUtils::has_col(regcheck, "cached_runid"))
+    regcheck$cached_runid = rep(NA_integer_, NROW(regcheck))
+
+  cached_runid_df = drf_get_cached_runids_by_pid(drf=mrb$drf, pids=pids)
+  pos = match(cached_runid_df$pid, regcheck$runid)
+  regcheck$cached_runid[pos] = cached_runid_df$cached_runid
+
+  if (for_regrepair) return(regcheck)
+
+  if (!is.null(just_pids)) {
+    parcels = repboxDB::repdb_load_parcels(mrb$project_dir, "regcheck", parcels)
+    old_regcheck = parcels$regcheck %>% dplyr::anti_join(regcheck, by = "runid")
+    regcheck = dplyr::bind_rows(regcheck, old_regcheck) %>% dplyr::arrange(runid)
+  }
+
+  if (save) {
+    repboxDB::repdb_save_parcels(
+      list(regcheck = regcheck),
+      file.path(mrb$project_dir, "repdb"),
+      check = FALSE
+    )
+  }
+
+  mrb$parcels$regcheck = regcheck
+  return(mrb)
+}
+```
+!END_MODIFICATION mrb_make_regcheck_parcel in metaregBase/R/mrb_regcheck.R
