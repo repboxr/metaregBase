@@ -97,18 +97,20 @@ mrb_regcheck_to_regrepair = function(mrb, pids) {
 }
 
 
-mrb_repair_paths_with_imports_via_cache = function(project_dir = mrb$project_dir, mrb = NULL, max_reg = Inf) {
-  mrb_repair_via_cache(project_dir, mrb, max_reg, only_paths_with_import = TRUE)
+mrb_repair_paths_with_imports_via_cache = function(project_dir = mrb$project_dir, mrb = NULL,max_cache=20, max_reg = Inf) {
+  mrb_repair_via_cache(project_dir, mrb,max_cache=max_cache, max_reg=max_reg, only_paths_with_import = TRUE)
 }
-mrb_repair_paths_with_predict_via_cache = function(project_dir = mrb$project_dir, mrb = NULL, max_reg = 10) {
-  mrb_repair_via_cache(project_dir, mrb, max_reg, only_paths_with_predict = TRUE)
+
+mrb_repair_paths_with_r_fail_cmds_via_cache = function(project_dir = mrb$project_dir, mrb = NULL, max_cache=10, max_reg = Inf) {
+  mrb_repair_via_cache(project_dir, mrb,max_cache=max_cache, max_reg=max_reg, only_paths_with_cmds=repboxDRF::drf_cmds_to_cache_if_r_reg_fails())
 }
+
 
 #' Cache-based repair: add strategic data caches, re-run failed regressions.
 #'
 #' For each failed pid that still needs repair after the ignore pass,
 #' determine the best cache position, generate it in Stata, and re-run.
-mrb_repair_via_cache = function(project_dir = mrb$project_dir, mrb = NULL, max_reg = 10, only_paths_with_import = FALSE, only_paths_with_predict = FALSE) {
+mrb_repair_via_cache = function(project_dir = mrb$project_dir, mrb = NULL,max_cache=20, max_reg = Inf, only_paths_with_import = FALSE, only_paths_with_predict = FALSE, only_paths_with_cmds = NULL) {
   restore.point("mrb_repair_via_cache")
 
   if (is.null(mrb)) {
@@ -117,10 +119,10 @@ mrb_repair_via_cache = function(project_dir = mrb$project_dir, mrb = NULL, max_r
   }
 
   drf_clear_mcache()
-  failed_pids = mrb_get_to_repair_runids(mrb = mrb, only_paths_with_import = only_paths_with_import, only_paths_with_predict = only_paths_with_predict)
+  failed_pids = mrb_get_to_repair_runids(mrb = mrb, only_paths_with_import = only_paths_with_import, only_paths_with_predict = only_paths_with_predict, only_paths_with_cmds = only_paths_with_cmds)
 
-  if (!is.null(max_reg)) {
-    failed_pids = head(failed_pids, max_reg)
+  if (max_reg < length(failed_pids)) {
+      failed_pids = head(failed_pids, max_reg)
   }
 
   if (length(failed_pids) == 0) {
@@ -132,16 +134,19 @@ mrb_repair_via_cache = function(project_dir = mrb$project_dir, mrb = NULL, max_r
 
   mrb$drf = repboxDRF:::drf_sync_r_err_runids(mrb$drf)
 
-  while (length(failed_pids) > 0) {
+  caches_made = 0
+
+  while (length(failed_pids) > 0 & caches_made < max_cache) {
     cache_runid = mrb_determine_repair_cache_runid(mrb, failed_pids = failed_pids)
 
     if (is.null(cache_runid)) {
       cat(sprintf("\nCannot determine cache runid for remaining pids: %s. Stopping cache repair.\n", paste(failed_pids, collapse=", ")))
       break
     }
+    caches_made = caches_made+1
 
     # Identify which failed pids are going to be repaired by this cache
-    pids_to_rerun = unique(mrb$drf$path_df$pid[mrb$drf$path_df$runid == cache_runid & mrb$drf$path_df$pid %in% failed_pids])
+    pids_to_rerun = intersect(failed_pids, unique(mrb$drf$path_df$pid[mrb$drf$path_df$runid == cache_runid]))
 
     if (length(pids_to_rerun) == 0) {
       cat(sprintf("\nError: Cache runid %d does not serve any failed pids. Stopping to avoid infinite loop.\n", cache_runid))
@@ -210,9 +215,13 @@ mrb_determine_repair_cache_runid = function(mrb, failed_pids, drf = mrb$drf) {
 }
 
 
-mrb_get_to_repair_runids = function(mrb, parcels = mrb$parcels,  only_paths_with_import = FALSE, only_paths_with_predict = FALSE) {
+mrb_get_to_repair_runids = function(mrb, parcels = mrb$parcels,  only_paths_with_import = FALSE, only_paths_with_predict = FALSE, only_paths_with_cmds=NULL) {
   restore.point("mrb_get_to_repair_runids")
   parcels = repboxDB::repdb_load_parcels(mrb$project_dir, c("regcheck", "reg", "regrepair"), parcels)
+
+  if (only_paths_with_predict) {
+    only_paths_with_cmds = union(c("predict","predictnl"), only_paths_with_cmds)
+  }
 
   regcheck = parcels$regcheck
   if (is.null(regcheck)) {
@@ -250,18 +259,34 @@ mrb_get_to_repair_runids = function(mrb, parcels = mrb$parcels,  only_paths_with
     failed_pids = first_runids$pid[first_runids$first_runid %in% import_first_runids]
   }
 
-  if (only_paths_with_predict && length(failed_pids) > 0 && !is.null(mrb$drf$path_df)) {
+
+
+  if (!is.null(only_paths_with_cmds) && length(failed_pids) > 0 && !is.null(mrb$drf$path_df)) {
     path_cmds = mrb$drf$path_df %>%
       filter(pid %in% failed_pids) %>%
       left_join(mrb$drf$run_df %>% select(runid, cmd), by = "runid")
 
-    has_pred = path_cmds %>%
+    has_cmd = path_cmds %>%
       group_by(pid) %>%
-      summarize(has_predict = any(cmd %in% c("predict", "predictnl")), .groups = "drop") %>%
-      filter(has_predict)
+      summarize(has_cmd = any(cmd %in% only_paths_with_cmds), .groups = "drop") %>%
+      filter(has_cmd)
 
-    failed_pids = intersect(failed_pids, has_pred$pid)
+    failed_pids = intersect(failed_pids, has_cmd$pid)
   }
+
+
+  # if (only_paths_with_predict && length(failed_pids) > 0 && !is.null(mrb$drf$path_df)) {
+  #   path_cmds = mrb$drf$path_df %>%
+  #     filter(pid %in% failed_pids) %>%
+  #     left_join(mrb$drf$run_df %>% select(runid, cmd), by = "runid")
+  #
+  #   has_pred = path_cmds %>%
+  #     group_by(pid) %>%
+  #     summarize(has_predict = any(cmd %in% c("predict", "predictnl")), .groups = "drop") %>%
+  #     filter(has_predict)
+  #
+  #   failed_pids = intersect(failed_pids, has_pred$pid)
+  # }
 
   failed_pids
 }

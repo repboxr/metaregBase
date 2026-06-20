@@ -64,7 +64,7 @@ mrb_run_r_base_step = function(mrb, pid, with_try = isTRUE(mrb$with_try), contin
   cmdpart = cmdpart_expand_vars(cmdpart, data_cols)
   opts_df = cmdpart_to_opts_df(cmdpart)
   panelvar = mrb_get_panelvar(run_obj, opts_df, xtvar)
-  se_info = se_stata_to_repdb(cmd, opts_df, panelvar = panelvar)
+  se_info = se_stata_to_repdb(cmd, opts_df, panelvar = panelvar,cmdpart = cmdpart)
 
   # 3. Create TS columns on UNFILTERED data
   # We build a lightweight, temporary regvar just to discover which cterms need evaluating.

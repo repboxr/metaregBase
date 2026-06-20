@@ -5,9 +5,9 @@
 # replaced.
 
 example = function() {
-  project_dir = "~/repbox/projects_static/aejapp_10_1_1"
-  parcels = repboxDB::repdb_load_parcels(project_dir, "reg_stata_cmd")
-  reg_cmd = parcels$reg_stata_cmd$reg_stata_cmd
+  project_dir = "~/repbox/projects/aer_102_1_18"
+  parcels = repboxDB::repdb_load_parcels(project_dir, "stata_cmd")
+  reg_cmd = parcels$stata_cmd %>% filter(is_reg)
   reg_cmd$sregnum = 1:NROW(reg_cmd)
   reg_df = static_reg_cmd_to_reg_df(reg_cmd)
 }
@@ -18,8 +18,8 @@ static_reg_cmd_to_reg_df = function(reg_cmd) {
   reg_cmd$sregnum = seq_len(NROW(reg_cmd))
   cmdpart = cmdparts_of_stata_reg(reg_cmd$cmdline)
   cmdpart$artid = reg_cmd$artid[cmdpart$str_row]
-  cmdpart$step  = cmdpart$sregnum = cmdpart$str_row
-  opts_df = cmdpart_to_opts_df(cmdpart)
+  cmdpart$step  = cmdpart$sregnum = cmdpart$runid = cmdpart$str_row
+  opts_df = cmdpart_to_opts_df(cmdpart) %>% rename(step=runid)
 
   unique(cmdpart$part)
   unique(cmdpart$tag)
@@ -34,7 +34,8 @@ static_reg_cmd_to_reg_df = function(reg_cmd) {
     reg=reg_cmd[i,]
     opts = opts_df[opts_df$step==i,]
     reg$opts_have_macro = isTRUE(any( has.substr(opts$opt_arg,"$") | has.substr(opts$opt_arg,"`")))
-    se_info = try(se_stata_to_repdb(reg_cmd$cmd[i], opts),silent = TRUE)
+    reg_cmdpart = cmdpart %>% filter(step==i)
+    se_info = try(se_stata_to_repdb(reg_cmd$cmd[i], opts_df = opts, cmdpart=reg_cmdpart),silent = TRUE)
 
     if (is(se_info,"try-error")) {
       cat(paste0("\nCould not parse se info:\n   ", reg$cmdline,"\n"))

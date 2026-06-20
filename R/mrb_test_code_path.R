@@ -79,7 +79,7 @@ mrb_test_code_path = function(project_dir, pid, parcels, drf=drf_load(project_di
 
     # Format the original Stata command neatly as an R comment
     stata_cmd_lines = strsplit(stata_cmd, "\n")[[1]]
-    stata_cmd_comment = paste0("# Stata: ", paste0(stata_cmd_lines, collapse = "\n#        "))
+    stata_cmd_comment = paste0("# runid = ",r_id,"\n# Stata: ", paste0(stata_cmd_lines, collapse = "\n#        "))
 
     if (r_id == pid) {
       # This is the final analysis target / regression command.

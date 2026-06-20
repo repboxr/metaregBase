@@ -23,6 +23,10 @@ se_stata_to_repdb = function(cmd, opts_df = cmdpart_to_opts_df(cmdpart), cmdpart
 
   abbr.li = list(
     robust = c("robust","robus","robu","rob","ro","r"),
+    unadjusted = c(
+      "unadjusted", "unadjuste", "unadjust", "unadjus",
+      "unadju", "unadj", "unad", "una", "un"
+    ),
     cluster = c("cluster","cluste","clust","clus","clu","cl"),
     boot = c("bootstrap","bootstra","bootstr","bootst","boots","boot"),
     jack = c("jackknife","jackknif","jack")
@@ -67,6 +71,9 @@ se_stata_to_repdb = function(cmd, opts_df = cmdpart_to_opts_df(cmdpart), cmdpart
       stop("Regression options match multiple standard error abbreviations. Need to adapt stata.reg.se.info")
     }
   }
+  if (se_type == "unadjusted") {
+    se_type = "iid"
+  }
 
   if (cmd %in% c("xtreg", "xtivreg")) {
     if (se_type == "conventional") se_type = "iid"
@@ -76,21 +83,23 @@ se_stata_to_repdb = function(cmd, opts_df = cmdpart_to_opts_df(cmdpart), cmdpart
 
   if (se_type %in% c("","iid")) {
     if (length(se_args)>0) {
-      restore.point("Problem in parsing se: se_type is iid but there are se_args")
-      stop("Problem in parsing se: se_type is iid but there are se_args")
+      repbox_problem(paste0("Problem in parsing se: se_type is ", se_type," but there are se_args: ", paste0(se_args, collapse=", ")), "se_args",fail_action = "msg")
+    } else {
+      se_args = ""
     }
     se = tibble(
       se_category = "iid",
       se_type = "iid",
-      se_args = ""
+      se_args = se_args
     )
     return(se)
   }
 
   if (se_type=="robust" | tolower(se_type) %in% c("hc0", "hc1","hc2","hc3","hc4","hc5")) {
     if (length(se_args)>0) {
-      restore.point("Problem in parsing se: se_type is robust but there are se_args")
-      stop(paste0("Problem in parsing se: se_type is ", se_type," but there are se_args"))
+      repbox_problem(paste0("Problem in parsing se: se_type is ", se_type," but there are se_args: ", paste0(se_args, collapse=", ")), "se_args",fail_action = "msg")
+    } else {
+      se_args = ""
     }
 
     # In Stata, xt commands (except xtivreg2) and clogit with robust standard errors
@@ -105,11 +114,13 @@ se_stata_to_repdb = function(cmd, opts_df = cmdpart_to_opts_df(cmdpart), cmdpart
       return(se)
     }
 
-    if (se_type=="robust") se_type = "hc1"
+    if (se_type == "robust" && cmd %in% c("regress", "areg")) {
+      se_type = "hc1"
+    }
     se = tibble(
       se_category = "robust",
       se_type = se_type,
-      se_args = ""
+      se_args = se_args
     )
     return(se)
   }
@@ -127,7 +138,7 @@ se_stata_to_repdb = function(cmd, opts_df = cmdpart_to_opts_df(cmdpart), cmdpart
     } else if (num_clustervar > 2) {
       se_type = "multiway"
     } else {
-      stop("We have clustered se but no cluster variables can be found in options.")
+      repbox_problem(paste0("We have clustered se of type ", se_type," but no cluster variables can be found in option."), "se_cluster_args",fail_action = "msg")
     }
     se_args = paste0("cluster",seq_along(clustervar),"=", clustervar, collapse=";")
 
@@ -139,8 +150,14 @@ se_stata_to_repdb = function(cmd, opts_df = cmdpart_to_opts_df(cmdpart), cmdpart
     return(se)
   }
 
-  stop(paste0("Have not yet implemented parsing of Stata standard error of type ", se_type))
-  return(NULL)
+
+  repbox_problem(paste0("We have not yet implemented parsing of Stata standard error of type ", se_type,". Set to unknown category."), "unkown_se_type","msg")
+  se = tibble(
+    se_category = "unknown",
+    se_type = se_type,
+    se_args = se_args
+  )
+  return(se)
 }
 
 
