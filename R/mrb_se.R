@@ -285,7 +285,7 @@ se_stata_to_repdb = function(cmd, opts_df = cmdpart_to_opts_df(cmdpart), cmdpart
       se_type = "robust"
       se_source = "pweight"
 
-    } else if (cmd == "ivregress") {
+    } else if (cmd == "ivregress" | cmd=="ivreg") {
       subcmd = tolower(se_cmdpart_first(cmdpart, "subcmd"))
 
       if (!is.na(subcmd) && subcmd %in% c("2sls", "liml")) {
@@ -327,6 +327,7 @@ se_stata_to_repdb = function(cmd, opts_df = cmdpart_to_opts_df(cmdpart), cmdpart
 
     } else {
       iid_default_cmds = c(
+        "reg","regr","regre","regres",
         "regress",
         "areg",
         "xtreg",
@@ -381,7 +382,7 @@ se_stata_to_repdb = function(cmd, opts_df = cmdpart_to_opts_df(cmdpart), cmdpart
     }
   }
 
-  has_small = cmd == "ivregress" && any(opts_df$opt == "small")
+  has_small = (cmd == "ivregress" | cmd=="ivreg") && any(opts_df$opt == "small")
   small_arg = if (has_small) "small=true" else character(0)
 
   # Conventional or model-based VCEs.

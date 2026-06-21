@@ -1,429 +1,195 @@
-The error you encountered happens because `drf$pids` tracks analysis commands based on `drf$acmds`. `drf$acmds` rightfully includes both `reg` and `quasi_reg` commands to ensure `repboxDRF` builds correct data preparation paths for all estimators. 
+### Description of the Issue and Proposed Fix
 
-However, the `metaregBase` pipeline (`mrb_run_r_base` and `mrb_run_r_reg`) relies heavily on standard regression canonical structures like `reg_cmdpart`, which are deliberately not generated for quasi-regressions (they have a separate `quasi_reg_cmdpart` instead). Thus, passing a `quasi_reg` PID into `mrb_run_r_base_step` attempts to access a non-existent `reg_cmdpart` row and triggers a fatal crash.
+The issue is caused by Stata's logging mechanism when dealing with nested `do` scripts. When `main.do` is running, it logs its output to `log_3.log`. As it executes `do main_part1`, Stata's behavior replicates the standard output across **all open log files**. During the execution of the included script `repbox_main_part1.do`, a second log file is explicitly opened (`include_1.log`).
 
-The solution is to filter `pids` in `mrb_run_r_base`, `mrb_run_r_reg`, and `mrb_make_regcheck_parcel` immediately at the top of these functions, restricting processing exclusively to `cmd_type == "reg"`. This leaves `quasi_reg` paths intact in DRF while successfully bypassing them in the metareg reconstruction pipeline.
+This results in the injected text markers (e.g., `#~# INJECT RUNCMD 1 1 2` and `#~# INJECT REG_ERETURN ...`) being printed to **both** `log_3.log` and `include_1.log`. 
 
-Here are the fixes:
+When `extract.stata.logs()` processes the logs, it indiscriminately extracts all blocks matching the marker from every log file. As a result, the extracted `log.df` will contain duplicate entries for the commands inside `main_part1.do` and `main_part2.do`. Later, when `extract.stata.results()` performs a `left_join(run.df, log.df, ...)`, the duplication in `log.df` directly multiplies the rows in `run.df` (and thus `stata_run_cmd`).
 
-!MODIFICATION mrb_run_r_base in metaregBase/R/mrb_r_base.R
+This downstream duplication wreaks havoc on `repboxDRF`'s `drf$path_df` and causes `drf_get_data` to fail because the pipeline encounters multiple identical data loading scripts with different synthetic `runid`s, breaking dependency chaining and execution tracking.
+
+**Proposed Fix:**
+Since each log file name directly embeds the `donum` of the executing script (either as `log_<donum>.log` or `include_<donum>.log`), we can filter the parsed injection blocks. We extract the `donum` from the log filename and only keep the matched blocks where `bdf$donum` corresponds to the log file's `donum`. We apply this filtering logic to both the `extract.stata.logs` and `rsr_extract_stata_reg_output` functions.
+
+### Code Modifications
+
+!MODIFICATION extract.stata.logs repboxStata/R/extract.R
 scope = "function"
-file = "/home/rstudio/repbox/metaregBase/R/mrb_r_base.R"
-function_name = "mrb_run_r_base"
-description = "Skip quasi_regs directly by filtering pids to only those with cmd_type == 'reg'."
+file = "/home/rstudio/repbox/repboxStata/R/extract.R"
+function_name = "extract.stata.logs"
+description = "Filter log blocks to only keep those belonging to the current file's donum to prevent duplicate blocks from included do files."
 ---
-```r
-#' Extract Stata metaregBase results and create corresponding metaregBase parcels
-mrb_run_r_base = function(mrb, just_pids=NULL, make_parcels=TRUE, continue_on_error=FALSE) {
-  restore.point("mrb_run_r")
+```R
+extract.stata.logs = function(project_dir) {
+  restore.point("extract.stata.logs")
+  dir = file.path(project_dir, "repbox/stata/logs")
+  files = list.files(dir, pattern = "^(log|include)_.*\\.log$", full.names = TRUE)
 
-  repbox_problem_set_project_dir(mrb$project_dir)
+  res.li = lapply(files, function(file) {
+    txt = readLines(file,warn=FALSE) %>% enc2utf8()
+    check.stata.log.for.critical.problems(txt)
+    bdf = extract.inject.blocks(txt, type="RUNCMD")
 
-  mrb$drf = drf_apply_loop_ignore(mrb$drf)
+    file_donum = as.integer(str.between(basename(file), "_", ".log"))
+    if (!is.na(file_donum) && NROW(bdf) > 0) {
+      bdf = bdf[bdf$donum == file_donum, , drop = FALSE]
+    }
 
-  mrb$artid = basename(mrb$project_dir)
-  mrb$parcels = repboxDB::repdb_load_parcels(mrb$project_dir, c("reg_cmdpart", "xtvar"))
+    if (NROW(bdf) == 0) return(tibble())
 
-  pids = mrb$drf$pids
-  run_df = mrb$drf$run_df
-  if (!is.null(run_df) && "cmd_type" %in% names(run_df)) {
-    pids = intersect(pids, run_df$runid[run_df$cmd_type == "reg"])
-  }
+    log.df = lapply(seq_len(NROW(bdf)), function(i) {
+      str = bdf$str[[i]]
+      donum = bdf$donum[i]
+      line=bdf$line[i]
+      counter=bdf$counter[i]
+      ignore = has.substr(str,"#~# INJECT") | has.substr(str,"#~# END INJECT")
+      str = str[!ignore]
+      if (isTRUE(str[length(str)]==".")) str[-length(str)]
+      #str = str[nchar(str)>0]
+      logtxt = merge.lines(str)
 
-  if (length(pids) == 0) {
-    cat("\nNo reg pids to process.\n")
-    return(mrb)
-  }
-
-  all_pids = pids
-  if (!is.null(just_pids)) {
-    pids = intersect(just_pids, pids)
-    mrb$is_partial_run = TRUE
-    mrb$partial_pids = pids
-  } else {
-    mrb$is_partial_run = FALSE
-  }
-
-  if (length(pids) == 0) {
-    cat("\nNo reg pids to process in just_pids.\n")
-    return(mrb)
-  }
-
-  mrb = mrb_agg_stata(mrb, skip_if_has = TRUE)
-
-  all_step_parcels = list()
-
-  pid = pids[1]
-  cat("\nmrb_r_base processing runids: ")
-  for (pid in pids) {
-    cat(paste0(pid," "))
-    step_parcels = mrb_run_r_base_step(mrb, pid, continue_on_error=continue_on_error)
-    all_step_parcels[[as.character(pid)]] = step_parcels
-  }
-  cat("\n")
-
-  mrb$all_step_parcels = all_step_parcels
-  if (make_parcels) {
-    mrb = mrb_make_r_base_parcels(mrb)
-  }
-
-  mrb
-}
-```
-!END_MODIFICATION mrb_run_r_base in metaregBase/R/mrb_r_base.R
-
-
-!MODIFICATION mrb_run_r_reg in metaregBase/R/mrb_r_reg.R
-scope = "function"
-file = "/home/rstudio/repbox/metaregBase/R/mrb_r_reg.R"
-function_name = "mrb_run_r_reg"
-description = "Skip quasi_regs directly by filtering pids to only those with cmd_type == 'reg'."
----
-```r
-#' Run translated r regressions, store results and compare with Stata results
-#' uses the parcels already generated by mrb_run_r_base and regtranslate for
-#' regression translation
-mrb_run_r_reg = function(mrb, just_pids=NULL, continue_on_error=FALSE) {
-  restore.point("mrb_run_r_reg")
-
-  mrb$drf = drf_apply_loop_ignore(mrb$drf)
-
-  mrb$artid = basename(mrb$project_dir)
-  mrb$parcels = repboxDB::repdb_load_parcels(mrb$project_dir, c("reg_cmdpart", "reg","regvar","regxvar","regcoef", "regcoef_so"))
-
-  pids = mrb$drf$pids
-  run_df = mrb$drf$run_df
-  if (!is.null(run_df) && "cmd_type" %in% names(run_df)) {
-    pids = intersect(pids, run_df$runid[run_df$cmd_type == "reg"])
-  }
-
-  if (length(pids) == 0) {
-    cat("\nNo reg pids to process.\n")
-    return(mrb)
-  }
-
-  all_pids = pids
-  if (!is.null(just_pids)) {
-    pids = intersect(just_pids, pids)
-    mrb$is_partial_run = TRUE
-    mrb$partial_pids = pids
-  } else {
-    mrb$is_partial_run = FALSE
-  }
-
-  if (length(pids) == 0) {
-    cat("\nNo reg pids to process in just_pids.\n")
-    return(mrb)
-  }
-
-  all_step_parcels = list()
-
-  cat("\nmrb_r_reg processing runids: ")
-  for (pid in pids) {
-    cat(paste0(pid," "))
-    step_parcels = mrb_run_r_reg_step(mrb, pid, continue_on_error=continue_on_error)
-    all_step_parcels[[as.character(pid)]] = step_parcels
-  }
-  cat("\n")
-  mrb$all_step_parcels = all_step_parcels
-
-  mrb = mrb_make_r_reg_parcels(mrb)
-
-  mrb
-}
-```
-!END_MODIFICATION mrb_run_r_reg in metaregBase/R/mrb_r_reg.R
-
-
-!MODIFICATION mrb_make_regcheck_parcel in metaregBase/R/mrb_regcheck.R
-scope = "function"
-file = "/home/rstudio/repbox/metaregBase/R/mrb_regcheck.R"
-function_name = "mrb_make_regcheck_parcel"
-description = "Skip quasi_regs directly by filtering pids to only those with cmd_type == 'reg'."
----
-```r
-#' Assemble the 'regcheck' parcel checking cross-language replication success
-#'
-#' Evaluates the success of regression outputs and maps any mismatches
-#' to a standardized `regcheck` parcel.
-mrb_make_regcheck_parcel = function(
-  mrb,
-  save = TRUE,
-  just_pids = NULL,
-  repair_code = "",
-  max_rel_diff_tol = 1e-4,
-  max_deviation_tol = 1e-5,
-  rb_max_rel_diff_tol = 0.01,
-  rb_max_deviation_tol = 1e-5,
-  for_regrepair = FALSE
-) {
-  restore.point("mrb_make_regcheck_parcel")
-
-  if (!is.null(just_pids) & length(just_pids) == 0)
-    return(mrb)
-
-  mrb$parcels = parcels = repboxDB::repdb_load_parcels(
-    mrb$project_dir,
-    c("reg", "reg_rb", "regcoef", "regcoef_so", "regcoef_rb"),
-    mrb$parcels
-  )
-
-  pids = sort(unique(c(
-    if (!is.null(parcels$reg)) parcels$reg$runid else integer(),
-    if (!is.null(parcels$reg_rb)) parcels$reg_rb$runid else integer(),
-    if (!is.null(parcels$regcoef)) parcels$regcoef$runid else integer(),
-    if (!is.null(parcels$regcoef_so)) parcels$regcoef_so$runid else integer(),
-    if (!is.null(parcels$regcoef_rb)) parcels$regcoef_rb$runid else integer(),
-    if (!is.null(mrb$drf$pids)) mrb$drf$pids else integer()
-  )))
-
-  run_df = mrb$drf$run_df
-  if (!is.null(run_df) && "cmd_type" %in% names(run_df)) {
-    reg_runids = run_df$runid[run_df$cmd_type == "reg"]
-    pids = intersect(pids, reg_runids)
-  }
-
-  if (length(pids) == 0) {
-    if (for_regrepair) return(NULL)
-    return(mrb)
-  }
-
-  if (!is.null(just_pids)) {
-    pids = intersect(pids, just_pids)
-  }
-
-  run_df = mrb$drf$run_df
-
-  get_run_cmd = function(pid) {
-    cmd = ""
-
-    if (!is.null(parcels$reg) && "cmd" %in% names(parcels$reg) && pid %in% parcels$reg$runid) {
-      reg_row = parcels$reg[parcels$reg$runid == pid, , drop = FALSE][1, ]
-      cmd = as.character(reg_row$cmd[1])
-      if (!is.na(cmd) && nzchar(cmd)) {
-        return(cmd)
+      # We don't store log of a custom function
+      # inside which we store logs again
+      if (grepl("!.REPBOX.CUSTOM.PROGRAM>*",logtxt, fixed=TRUE)) {
+        logtxt = ""
       }
-    }
 
-    if (!is.null(parcels$reg_rb) && "cmd" %in% names(parcels$reg_rb) && pid %in% parcels$reg_rb$runid) {
-      reg_row = parcels$reg_rb[parcels$reg_rb$runid == pid, , drop = FALSE][1, ]
-      cmd = as.character(reg_row$cmd[1])
-      if (!is.na(cmd) && nzchar(cmd)) {
-        return(cmd)
-      }
-    }
-
-    if (!is.null(run_df) && "cmd" %in% names(run_df) && pid %in% run_df$runid) {
-      run_row = run_df[run_df$runid == pid, , drop = FALSE][1, ]
-      cmd = as.character(run_row$cmd[1])
-      if (!is.na(cmd) && nzchar(cmd)) {
-        return(cmd)
-      }
-    }
-
-    ""
-  }
-
-  res_li = lapply(pids, function(pid) {
-    so_did_run = !is.null(parcels$regcoef_so) && pid %in% parcels$regcoef_so$runid
-
-    has_sb_coef = !is.null(parcels$regcoef) && pid %in% parcels$regcoef$runid
-    has_sb_reg = !is.null(parcels$reg) && pid %in% parcels$reg$runid
-    sb_did_run = has_sb_coef || has_sb_reg
-
-    sb_num_coef = NA_integer_
-    if (has_sb_coef) {
-      sb_num_coef = as.integer(NROW(parcels$regcoef[parcels$regcoef$runid == pid, , drop = FALSE]))
-    }
-
-    run_cmd = get_run_cmd(pid)
-
-    rb_did_run = FALSE
-    error_msg = ""
-    if (!is.null(parcels$reg_rb) && pid %in% parcels$reg_rb$runid) {
-      rb_row = parcels$reg_rb[parcels$reg_rb$runid == pid, , drop = FALSE][1, ]
-      rb_did_run = !isTRUE(rb_row$error_in_r)
-
-      if ("error_msg" %in% names(rb_row) && !is.na(rb_row$error_msg[1])) {
-        error_msg = as.character(rb_row$error_msg[1])
-      }
-    }
-
-    has_rb_coef = !is.null(parcels$regcoef_rb) && pid %in% parcels$regcoef_rb$runid
-
-    sb_so_identical = NA
-    sb_so_coef_same = NA
-    sb_so_coef_max_dev = NA_real_
-    sb_so_coef_max_rel = NA_real_
-    sb_so_se_same = NA
-    sb_so_se_max_dev = NA_real_
-    sb_so_se_max_rel = NA_real_
-
-    rb_sb_coef_same = NA
-    rb_sb_share_coeff_same = NA_real_
-    rb_sb_coef_max_dev = NA_real_
-    rb_sb_coef_max_rel = NA_real_
-    rb_sb_se_same = NA
-    rb_sb_se_max_dev = NA_real_
-    rb_sb_se_max_rel = NA_real_
-
-    problem = ""
-    comment = ""
-
-    if (has_sb_coef && so_did_run) {
-      co_sb = parcels$regcoef[parcels$regcoef$runid == pid, , drop = FALSE]
-      co_so = parcels$regcoef_so[parcels$regcoef_so$runid == pid, , drop = FALSE]
-
-      co_sb = remove_dropped_duplicated_coef(co_sb)
-      co_so = remove_dropped_duplicated_coef(co_so)
-
-
-      diff_so = coef_diff_table(co_sb, co_so, cmd = run_cmd)
-      ev_so = mrb_regcheck_diff_eval(
-        diff_so,
-        max_rel_diff_tol = max_rel_diff_tol,
-        max_deviation_tol = max_deviation_tol
-      )
-
-      sb_so_identical = ev_so$all_same
-      sb_so_coef_same = ev_so$coef_same
-
-      # The regcheck parcel spec defines sb_so_coef_max_dev as the
-      # maximum relative coefficient deviation between sb and so.
-      sb_so_coef_max_dev = ev_so$coef_max_rel
-      sb_so_coef_max_rel = ev_so$coef_max_rel
-
-      sb_so_se_same = ev_so$se_same
-      sb_so_se_max_dev = ev_so$se_max_dev
-      sb_so_se_max_rel = ev_so$se_max_rel
-    }
-
-    if (has_sb_coef && rb_did_run && has_rb_coef) {
-      co_sb = parcels$regcoef[parcels$regcoef$runid == pid, , drop = FALSE]
-      co_rb = parcels$regcoef_rb[parcels$regcoef_rb$runid == pid, , drop = FALSE]
-
-      co_sb = remove_dropped_duplicated_coef(co_sb)
-      co_rb = remove_dropped_duplicated_coef(co_rb)
-
-      diff_rb = coef_diff_table(co_sb, co_rb, cmd = run_cmd)
-      ev_rb = mrb_regcheck_diff_eval(
-        diff_rb,
-        max_rel_diff_tol = rb_max_rel_diff_tol,
-        max_deviation_tol = rb_max_deviation_tol
-      )
-
-      rb_sb_coef_same = ev_rb$coef_same
-      rb_sb_share_coeff_same = ev_rb$coef_same_share
-      rb_sb_coef_max_dev = ev_rb$coef_max_dev
-      rb_sb_coef_max_rel = ev_rb$coef_max_rel
-      rb_sb_se_same = ev_rb$se_same
-      rb_sb_se_max_dev = ev_rb$se_max_dev
-      rb_sb_se_max_rel = ev_rb$se_max_rel
-    }
-
-    if (!rb_did_run & !sb_did_run & !so_did_run) {
-      problem = "All reproductions failed: so, sb and rb"
-    } else if (so_did_run & !sb_did_run & !rb_did_run) {
-      problem = "Original Stata reproduction succeeded, but metaregBase reproductions failed: sb and rb"
-    } else if (!sb_did_run & !rb_did_run) {
-      problem = "metaregBase reproductions failed: sb and rb"
-    } else if (!rb_did_run) {
-      problem = paste0("R replication rb failed: ", error_msg)
-    } else if (!sb_did_run) {
-      problem = "Stata base sb replication failed, but rb did run."
-    } else if (!so_did_run) {
-      problem = "Original Stata reproduction results missing."
-    } else if (sb_did_run & !has_sb_coef) {
-      problem = "Stata base sb metadata exists, but sb coefficients are missing."
-    } else if (rb_did_run & !has_rb_coef) {
-      problem = "R replication rb metadata exists, but rb coefficients are missing."
-    } else if (isTRUE(!rb_sb_coef_same)) {
-      problem = "R and Stata base coefficients differ by > tolerance."
-    } else if (isTRUE(!rb_sb_se_same)) {
-      problem = "R and Stata base standard errors differ by > tolerance."
-    } else if (isTRUE(!sb_so_identical)) {
-      problem = "Stata base differs from Stata original."
-    }
-
-    reg_ok = isTRUE(so_did_run) &&
-      isTRUE(sb_did_run) &&
-      isTRUE(rb_did_run) &&
-      isTRUE(has_sb_coef) &&
-      isTRUE(has_rb_coef) &&
-      isTRUE(sb_so_identical) &&
-      isTRUE(rb_sb_coef_same) &&
-      isTRUE(rb_sb_se_same)
-
-    dplyr::tibble(
-      runid = as.integer(pid),
-      cmd = run_cmd,
-      reg_ok = reg_ok,
-      so_did_run = so_did_run,
-      sb_did_run = sb_did_run,
-      rb_did_run = rb_did_run,
-
-      sb_num_coef = sb_num_coef,
-
-      sb_so_identical = sb_so_identical,
-      sb_so_coef_same = sb_so_coef_same,
-      sb_so_coef_max_dev = sb_so_coef_max_dev,
-      sb_so_coef_max_rel = sb_so_coef_max_rel,
-      sb_so_se_same = sb_so_se_same,
-      sb_so_se_max_dev = sb_so_se_max_dev,
-      sb_so_se_max_rel = sb_so_se_max_rel,
-
-      rb_sb_coef_same = rb_sb_coef_same,
-      rb_sb_share_coeff_same = rb_sb_share_coeff_same,
-      rb_sb_coef_max_dev = rb_sb_coef_max_dev,
-      rb_sb_coef_max_rel = rb_sb_coef_max_rel,
-      rb_sb_se_same = rb_sb_se_same,
-      rb_sb_se_max_dev = rb_sb_se_max_dev,
-      rb_sb_se_max_rel = rb_sb_se_max_rel,
-
-      repair_code = repair_code,
-      problem = problem,
-      comment = comment
-    )
+      # To avoid later invalid multibyte string errors
+      logtxt = iconv(logtxt, to="UTF-8", sub="?")
+      logtxt[is.na(logtxt)] = ""
+      logtxt = gsub("capture:  noisily: ","",logtxt,fixed = TRUE)
+      tibble(logfile = rep(basename(file), length(logtxt)), donum=donum, line=line, counter=counter,logtxt=logtxt)
+    }) %>% bind_rows()
   })
 
-  regcheck = dplyr::bind_rows(res_li)
+  log.df = bind_rows(res.li)
+  return(log.df)
+}
+```
+!END_MODIFICATION extract.stata.logs repboxStata/R/extract.R
 
-  regcheck$so_raw_did_run = regcheck$so_did_run
-  if (!is.null(mrb$regtab_so) && "runid" %in% names(mrb$regtab_so)) {
-    regcheck$so_raw_did_run = regcheck$so_raw_did_run | regcheck$runid %in% mrb$regtab_so$runid
+!MODIFICATION rsr_extract_stata_reg_output repboxStataReg/R/extract_reg_stata.R
+scope = "function"
+file = "/home/rstudio/repbox/repboxStataReg/R/extract_reg_stata.R"
+function_name = "rsr_extract_stata_reg_output"
+description = "Filter REG_ERETURN log blocks to prevent duplicates from included do files."
+---
+```R
+rsr_extract_stata_reg_output = function(project_dir, run.df=NULL, dotab=NULL, save=TRUE) {
+  restore.point("rsr_extract_stata_reg_output")
+
+  #if (is.null(runid_map)) {
+  #  runid_map = readRDS(file.path(project_dir, "repbox/stata/runid_repbox_map.Rds"))
+  #}
+
+  if (is.null(run.df) | is.null(dotab)) {
+    repbox_results = readRDS(file.path(project_dir, "repbox/stata/repbox_results.Rds"))
+    run.df = repbox_results$run.df
+    dotab = repbox_results$dotab
   }
 
-  regcheck$sb_raw_did_run = regcheck$sb_did_run
-  if (!is.null(mrb$stata_ct_sb) && "runid" %in% names(mrb$stata_ct_sb)) {
-    regcheck$sb_raw_did_run = regcheck$sb_raw_did_run | regcheck$runid %in% mrb$stata_ct_sb$runid
+  artid = basename(project_dir)
+  #++++++++++++++++++++++++++++++++++++++++++++++++++
+  # 1. Extract TSV information stored by esttab
+  #++++++++++++++++++++++++++++++++++++++++++++++++++
+
+  res.dir = file.path(project_dir,"repbox/stata/tsv")
+  files = list.files(res.dir,glob2rx(paste0("*.dta")),full.names = TRUE)
+
+  bfiles = basename(files)
+  donum = str.left.of(bfiles, "_") %>% as_integer()
+  str = str.right.of(bfiles,"_")
+  line = str.left.of(str, "_") %>% as_integer()
+  str = str.right.of(str,"_")
+  counter = str.remove.ends(str, right=4) %>% as_integer()
+
+  regtab = tibble(regresfile=files,donum=donum,line=line,counter=counter) %>%
+    arrange(donum, line, counter) %>%
+    group_by(donum, line) %>%
+    mutate(run = seq_len(n())) %>%
+    ungroup()
+
+  if (NROW(regtab) > 0) {
+    regtab$ct = lapply(regtab$regresfile, function(file) {
+      restore.point("inner.read.regres")
+      regres = haven::read_dta(file)
+      old.cols = c("eq","parm","label","estimate","stderr","dof", "z","p","min95","max95")
+      new.cols = c("eq","var","label", "coef","se","dof", "t","p","ci_low","ci_up")
+      regres = rename.cols(regres, old.cols, new.cols)
+      regres = regres[,intersect(new.cols, colnames(regres)), drop=FALSE]
+      if (!"eq" %in% colnames(regres)) {
+        regres$eq = rep("", NROW(regres))
+      }
+      regres
+    })
+  } else {
+    regtab$ct = list()
   }
 
+  if ("regresfile" %in% names(regtab)) {
+    regtab = select(regtab, -regresfile)
+  }
 
-  if (!repboxUtils::has_col(regcheck, "cached_runid"))
-    regcheck$cached_runid = rep(NA_integer_, NROW(regcheck))
+  #++++++++++++++++++++++++++++++++++++++++++++++++++
+  # 2. Extract regression information stored in logs
+  #++++++++++++++++++++++++++++++++++++++++++++++++++
 
-  cached_runid_df = drf_get_cached_runids_by_pid(drf=mrb$drf, pids=pids)
-  pos = match(cached_runid_df$pid, regcheck$runid)
-  regcheck$cached_runid[pos] = cached_runid_df$cached_runid
+  dir = file.path(project_dir, "repbox/stata/logs")
+  log.files = list.files(dir, pattern = "^(log|include)_.*\\.log$", full.names = TRUE)
 
-  if (for_regrepair) return(regcheck)
+  reg.log = lapply(log.files, function(file) {
+    log.txt = readLines(file,warn=FALSE)  %>% enc2utf8()
+    bdf = extract.inject.blocks(log.txt, type="REG_ERETURN")
 
-  if (!is.null(just_pids)) {
-    parcels = repboxDB::repdb_load_parcels(mrb$project_dir, "regcheck", parcels)
-    old_regcheck = parcels$regcheck %>% dplyr::anti_join(regcheck, by = "runid")
-    regcheck = dplyr::bind_rows(regcheck, old_regcheck) %>% dplyr::arrange(runid)
+    file_donum = as.integer(str.between(basename(file), "_", ".log"))
+    if (!is.na(file_donum) && NROW(bdf) > 0) {
+      bdf = bdf[bdf$donum == file_donum, , drop = FALSE]
+    }
+
+    if (NROW(bdf) == 0) return(tibble())
+
+    bdf$er = lapply(bdf$str,parse.ereturn.injection)
+    bdf
+  }) %>% bind_rows()
+
+  if (NROW(reg.log) > 0) {
+    regtab = left_join(regtab, select(reg.log, donum, line, counter, er), by=c("donum","line","counter"))
+  } else if (NROW(regtab) > 0) {
+    regtab$er = vector("list", NROW(regtab))
+  }
+
+  #++++++++++++++++++++++++++++++++++++++++++++++++++
+  # 3. Merge with run.df
+  #++++++++++++++++++++++++++++++++++++++++++++++++++
+
+  if (NROW(regtab) > 0) {
+    regtab = left_join(regtab,run.df, by=c("donum","line","counter"))
+
+    # UPDATE: Only consider regression where missing_data = FALSE
+    # Otherwise we likely have faulty regressions that use an earlier data set
+    # Also ignore regression results with run error
+    regtab = regtab[regtab$has.data & !regtab$runerr,]
+  }
+
+  if (NROW(regtab) > 0) {
+    regtab$artid = artid
+
+    # merge with dotab to get doid
+    regtab = regtab %>% left_join(dotab %>% select(donum, doid), by="donum")
+
+    #colnames(regtab)
+    cols = c("artid", "runid", "donum", "doid", "line", "counter","cmd", "cmdline","ct","er", "datasig", "timevar" ,"panelvar", "tdelta",        "runerr",        "runerrcode",    "runerrmsg",     "runsec", "orgline", "in.program", "has.data")
+
+    # Ensure all columns exist to avoid errors
+    cols_exist = intersect(cols, colnames(regtab))
+    regtab = regtab[,cols_exist]
   }
 
   if (save) {
-    repboxDB::repdb_save_parcels(
-      list(regcheck = regcheck),
-      file.path(mrb$project_dir, "repdb"),
-      check = FALSE
-    )
+    saveRDS(regtab, file.path(project_dir,"repbox/stata/regtab.Rds"))
   }
 
-  mrb$parcels$regcheck = regcheck
-  return(mrb)
+  regtab
 }
 ```
-!END_MODIFICATION mrb_make_regcheck_parcel in metaregBase/R/mrb_regcheck.R
+!END_MODIFICATION rsr_extract_stata_reg_output repboxStataReg/R/extract_reg_stata.R
