@@ -1,423 +1,178 @@
-The bug occurs because the parsing logic in `repboxStata` relies on `startsWith(str, "quietly")` to strip prefixes like `quietly`, `capture`, etc., from a command string. 
+You are completely right, and that is a fascinating edge case! My previous fix accidentally unmasked a hidden syntax error in the author's code (or rather, broke a normalization our parser was implicitly doing).
 
-However, in both `repbox.do.table` and `normalized.cmdlines.to.tab`, the leading whitespace of `str` was only stripped (`trimws(str)`) **after** these prefix checks were performed. This means that if the original Stata command was indented (e.g. `"    quietly reg ln_pd1500 ..."`), the `startsWith` function failed. Since the prefix was not stripped, the subsequent code assigned the first word of the trimmed string (`cmd = str.left.of(str," ")`) as the command, turning `cmd` into `"quietly"`. This caused the regression pipeline to entirely miss that it was a regression.
+Here is exactly what happened:
+1. **Before my fix**: The parser effectively normalizes the whole do-file to standard line breaks (`#delimit cr`), but some trailing semicolons remained in the command strings (`tab$txt`). Originally, `replace.files.and.paths.with.ph()` captured the trailing semicolon as part of the path (`"Z:/.../PA_FE_all.dta";`). When it replaced that string with the `#~use1~#` placeholder, it swallowed the semicolon! Later, the placeholder was replaced with the clean, corrected path, meaning the executed command had no semicolon (`erase "clean_path"`). This accidentally "fixed" the Stata syntax.
+2. **After my fix**: Because I stripped the semicolon out of the path *before* replacing the placeholder, the `sub()` command left the semicolon dangling behind in the string. The executed command became `erase "clean_path";`. Since the script was normalized to `#delimit cr`, the trailing semicolon triggered an `invalid ';"` syntax error in Stata! 
+3. **The cascade**: Because all our commands run inside `capture noisily`, Stata silently swallowed the syntax errors and skipped executing the commands. Any `use` command that had a trailing semicolon failed to load data, causing 581 downstream commands to execute on an empty dataset!
 
-To fix this, I moved `str = trimws(str)` so that it executes *before* the prefix checks. Additionally, I modified the prefix stripping block to use a `while(changed)` loop. This properly handles cases where prefixes are chained arbitrarily (like `capture noisily quietly reg`), which previously would not have been caught reliably because the checks were static and sequential. I also included checking for `noisily` to ensure it gets correctly stripped too.
+### The Correct Fix
 
-Here are the fixes for both `repbox.do.table` and `normalized.cmdlines.to.tab`:
+We must **revert** my change to `replace.files.and.paths.with.ph()` so it continues to swallow the trailing semicolons in the rewritten Stata script.
 
-!MODIFICATION repbox.do.table in repboxStata/R/parse.R
+Instead, we will strip the semicolon inside `inject.path.correction.pre()`. This removes the semicolon right before the file path is assigned to the `file_str` Stata local macro. This protects the CSV logs without modifying how the Stata commands are reconstructed.
+
+Here are the two modifications to apply:
+
+!MODIFICATION replace.files.and.paths.with.ph R/repbox_files.R
 scope = "function"
-file = "/home/rstudio/repbox/repboxStata/R/parse.R"
-function_name = "repbox.do.table"
-description = "Strip leading whitespace before checking for quietly/capture/noisily prefixes and add while loop to support multiple prefixes"
+file = "/home/rstudio/repbox/repboxStata/R/repbox_files.R"
+function_name = "replace.files.and.paths.with.ph"
+description = "Revert the semicolon stripping change so trailing semicolons are correctly swallowed by placeholders again, preventing syntax errors in Stata."
 ---
-```R
-repbox.do.table = function(s=NULL,txt=s$newtxt, ph.df = s$ph.df) {
-  restore.point("repa.do.table")
+```r
+replace.files.and.paths.with.ph = function(tab, ph, txt=tab$txt) {
+  restore.point("replace.files.and.paths.with.ph")
+  txt = replace.ph.keep.lines(txt, ph)
+  arg_str = replace.ph.keep.lines(tab$arg_str,ph)
+  using = replace.ph.keep.lines(tab$using,ph)
+  using[is.na(tab$using)] = NA
 
-  #orgline.marker = ifelse(is.na(s$orglines),"",paste0("#~oline",s$orglines,"~#"))
-  orgline.marker = ifelse(is.na(s$orglines),"",paste0("#~oline",s$orglines,"-", s$end.orglines, "~#"))
-  newtxt = paste0(orgline.marker,s$newtxt)
-  txt = merge.lines(newtxt)
+  saving = replace.ph.keep.lines(tab$saving,ph)
+  saving[is.na(tab$saving)] = NA
 
-  # Remove comment placeholders
-  co.ph.df = ph.df %>%
-    filter(startsWith(ph,"#~c")) %>%
-    mutate(content = "")
-  txt = replace.placeholders(txt, co.ph.df)
-
-  # Set brackets () into ph
-  pho = try(blocks.to.placeholder(txt, start=c("("), end=c(")"), ph.prefix = "#~br"))
-  if (is(pho,"try-error")) {
-    pho = stepwise.blocks.to.placeholder(txt, ph.df,ph.prefix = "#~br")
+  pph = tibble(ph=character(0), content=character(0), line=integer(0), cmd=character(0))
+  if (NROW(tab)==0) {
+    return(list(txt=txt, ph=pph))
   }
-  txt = pho$str; br.ph.df = pho$ph.df
-  if (any(duplicated(br.ph.df$ph))) {
-    stop("Parsing error bracket place holders are duplicated. Need to correct placeholder block code.")
-  }
+  using.rows = which(is.true(!is.na(using) & nchar(using)>0))
 
+  rows = which(tab$cmd %in% c("use","u","us", "cd","saveold", "save","sav","sa", "mkdir","erase","rm","guse","gsave","gzuse","gzsave"));
+  # if use is used together with "using" the first argument refers to variables
+  rows = setdiff(rows, using.rows)
+  n=length(rows)
+  if (n>0) {
+    content = trimws(arg_str[rows])
+    npph = tibble(ph = paste0("#~use",1:n,"~#"),content=content, line=rows, cmd=tab$cmd[rows])
 
-  # Find Mata blocks and replace with placeholder
-  mata_pos = locate_mata_blocks(txt)
-  if (NROW(mata_pos)>0) {
-    pho = pos.to.placeholder(txt, mata_pos,ph.prefix = "#~mata_pa ", ph.df=ph.df)
-    txt = pho$str; ph.df = pho$ph.df
-    # pho = blocks.to.placeholder(txt, start="{", end="}",before.start = c("mata ","mata"),ph.df = ph.df, ph.prefix="#~mata_pa")
-    #
-    # txt = pho$str; ph.df = pho$ph.df
-    #
-    # txt = trimws(sep.lines(txt))
-    # pos = start.end.line.blocks(txt,start = "mata",end="end",multi.end = TRUE)
-    # pho = line.blocks.to.placeholder(txt,pos,ph.df = ph.df, ph.prefix="#mata_lb")
-    # txt = pho$str; ph.df = pho$ph.df
-  }
-
-
-  #cat(txt)
-  txt = sep.lines(txt)
-  has.orgline = startsWith(txt,"#~oline")
-  orgline_txt = ifelse(has.orgline, str.between(txt,"#~oline","~#"),"")
-  orgline_start = ifelse(has.orgline,as.integer(str.left.of(orgline_txt,"-")),NA_integer_)
-  orgline_end = ifelse(has.orgline,as.integer(str.right.of(orgline_txt,"-")),NA_integer_)
-
-  #orgline = ifelse(has.orgline, str.between(txt,"#~oline","~#") %>% as.integer(),NA_integer_)
-  txt[has.orgline] = str.right.of(txt[has.orgline],"~#")
-
-  str = txt
-
-  # Replace tabs with spaces
-  # Otherwise we wont correctly store the cmd
-  # variable
-  str = gsub("\t"," ", str, fixed=TRUE)
-  
-  # STRIP LEADING WHITESPACE SO THAT startsWith() MATCHES WORK CORRECTLY
-  str = trimws(str)
-
-  saving = str.right.of(str,"saving#~br",not.found = NA)
-  srows = which(!is.na(saving))
-  if (length(srows)>0) {
-    saving[srows] = str.left.of(saving[srows],"~#")
-    saving[srows] = paste0("#~br", saving[srows],"~#")
-  }
-
-  quietly = rep(NA_character_, length(str))
-  capture = rep(NA_character_, length(str))
-  noisily = rep(NA_character_, length(str))
-
-  changed = TRUE
-  while(changed) {
-    changed = FALSE
-    
-    rows = startsWith(str, "quietly:")
-    if (any(rows)) { quietly[rows] = "quietly:"; str[rows] = trimws(str.right.of(str[rows], "quietly:")); changed = TRUE }
-    rows = startsWith(str, "quietly ")
-    if (any(rows)) { quietly[rows] = "quietly "; str[rows] = trimws(str.right.of(str[rows], "quietly ")); changed = TRUE }
-    rows = startsWith(str, "qui:")
-    if (any(rows)) { quietly[rows] = "qui:"; str[rows] = trimws(str.right.of(str[rows], "qui:")); changed = TRUE }
-    rows = startsWith(str, "qui ")
-    if (any(rows)) { quietly[rows] = "qui "; str[rows] = trimws(str.right.of(str[rows], "qui ")); changed = TRUE }
-
-    rows = startsWith(str, "capture:")
-    if (any(rows)) { capture[rows] = "capture:"; str[rows] = trimws(str.right.of(str[rows], "capture:")); changed = TRUE }
-    rows = startsWith(str, "capture ")
-    if (any(rows)) { capture[rows] = "capture "; str[rows] = trimws(str.right.of(str[rows], "capture ")); changed = TRUE }
-    rows = startsWith(str, "cap:")
-    if (any(rows)) { capture[rows] = "cap:"; str[rows] = trimws(str.right.of(str[rows], "cap:")); changed = TRUE }
-    rows = startsWith(str, "cap ")
-    if (any(rows)) { capture[rows] = "cap "; str[rows] = trimws(str.right.of(str[rows], "cap ")); changed = TRUE }
-
-    rows = startsWith(str, "noisily:")
-    if (any(rows)) { noisily[rows] = "noisily:"; str[rows] = trimws(str.right.of(str[rows], "noisily:")); changed = TRUE }
-    rows = startsWith(str, "noisily ")
-    if (any(rows)) { noisily[rows] = "noisily "; str[rows] = trimws(str.right.of(str[rows], "noisily ")); changed = TRUE }
-    rows = startsWith(str, "noi:")
-    if (any(rows)) { noisily[rows] = "noi:"; str[rows] = trimws(str.right.of(str[rows], "noi:")); changed = TRUE }
-    rows = startsWith(str, "noi ")
-    if (any(rows)) { noisily[rows] = "noi "; str[rows] = trimws(str.right.of(str[rows], "noi ")); changed = TRUE }
-  }
-
-
-  # change :\ ad :/ as this is part of file path
-
-  str =gsub(":\\","~;~\\", str, fixed=TRUE)
-  str =gsub(":/","~;~\\", str, fixed=TRUE)
-
-  str = trimws(str)
-  opens_block = endsWith(str, "{")
-  closes_block = str == "}"
-
-  colon1 = str.left.of(str, ":",not.found = NA) %>% trimws()
-  str = str.right.of(str, ":")
-  colon2 = str.left.of(str, ":",not.found = NA) %>% trimws()
-  str = str.right.of(str, ":")
-  colon3 = str.left.of(str, ":",not.found = NA) %>% trimws()
-  str = str.right.of(str, ":") %>% trimws()
-  str = gsub("~;~\\",":\\", str, fixed=TRUE)
-
-  # Some commands use : in a different way. Then don't store colon stuff
-  no.colon = which(startsWith(txt, "merge"))
-  if (length(no.colon) > 0) {
-    colon1[no.colon] = colon2[no.colon] = colon3[no.colon] = NA
-    str[no.colon] = txt[no.colon]
-  }
-
-  str = gsub(","," ,", str, fixed=TRUE)
-  cmd = str.left.of(str," ")
-  str = paste0(" ",str.right.of(str," "))
-  cmd_br = str.right.of(cmd,"#~br",not.found=NA)
-  cmd_br = ifelse(is.na(cmd_br),NA,paste0("#~br",cmd_br))
-  cmd = str.left.of(cmd, "#")
-  cmd = str.left.of(cmd,"{")
-
-  opts = str.right.of(str,",",not.found=NA) %>% trimws()
-  str = str.left.of(str,",")
-
-  # Extracting weight variables [myweight] got more complicated:
-  # if conditions can also contain [] like if id=id[_n-1]
-  # we thus suppose that a weight string must have a space before
-  # need to check whether that is indeed always the case
-  weight = rep("", length(str))
-  weight_start = stri_locate_first_regex(str,"(?<![a-z0-9A-Z_])\\[")[,1]
-  wrows = which(!is.na(weight_start))
-  if (length(wrows)>0) {
-    weight_start = weight_start[wrows]
-    rstr = substring(str[wrows], weight_start)
-    weight_end = stri_locate_first_regex(rstr,"\\](?![a-z0-9A-Z_])")[,1]
-    #weight_end = stri_locate_first_fixed(rstr, "]")[,1]
-    use_wrows = !is.na(weight_end)
-    weight[wrows[use_wrows]] = stri_sub(rstr[use_wrows],2,weight_end[use_wrows]-1)
-    str[wrows[use_wrows]] = stri_sub(str[wrows[use_wrows]], weight_start[use_wrows])
-  }
-  #weight = str.between(str,"[","]", not.found=NA) %>% trimws()
-  #str = str.left.of(str,"[")
-
-
-  # Default order is if, in, using
-  # but sometimes different order is used like using, if
-
-  # using = str.right.of(str," using ",not.found=NA)  %>% trimws()
-  # str = str.left.of(str," using ")
-  # in_arg = str.right.of(str," in ",not.found=NA)  %>% trimws()
-  # str = str.left.of(str," in ")
-  # if_arg = str.right.of(str," if ",not.found=NA)  %>% trimws()
-  # str = str.left.of(str," if ")
-
-  res = extract.if.in.using(str)
-  str = trimws(res$str)
-  using = res$parts$using
-  in_arg = res$parts[["in"]]
-  if_arg = res$parts[["if"]]
-
-
-
-
-  exp = str.right.of(str,"=",not.found=NA_character_)  %>% trimws()
-  str = str.left.of(str,"=")
-  arg_str = str
-
-  cmd2 = str.left.of(trimws(arg_str)," ", not.found=NA_character_) %>% trimws()
-  cmd2[startsWith(cmd2,"#~")] = NA_character_
-
-
-
-  program = ifelse(startsWith(txt, "program define "), str.between(txt,"program define ", " "), NA)
-
-  txt = replace.ph.keep.lines(txt, br.ph.df)
-  arg_str = replace.ph.keep.lines(arg_str, br.ph.df)
-  exp = replace.ph.keep.lines(exp, br.ph.df)
-  cmd_br = replace.ph.keep.lines(cmd_br, br.ph.df)
-  opts = replace.ph.keep.lines(opts, br.ph.df)
-
-  na.rows = which(is.na(saving))
-  saving = replace.ph.keep.lines(saving, br.ph.df)
-  saving[na.rows] = NA_character_
-
-
-  tab = data.frame(cmd,cmd_br=cmd_br,arg_str, exp, if_arg, in_arg, using, opts, cmd2, saving, txt, colon1, colon2,colon3, program, opens_block, closes_block, quietly, capture, noisily, orgline=orgline_start, orgline_start=orgline_start, orgline_end=orgline_end)
-  tab = filter(tab, nchar(trimws(tab$txt))>0)
-
-  # In do files with #delimit ; commands not always a unique
-  # orgline is determined. We want to set that line to orgline
-  # in which the cmd starts
-  rows = which(tab$orgline_start != tab$orgline_end)
-  if (length(rows)>0) {
-    # remove first line which is empty and not accounted
-    # for in orgline
-    org_txt = sep.lines(s$txt)[-1]
-    for (r in rows) {
-      cmd = tab$cmd[r]
-      if (is.na(cmd) || isTRUE(cmd=="")) next
-      olines = tab$orgline_start[r]:tab$orgline_end[r]
-      # prefer later lines: idea is that more likely
-      # a comment before the line contains the command
-      # than a comment below the line
-      points = startsWith(org_txt[olines],cmd) + has.substr(org_txt[olines],cmd) + olines*1e-6
-      tab$orgline[r] = olines[which.max(points)]
+    for (i in seq_along(rows)) {
+      if (nchar(content[i])>0) {
+        txt[rows[i]] = sub(content[i],npph$ph[i],txt[rows[i]],fixed = TRUE)
+      }
     }
+    pph = bind_rows(pph, npph)
+  }
+
+  # Import and export commands
+  # E.g. import delimit "myfile.csv"
+  # The file argument is here after cmd2
+  rows = which(
+    tab$cmd %in% c("import","export") |
+    (tab$cmd %in% c("graph","gr","gra") & tab$cmd2 %in% c("export","save")) |
+    (tab$cmd %in% c("estimates","est","estim","estimate") & tab$cmd2 %in% c("save","use")) |
+    (tab$cmd %in% c("putexcel") & tab$cmd2 %in% c("set")) |
+    (tab$cmd %in% "adopath" & tab$cmd2 %in% c("+"))
+  );
+  rows = setdiff(rows, using.rows)
+  n=length(rows)
+  if (n>0) {
+    content = trimws(arg_str[rows]) %>% str.right.of(" ") %>% trimws()
+    npph = tibble(ph = paste0("#~use",1:n,"~#"),content=content, line=rows, cmd=tab$cmd[rows])
+
+    for (i in seq_along(rows)) {
+      if (nchar(content[i])>0) {
+        txt[rows[i]] = sub(content[i],npph$ph[i],txt[rows[i]],fixed = TRUE)
+      }
+    }
+    pph = bind_rows(pph, npph)
   }
 
 
+  # commands with using argument
+  rows = which(is.true(!is.na(using) & nchar(using)>0)); n=length(rows)
+  if (n>0) {
+    content = trimws(using[rows])
+    npph = tibble(ph = paste0("#~using",1:n,"~#"),content=content, line=rows, cmd=tab$cmd[rows])
 
+    for (i in seq_along(rows)) {
+      txt[rows[i]] = sub(content[i],npph$ph[i],txt[rows[i]],fixed = TRUE)
+    }
+    pph = bind_rows(pph, npph)
+  }
 
-  # Special treatment for outdated 'for any' command. Like
-  # for any y1 y2: reg X z1
-  # We will say that cmd="for" because we cannot handle for any
-  # when analysing regressions
+  # commands with saving option
+  rows = which(!is.na(saving)); n=length(rows)
+  if (n>0) {
+    long.content = paste0("saving",trimws(saving[rows]))
+    content = str.between(long.content,"(",")")
+    content = trimws(str.left.of(content, ","))
+    npph = tibble(ph = paste0("#~saving",1:n,"~#"),content=content, line=rows, cmd=tab$cmd[rows])
 
-  # Special treatment for outdated "for any" command in combi with regression. Like
-  # for any y1 y2: reg X z1
-  # We cant well handle those regressions and thus change the command name
-  rows = which(startsWith(tab$colon1,"for any"))
-  if (length(rows)>0) {
-    regcmds = get.regcmds()
-    rows = which(startsWith(tab$colon1,"for any") & tab$cmd %in% regcmds)
-    tab$cmd[rows] = paste0("__for_any_", tab$cmd[rows])
+    for (i in seq_along(rows)) {
+      txt[rows[i]] = sub(paste0("saving(",content[i]),paste0("saving(",npph$ph[i]),txt[rows[i]],fixed = TRUE)
+    }
+    pph = bind_rows(pph, npph)
   }
 
 
-  tab = tab.repair.colon.local(tab)
-  tab = tab.repair.input.cmds(tab)
-  tab = tab.replace.texdoc.do(tab)
-  tab = tab.add.block.end(tab)
-
-  tab$line = seq_len(NROW(tab))
-  if (any(is.na(tab$orgline))) {
-    stop("Parsing of orgline was not correct. As tab$orgline has NA. Pleas debug parsing code.")
-  }
-
-  tab = tab.add.in.program(tab)
-  tab  = tab.add.in.loop(tab)
-  list(tab=tab, ph.df = ph.df)
+  list(txt=txt, ph=pph)
 }
 ```
-!END_MODIFICATION repbox.do.table in repboxStata/R/parse.R
+!END_MODIFICATION replace.files.and.paths.with.ph R/repbox_files.R
 
-!MODIFICATION normalized.cmdlines.to.tab in repboxStata/R/parse.R
+!MODIFICATION inject.path.correction.pre R/inject.R
 scope = "function"
-file = "/home/rstudio/repbox/repboxStata/R/parse.R"
-function_name = "normalized.cmdlines.to.tab"
-description = "Strip leading whitespace before checking for quietly/capture/noisily prefixes and add while loop to support multiple prefixes"
+file = "/home/rstudio/repbox/repboxStata/R/inject.R"
+function_name = "inject.path.correction.pre"
+description = "Strip trailing semicolons from the extracted file path right before Stata macro injection to safely prevent CSV delimiter conflicts."
 ---
-```R
-normalized.cmdlines.to.tab = function(txt, ph.df, orglines=NULL) {
-  restore.point("normalized.cmdlines.with.ph.to.tab")
+```r
+inject.path.correction.pre = function(txt, lines=seq_along(txt), do) {
+  restore.point("inject.path.correction")
+  project_dir = do$project_dir
+  sup.dir = normalizePath(file.path(project_dir,"mod"), winslash = "/")
 
-  str = txt
+  tab = do$tab[[1]][lines,]
+  default_ext = get.stata.default.file.extension(tab)
+
+  txt
+  r.script = file.path(project_dir, "repbox/stata/find_files.R")
+  tab = do$tab[[1]][lines,]
+  ph = do$ph[[1]]
+
+  res = replace.files.and.paths.with.ph(tab,ph=ph)
+  ph.txt = res$txt
+  fph = res$ph
+  if (any(duplicated(fph$line))) {
+    restore.point("inject.path.correction.dupl")
+    stop("Multiple file paths in a command cannot yet be dealt with.")
+  }
+
+  content = fph$content
+
+  content = gsub('"','', content, fixed = TRUE)
+  # Strip trailing semicolon so it never makes it into the injected CSV writing block
+  content = stringi::stri_replace_last_regex(content, ";[ \t]*$", "")
   
-  # STRIP LEADING WHITESPACE SO THAT startsWith() MATCHES WORK CORRECTLY
-  str = trimws(str)
+  file_str = rep("", length(txt))
+  file_str[fph$line] = content
+  cmd = ifelse(is.na(tab$saving), tab$cmd, "saving")
 
-  quietly = rep(NA_character_, length(str))
-  capture = rep(NA_character_, length(str))
-  noisily = rep(NA_character_, length(str))
+  is_dir = cmd %in% c("cd","adopath","mkdir")
+  create =  cmd %in%
+    c("save","saveold", "save","sav","sa","export") |
+    (cmd %in% c("graph","gr","gra") & tab$cmd2 %in% c("export","save")) |
+    (tab$cmd %in% c("estimates","est","estim","estimate") & tab$cmd2 %in% c("save")) |
+    (cmd %in% c("putexcel") & tab$cmd2 %in% c("set"))
 
-  changed = TRUE
-  while(changed) {
-    changed = FALSE
-    
-    rows = startsWith(str, "quietly:")
-    if (any(rows)) { quietly[rows] = "quietly:"; str[rows] = trimws(str.right.of(str[rows], "quietly:")); changed = TRUE }
-    rows = startsWith(str, "quietly ")
-    if (any(rows)) { quietly[rows] = "quietly "; str[rows] = trimws(str.right.of(str[rows], "quietly ")); changed = TRUE }
-    rows = startsWith(str, "qui:")
-    if (any(rows)) { quietly[rows] = "qui:"; str[rows] = trimws(str.right.of(str[rows], "qui:")); changed = TRUE }
-    rows = startsWith(str, "qui ")
-    if (any(rows)) { quietly[rows] = "qui "; str[rows] = trimws(str.right.of(str[rows], "qui ")); changed = TRUE }
+  type = case_when(
+    !is_dir & !create ~ "file_exists",
+     is_dir & !create ~ "dir_exists",
+    !is_dir &  create ~ "file_create",
+     is_dir &  create ~ "dir_create"
+  )
 
-    rows = startsWith(str, "capture:")
-    if (any(rows)) { capture[rows] = "capture:"; str[rows] = trimws(str.right.of(str[rows], "capture:")); changed = TRUE }
-    rows = startsWith(str, "capture ")
-    if (any(rows)) { capture[rows] = "capture "; str[rows] = trimws(str.right.of(str[rows], "capture ")); changed = TRUE }
-    rows = startsWith(str, "cap:")
-    if (any(rows)) { capture[rows] = "cap:"; str[rows] = trimws(str.right.of(str[rows], "cap:")); changed = TRUE }
-    rows = startsWith(str, "cap ")
-    if (any(rows)) { capture[rows] = "cap "; str[rows] = trimws(str.right.of(str[rows], "cap ")); changed = TRUE }
+  # We need to replace \ with / in Stata since otherwise
+  # paths with spliced-in variables that have a \
+  # will not be handled correctly
+  code = paste0(
+'
+local repbox_source_path = subinstr("',file_str,'","\\","/",.)
 
-    rows = startsWith(str, "noisily:")
-    if (any(rows)) { noisily[rows] = "noisily:"; str[rows] = trimws(str.right.of(str[rows], "noisily:")); changed = TRUE }
-    rows = startsWith(str, "noisily ")
-    if (any(rows)) { noisily[rows] = "noisily "; str[rows] = trimws(str.right.of(str[rows], "noisily ")); changed = TRUE }
-    rows = startsWith(str, "noi:")
-    if (any(rows)) { noisily[rows] = "noi:"; str[rows] = trimws(str.right.of(str[rows], "noi:")); changed = TRUE }
-    rows = startsWith(str, "noi ")
-    if (any(rows)) { noisily[rows] = "noi "; str[rows] = trimws(str.right.of(str[rows], "noi ")); changed = TRUE }
-  }
-
-
-  # change :\ ad :/ as this is part of file path
-
-  str =gsub(":\\","~;~\\", str, fixed=TRUE)
-  str =gsub(":/","~;~\\", str, fixed=TRUE)
-
-  colon1 = str.left.of(str, ":",not.found = NA) %>% trimws()
-  str = str.right.of(str, ":")
-  colon2 = str.left.of(str, ":",not.found = NA) %>% trimws()
-  str = str.right.of(str, ":")
-  colon3 = str.left.of(str, ":",not.found = NA) %>% trimws()
-  str = str.right.of(str, ":") %>% trimws()
-  str = gsub("~;~\\",":\\", str, fixed=TRUE)
-
-  # Some commands use : in a different way. Then don't store colon stuff
-  no.colon = which(startsWith(txt, "merge"))
-  if (length(no.colon) > 0) {
-    colon1[no.colon] = colon2[no.colon] = colon3[no.colon] = NA
-    str[no.colon] = txt[no.colon]
-  }
-
-  str = gsub(","," ,", str, fixed=TRUE)
-  cmd = str.left.of(str," ")
-  str = paste0(" ",str.right.of(str," "))
-  cmd_br = str.right.of(cmd,"#~br",not.found=NA)
-  cmd_br = ifelse(is.na(cmd_br),NA,paste0("#~br",cmd_br))
-  cmd = str.left.of(cmd, "#")
-
-  opts = str.right.of(str,",",not.found=NA) %>% trimws()
-  str = str.left.of(str,",")
-
-  # Extracting weight variables [myweight] got more complicated:
-  # if conditions can also contain [] like if id=id[_n-1]
-  # we thus suppose that a weight string must have a space before
-  # need to check whether that is indeed always the case
-  weight = rep("", length(str))
-  weight_start = stri_locate_first_regex(str,"(?<![a-z0-9A-Z_])\\[")[,1]
-  wrows = which(!is.na(weight_start))
-  if (length(wrows)>0) {
-    weight_start = weight_start[wrows]
-    rstr = substring(str[wrows], weight_start)
-    weight_end = stri_locate_first_fixed(rstr, "]")[,1]
-    use_wrows = !is.na(weight_end)
-    weight[wrows[use_wrows]] = stri_sub(rstr[use_wrows],2,weight_end-1)
-    str[wrows[use_wrows]] = stri_sub(str[wrows[use_wrows]], weight_start[use_wrows])
-  }
-
-
-  #weight = str.between(str,"[","]", not.found=NA) %>% trimws()
-  #str = str.left.of(str,"[")
-
-
-  # Default order is if, in, using
-  # but sometimes different order is used like using, if
-
-  res = extract.if.in.using(str)
-  str = res$str
-  using = res$parts$using
-  in_arg = res$parts[["in"]]
-  if_arg = res$parts[["if"]]
-
-  exp = str.right.of(str,"=",not.found=NA)  %>% trimws()
-  str = str.left.of(str,"=")
-  arg_str = str
-
-  program = ifelse(startsWith(txt, "program define "), str.between(txt,"program define ", " "), NA)
-
-  txt = replace.ph.keep.lines(txt, ph.df)
-  arg_str = replace.ph.keep.lines(arg_str, ph.df)
-  exp = replace.ph.keep.lines(exp, ph.df)
-  cmd_br = replace.ph.keep.lines(cmd_br, ph.df)
-  opts = replace.ph.keep.lines(opts, ph.df)
-
-  tab = data.frame(cmd,cmd_br=cmd_br,arg_str, exp, if_arg, in_arg, using, opts,txt, colon1, colon2,colon3, program, quietly, capture, noisily)
-
-  # Special treatment for outdated "for any" command in combi with regression. Like
-  # for any y1 y2: reg X z1
-  # We cant well handle those regressions and thus change the command name
-  rows = which(startsWith(tab$colon1,"for any"))
-  if (length(rows)>0) {
-    regcmds = get.regcmds()
-    rows = which(startsWith(tab$colon1,"for any") & tab$cmd %in% regcmds)
-    tab$cmd[rows] = paste0("__for_any_", tab$cmd[rows])
-  }
-
-
-  tab = tab.repair.input.cmds(tab)
-
-  if (is.null(orglines))
-    tab$orgline = orglines
-  tab = filter(tab, nchar(trimws(tab$txt))>0)
-  tab$line = seq_len(NROW(tab))
-
-  tab
+repbox_correct_path "',type,'" "`repbox_source_path\'" "', default_ext,'" "',sup.dir,'" "', normalizePath(dirname(do$file),winslash="/") ,'"\n',
+'capture noisily local repbox_corrected_path = "`r(repbox_corrected_path)\'"'
+#,'#display "`r(repbox_corrected_path)\'" \n',
+  )
+  code
 }
 ```
-!END_MODIFICATION normalized.cmdlines.to.tab in repboxStata/R/parse.R
+!END_MODIFICATION inject.path.correction.pre R/inject.R
