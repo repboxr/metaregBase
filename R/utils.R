@@ -1,3 +1,75 @@
+example = function() {
+  project_dirs =list.dirs("~/repbox/projects", recursive = FALSE, full.names = TRUE)
+
+  sizes = directory_sizes(project_dirs) %>%
+    arrange(desc(size_gb))
+
+  dur_df = bind_rows(lapply(project_dirs, rb_get_steps_runtimes)) %>%
+    arrange(desc(sec))
+
+
+
+  sizes = directory_sizes(list.dirs("/home/rstudio/repbox/projects/aer_106_5_74", recursive = FALSE, full.names = TRUE))
+
+
+
+}
+
+directory_sizes = function(directories) {
+  stopifnot(is.character(directories))
+
+  directories = normalizePath(
+    directories,
+    winslash = "/",
+    mustWork = FALSE
+  )
+
+  get_directory_size = function(directory) {
+    if (!dir.exists(directory)) {
+      return(data.frame(
+        directory = directory,
+        exists = FALSE,
+        n_files = NA_integer_,
+        size_bytes = NA_real_,
+        size_mb = NA_real_,
+        size_gb = NA_real_
+      ))
+    }
+
+    files = list.files(
+      path = directory,
+      recursive = TRUE,
+      full.names = TRUE,
+      all.files = TRUE,
+      include.dirs = FALSE,
+      no.. = TRUE
+    )
+
+    file_information = file.info(files)
+    file_sizes = file_information$size[!file_information$isdir]
+    file_sizes = file_sizes[!is.na(file_sizes)]
+
+    size_bytes = sum(file_sizes)
+
+    data.frame(
+      directory = directory,
+      exists = TRUE,
+      n_files = length(file_sizes),
+      size_bytes = size_bytes,
+      size_mb = size_bytes / 1024^2,
+      size_gb = size_bytes / 1024^3
+    )
+  }
+
+  result = do.call(
+    rbind,
+    lapply(directories, get_directory_size)
+  )
+
+  rownames(result) = NULL
+  result
+}
+
 parcel_for_runid = function(parcel, runid) {
   parcel[parcel$runid==runid, ]
 }
