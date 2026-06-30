@@ -7,6 +7,8 @@ example = function() {
 }
 
 mrb_pid_test_files = function(project_dir, pid, parcels = list(), drf = repboxDRF::drf_load(project_dir, parcels), outdir = paste0(project_dir, "/run/pid_", pid)) {
+  restore.point("mrb_pid_test_files")
+
 
   if (!dir.exists(outdir)) dir.create(outdir)
   r_code = mrb_test_code_path(project_dir, pid, parcels, drf)

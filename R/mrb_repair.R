@@ -236,6 +236,7 @@ mrb_get_to_repair_runids = function(mrb, parcels = mrb$parcels,  only_paths_with
       regcheck$cmd = ""
     }
   }
+
   regcheck$cmd = repboxUtils::na.val(regcheck$cmd, "")
 
   regcheck = regcheck %>%

@@ -144,8 +144,11 @@ mrb_code_reg_stata = function(code_df, run_df=NULL, outdir=NULL,runid = code_df$
   if (cmd %in% c(stata_cmds_with_margin(), "dprobit")) {
     extra_code = paste0(
 '
+  capture estimates store repbox_orig_model
   ', cap_str, 'margins, atmeans dydx(*) post
   ', cap_str, 'parmest, saving("', outdir, '/reg_', runid, '__sb_mfx.dta", replace)
+  capture quietly estimates restore repbox_orig_model
+  capture quietly estimates drop repbox_orig_model
 '
     )
   } else if (cmd %in% stata_cmds_with_exp_coef()) {
