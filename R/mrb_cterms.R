@@ -38,8 +38,11 @@ stata_expr_to_cterm = function(stata_expr) {
   cterm = gsub("^[ic]\\.", "", cterm, ignore.case = TRUE)
   cterm = gsub("#[ic]([LlFfDdSsOo][0-9]*\\.)", "#\\1", cterm, ignore.case = TRUE)
   cterm = gsub("^[ic]([LlFfDdSsOo][0-9]*\\.)", "\\1", cterm, ignore.case = TRUE)
-  cterm = stringi::stri_replace_all_regex(cterm, "#[iI]?[bB]([0-9]+)\\.", "#")
-  cterm = stringi::stri_replace_all_regex(cterm, "^[iI]?[bB]([0-9]+)\\.", "")
+
+  # Strip explicit base level prefixes like ib(last)., ibn., ibnone., ib(freq)., ib#.
+  ib_pattern = "([0-9]+|n|none|\\(first\\)|\\(last\\)|\\(freq\\)|\\(default\\))"
+  cterm = gsub(paste0("#i?b", ib_pattern, "\\."), "#", cterm, ignore.case = TRUE)
+  cterm = gsub(paste0("^i?b", ib_pattern, "\\."), "", cterm, ignore.case = TRUE)
 
   # Convert plain factor notation before TS-prefix normalization:
   # 2.x1 -> x1=2

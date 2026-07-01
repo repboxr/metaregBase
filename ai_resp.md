@@ -1,87 +1,640 @@
-Here is the implementation of Possibility 1. We wrap the `margins ... post` command and its subsequent extraction with `estimates store` and `estimates restore` so that the original regression results remain in Stata's memory for subsequent downstream commands like `predict`.
+This looks like a great catch! The default parsing for `ivregress` commands (which require `2sls`, `liml`, or `gmm` as the first token rather than an option) and `ivreg` (which defaults to 2SLS) naturally falls back to `default` when `subcmd` cannot be reliably found by `cmdparts`.
 
-!MODIFICATION mrb_code_reg_stata in mrb_stata.R
+By manually interrogating the `pre` and `v` tokens for the specific `ivregress` subcommands and handling `ivreg` separately, we gracefully bypass the missing mappings and correctly assign the `unadjusted` / `wmatrix` defaults to suppress the warning without losing fidelity.
+
+Here are the changes applied directly to `se_stata_to_repdb` within `metaregBase/R/mrb_se.R`:
+
+!MODIFICATION se_stata_to_repdb mrb_se.R
 scope = "function"
-file = "/home/rstudio/repbox/metaregBase/R/mrb_stata.R"
-function_name = "mrb_code_reg_stata"
-description = "Store and restore original Stata estimation results to prevent margins, post from breaking subsequent predict calls."
+file = "/home/rstudio/repbox/metaregBase/R/mrb_se.R"
+function_name = "se_stata_to_repdb"
+description = "Handle default SE parsing for ivregress and ivreg correctly to avoid 'default' warning"
 ---
 ```r
-mrb_code_reg_stata = function(code_df, run_df=NULL, outdir=NULL,runid = code_df$runid, capture=TRUE, ...) {
-  restore.point("mrb_code_reg_stata")
-  library(repboxStata)
-  stata_code = code_df$code
+se_stata_to_repdb = function(cmd, opts_df = cmdpart_to_opts_df(cmdpart), cmdpart=NULL, panelvar=NA_character_) {
 
-  if (!dir.exists(outdir))
-    dir.create(outdir, recursive = TRUE)
+  restore.point("se_stata_to_repdb")
 
-  outfile = paste0(outdir, "/reg_", runid, "__sb.dta")
-  scalar_outfile = paste0(outdir, "/regscalar_", runid, "__sb.txt")
-  macro_outfile = paste0(outdir, "/regmacro_", runid, "__sb.txt")
+  cmd = tolower(trimws(cmd))
 
-  if (capture) {
-    cap_str = "capture noisily "
-  } else {
-    cap_str = ""
-  }
-
-  cmd = code_df$cmd
-
-  # Canonicalize legacy dprobit to probit for the main coefficient capture.
-  # This keeps sb on the same scale as the R-side probit translation and
-  # avoids the legacy dprobit parser limitation with factor variables.
-  main_stata_code = stata_code
-  if (identical(cmd, "dprobit")) {
-    main_stata_code = sub(
-      "^([[:space:]]*)dprobit\\b",
-      "\\1probit",
-      stata_code,
-      ignore.case = TRUE,
-      perl = TRUE
+  if (is.null(opts_df) || NROW(opts_df) == 0) {
+    opts_df = tibble(
+      opt = character(0),
+      opt_arg = character(0)
     )
   }
 
-  extra_code = ""
-
-  # Store marginal effects in a separate variant, never in the main sb parcel.
-  if (cmd %in% c(stata_cmds_with_margin(), "dprobit")) {
-    extra_code = paste0(
-'
-  capture estimates store repbox_orig_model
-  ', cap_str, 'margins, atmeans dydx(*) post
-  ', cap_str, 'parmest, saving("', outdir, '/reg_', runid, '__sb_mfx.dta", replace)
-  capture quietly estimates restore repbox_orig_model
-  capture quietly estimates drop repbox_orig_model
-'
-    )
-  } else if (cmd %in% stata_cmds_with_exp_coef()) {
-    extra_code = paste0(
-'
-  ', cap_str, 'estout . using "', outdir,'/reg_', runid, '__sb_exp.tsv", cells("b se t p ci_l ci_u") replace eform
-'
-    )
+  if (!"opt" %in% names(opts_df)) {
+    opts_df$opt = character(NROW(opts_df))
+  }
+  if (!"opt_arg" %in% names(opts_df)) {
+    opts_df$opt_arg = rep(NA_character_, NROW(opts_df))
   }
 
-  code = paste0(
+  opts_df$opt = tolower(trimws(as.character(opts_df$opt)))
+  opts_df$opt_arg = as.character(opts_df$opt_arg)
 
-# Don't add ereturn clear:  not needed and not compatible with e(sample) stuff in if condition
-#    'capture ereturn clear
-#',
-    cap_str, main_stata_code, '
-local repbox_reg_rc = _rc
+  # newey reports Newey-West HAC standard errors. lag(0) corresponds
+  # to heteroskedasticity-robust standard errors without serial lags.
+  if (cmd == "newey") {
+    lag_row = which(se_stata_is_abbr(opts_df$opt, "lag", min_chars=3L))
 
-if (`repbox_reg_rc\' == 0) {
-  ', cap_str, 'parmest, label saving("',outfile,'", replace)
-  ', cap_str, 'repbox_write_reg_scalars "', scalar_outfile,'"
-  ', cap_str, 'repbox_write_reg_macros "', macro_outfile,'"
-', extra_code, '
-}
-else {
-  display as error "metaregBase: skipping postestimation capture for runid ', runid, ' because rc=`repbox_reg_rc\'"
-}
-'
+    if (length(lag_row) == 1) {
+      lag = as_integer(opts_df$opt_arg[lag_row])
+    } else {
+      lag = NA_integer_
+    }
+
+    se = tibble(
+      se_category = "robust",
+      se_type = "nw",
+      se_args = paste0("lag=", lag)
+    )
+    return(se)
+  }
+
+  abbr.li = list(
+    robust = c("robust", "robus", "robu", "rob", "ro", "r"),
+    unadjusted = c(
+      "unadjusted", "unadjuste", "unadjust", "unadjus",
+      "unadju", "unadj", "unad", "una", "un"
+    ),
+    conventional = c(
+      "conventional", "conventiona", "convention", "conventio",
+      "conventi", "convent", "conven", "conve", "conv"
+    ),
+    iid = "iid",
+    ols = "ols",
+    oim = "oim",
+    opg = "opg",
+    cluster = c("cluster", "cluste", "clust", "clus", "clu", "cl"),
+    bootstrap = c(
+      "bootstrap", "bootstra", "bootstr", "bootst", "boots", "boot"
+    ),
+    jackknife = c("jackknife", "jackknif", "jack"),
+    hc0 = "hc0",
+    hc1 = "hc1",
+    hc2 = "hc2",
+    hc3 = "hc3",
+    hc4 = "hc4",
+    hc5 = "hc5",
+    hac = "hac",
+    dkraay = "dkraay"
   )
-  code
+
+  canonical_se_type = function(x) {
+    if (length(x) == 0 || is.na(x[1])) {
+      return("")
+    }
+
+    x = tolower(trimws(as.character(x[1])))
+
+    matches = names(abbr.li)[vapply(
+      abbr.li,
+      function(values) x %in% values,
+      logical(1)
+    )]
+
+    if (length(matches) == 1) {
+      return(matches[1])
+    }
+
+    # Preserve unknown VCE names for the final fallback.
+    x
+  }
+
+  se_type = ""
+  se_args = character(0)
+  se_source = ""
+
+  # Survey and multiple-imputation standard errors depend on additional
+  # design or imputation information. Leave these unknown here.
+  if (se_cmdpart_has_prefix(cmdpart, "svy")) {
+    se_type = "svy"
+  } else if (se_cmdpart_has_prefix(cmdpart, "mi estimate")) {
+    se_type = "mi"
+  } else if (se_cmdpart_has_prefix(cmdpart, "bootstrap")) {
+    se_type = "bootstrap"
+  } else if (se_cmdpart_has_prefix(cmdpart, "jackknife")) {
+    se_type = "jackknife"
+  }
+
+  # First look for an explicit vce() option.
+  if (!nzchar(se_type)) {
+    vce_row = which(opts_df$opt == "vce")
+
+    if (length(vce_row) > 1) {
+      repbox_problem(
+        "Multiple vce() options were found. Use the first one.",
+        "multiple_vce_options",
+        fail_action="msg"
+      )
+      vce_row = vce_row[1]
+    }
+
+    if (length(vce_row) == 1) {
+      se_words = se_stata_words(opts_df$opt_arg[vce_row])
+
+      if (length(se_words) == 0) {
+        se_type = "vce"
+      } else {
+        se_type = canonical_se_type(se_words[1])
+        se_args = se_words[-1]
+        se_source = "vce"
+      }
+    }
+  }
+
+  # Some Stata commands allow robust or cluster as standalone options.
+  if (!nzchar(se_type)) {
+    standalone_types = c(
+      "robust", "cluster", "bootstrap", "jackknife"
+    )
+    standalone_abbr = unlist(
+      abbr.li[standalone_types],
+      use.names=FALSE
+    )
+
+    se_rows = which(opts_df$opt %in% standalone_abbr)
+
+    if (length(se_rows) > 0) {
+      candidate_types = vapply(
+        opts_df$opt[se_rows],
+        canonical_se_type,
+        character(1)
+      )
+
+      # If robust and cluster are both present, cluster determines the
+      # dependence structure of the VCE.
+      if (
+        "cluster" %in% candidate_types &&
+        all(candidate_types %in% c("robust", "cluster"))
+      ) {
+        row = se_rows[which(candidate_types == "cluster")[1]]
+        se_type = "cluster"
+        se_args = se_stata_words(opts_df$opt_arg[row])
+        se_source = "standalone"
+
+      } else if (length(unique(candidate_types)) == 1) {
+        row = se_rows[1]
+        se_type = candidate_types[1]
+        se_args = se_stata_words(opts_df$opt_arg[row])
+        se_source = "standalone"
+
+      } else {
+        se_type = paste0(unique(candidate_types), collapse="+")
+        se_args = opts_df$opt_arg[se_rows]
+
+        repbox_problem(
+          paste0(
+            "Regression options match multiple standard error types: ",
+            se_collapse_words(unique(candidate_types))
+          ),
+          "multiple_se_options",
+          fail_action="msg"
+        )
+      }
+    }
+  }
+
+  # Determine command-specific defaults when no VCE was specified.
+  if (!nzchar(se_type)) {
+    weight_type = tolower(se_cmdpart_first(cmdpart, "weight_type"))
+    has_pweight = !is.na(weight_type) &&
+      weight_type %in% c("pweight", "pw")
+
+    if (has_pweight) {
+      # For standard estimation commands, probability weights imply a
+      # sandwich VCE. Keep the generic robust label because this is not
+      # necessarily identical to unweighted OLS HC1.
+      se_type = "robust"
+      se_source = "pweight"
+
+    } else if (cmd == "ivregress" | cmd=="ivreg") {
+      subcmd = tolower(se_cmdpart_first(cmdpart, "subcmd"))
+
+      if (cmd == "ivreg") {
+        se_type = "unadjusted"
+        se_source = "default"
+      } else {
+        # Sometimes the estimator is parsed as a "pre" or "v" token instead of "subcmd"
+        if (is.na(subcmd)) {
+          cand = tolower(as.character(cmdpart$content[cmdpart$part %in% c("pre", "v")]))
+          found = intersect(c("2sls", "liml", "gmm"), cand)
+          if (length(found) > 0) {
+            subcmd = found[1]
+          }
+        }
+        
+        if (!is.na(subcmd) && subcmd %in% c("2sls", "liml")) {
+          # ivregress 2sls and liml default to vce(unadjusted).
+          se_type = "unadjusted"
+          se_source = "default"
+
+        } else if (!is.na(subcmd) && subcmd == "gmm") {
+          wmatrix_row = which(
+            se_stata_is_abbr(opts_df$opt, "wmatrix", min_chars=2L)
+          )
+
+          if (length(wmatrix_row) > 0) {
+            wmatrix_words = se_stata_words(
+              opts_df$opt_arg[wmatrix_row[1]]
+            )
+
+            if (length(wmatrix_words) == 0) {
+              se_type = "wmatrix"
+            } else {
+              se_type = canonical_se_type(wmatrix_words[1])
+              se_args = wmatrix_words[-1]
+              se_source = "wmatrix"
+            }
+          } else {
+            # The default GMM weighting matrix and VCE are robust.
+            se_type = "robust"
+            se_source = "default"
+          }
+
+        } else {
+          # Default to unadjusted (2SLS) if we cannot identify the subcommand cleanly
+          se_type = "unadjusted"
+          se_source = "default"
+        }
+      }
+    } else {
+      iid_default_cmds = c(
+        "reg","regr","regre","regres",
+        "regress",
+        "areg",
+        "xtreg",
+        "xtivreg",
+        "reghdfe",
+        "ivreghdfe",
+        "ivreg2",
+        "xtivreg2"
+      )
+
+      oim_default_cmds = c(
+        "logit",
+        "logistic",
+        "probit",
+        "clogit",
+        "cloglog",
+        "poisson",
+        "nbreg",
+        "mlogit",
+        "ologit",
+        "oprobit",
+        "tobit",
+        "intreg",
+        "truncreg",
+        "heckman",
+        "glm",
+        "xtlogit",
+        "xtprobit",
+        "xtpoisson",
+        "xtnbreg"
+      )
+
+      if (cmd %in% iid_default_cmds) {
+        # "iid" is used here as the RepDB category for conventional or
+        # model-based VCEs. For panel estimators this need not mean that
+        # all observation-level errors are literally IID.
+        se_type = "iid"
+        se_source = "default"
+
+      } else if (cmd %in% oim_default_cmds) {
+        # Most maximum-likelihood commands default to the inverse observed
+        # information matrix rather than a sandwich VCE.
+        se_type = "oim"
+        se_source = "default"
+
+      } else {
+        # Stata defaults differ across commands. Do not silently assume
+        # conventional standard errors for an unimplemented command.
+        se_type = "default"
+        se_args = paste0("cmd=", cmd)
+      }
+    }
+  }
+
+  has_small = (cmd == "ivregress" | cmd=="ivreg") && any(opts_df$opt == "small")
+  small_arg = if (has_small) "small=true" else character(0)
+
+  # Conventional or model-based VCEs.
+  if (se_type %in% c(
+    "iid", "unadjusted", "conventional", "ols", "oim", "opg"
+  )) {
+    if (length(se_args) == 0) {
+      out_type = se_type
+
+      if (se_type %in% c(
+        "iid", "unadjusted", "conventional", "ols"
+      )) {
+        out_type = "iid"
+      }
+
+      se = tibble(
+        se_category = "iid",
+        se_type = out_type,
+        se_args = se_combine_args(small_arg)
+      )
+      return(se)
+    }
+
+    repbox_problem(
+      paste0(
+        "Problem in parsing se: se_type is ", se_type,
+        " but there are se_args: ",
+        paste0(se_args, collapse=", ")
+      ),
+      "se_args",
+      fail_action="msg"
+    )
+  }
+
+  # Plain heteroskedasticity-robust VCE.
+  if (se_type == "robust") {
+    if (length(se_args) == 0) {
+      xt_robust_cluster_cmds = c(
+        "xtreg",
+        "xtivreg",
+        "xtlogit",
+        "xtprobit",
+        "xtpoisson",
+        "xtnbreg",
+        "xttobit",
+        "xtcloglog",
+        "xtgee"
+      )
+
+      if (cmd %in% xt_robust_cluster_cmds) {
+        # For these xt commands, vce(robust) clusters on the panel
+        # identifier; it is not an observation-level HC estimator.
+        if (!is.na(panelvar) && nzchar(panelvar)) {
+          se = tibble(
+            se_category = "cluster",
+            se_type = "cluster",
+            se_args = se_combine_args(
+              paste0("cluster1=", panelvar),
+              small_arg
+            )
+          )
+          return(se)
+        }
+
+        se_args = "implicit_cluster_var=missing"
+
+      } else if (cmd == "clogit") {
+        group_row = which(
+          se_stata_is_abbr(opts_df$opt, "group", min_chars=2L) |
+            se_stata_is_abbr(opts_df$opt, "strata", min_chars=3L)
+        )
+
+        if (length(group_row) > 0) {
+          groupvar = trimws(opts_df$opt_arg[group_row[1]])
+        } else {
+          groupvar = NA_character_
+        }
+
+        # clogit, vce(robust) clusters on the variable in group().
+        if (!is.na(groupvar) && nzchar(groupvar)) {
+          se = tibble(
+            se_category = "cluster",
+            se_type = "cluster",
+            se_args = se_combine_args(
+              paste0("cluster1=", groupvar),
+              small_arg
+            )
+          )
+          return(se)
+        }
+
+        se_args = "implicit_group_var=missing"
+
+      } else {
+        out_type = "robust"
+
+        # Explicit vce(robust) for regress and areg is the usual HC1
+        # covariance estimator with Stata's finite-sample correction.
+        # A pweight-induced VCE is kept as generic robust.
+        if (
+          cmd %in% c("regress", "areg") &&
+          se_source %in% c("vce", "standalone")
+        ) {
+          out_type = "hc1"
+        }
+
+        se = tibble(
+          se_category = "robust",
+          se_type = out_type,
+          se_args = se_combine_args(small_arg)
+        )
+        return(se)
+      }
+
+    } else {
+      repbox_problem(
+        paste0(
+          "Problem in parsing se: se_type is robust",
+          " but there are se_args: ",
+          paste0(se_args, collapse=", ")
+        ),
+        "se_args",
+        fail_action="msg"
+      )
+    }
+  }
+
+  # Explicit HC estimators.
+  if (se_type %in% c("hc0", "hc1", "hc2", "hc3", "hc4", "hc5")) {
+    arg_lower = tolower(as.character(se_args))
+
+    is_dfadjust = se_stata_is_abbr(
+      arg_lower,
+      "dfadjust",
+      min_chars=3L
+    )
+    is_hansen = se_stata_is_abbr(
+      arg_lower,
+      "hansen",
+      min_chars=3L
+    )
+
+    modifier_args = character(0)
+
+    if (any(is_dfadjust)) {
+      modifier_args = c(modifier_args, "dfadjust=true")
+    }
+    if (any(is_hansen)) {
+      # Stata's Hansen adjustment also incorporates the degrees-of-freedom
+      # adjustment.
+      modifier_args = c(
+        modifier_args,
+        "hansen=true",
+        "dfadjust=true"
+      )
+    }
+
+    modifier_args = unique(modifier_args)
+    cluster_vars = se_args[!(is_dfadjust | is_hansen)]
+    cluster_vars = cluster_vars[
+      !is.na(cluster_vars) & nzchar(cluster_vars)
+    ]
+
+    if (se_type %in% c("hc2", "hc3")) {
+      # xtreg, vce(hc2) and vce(hc3) implicitly use the panel variable
+      # as the clustering variable.
+      if (
+        cmd == "xtreg" &&
+        length(cluster_vars) == 0 &&
+        !is.na(panelvar) &&
+        nzchar(panelvar)
+      ) {
+        cluster_vars = panelvar
+      }
+
+      if (length(cluster_vars) == 1) {
+        # vce(hc2 clustvar) is essentially a CR2 cluster-robust VCE with
+        # a leverage adjustment. vce(hc3 clustvar) is the corresponding
+        # more conservative CR3-style estimator.
+        se = tibble(
+          se_category = "cluster",
+          se_type = se_type,
+          se_args = se_combine_args(
+            paste0("cluster1=", cluster_vars),
+            modifier_args
+          )
+        )
+        return(se)
+      }
+
+      if (length(cluster_vars) == 0 && cmd != "xtreg") {
+        # Without a clustering variable, HC2 and HC3 are ordinary
+        # leverage-adjusted heteroskedasticity-robust estimators.
+        se = tibble(
+          se_category = "robust",
+          se_type = se_type,
+          se_args = se_combine_args(modifier_args)
+        )
+        return(se)
+      }
+
+      if (
+        cmd == "xtreg" &&
+        length(cluster_vars) == 0 &&
+        (is.na(panelvar) || !nzchar(panelvar))
+      ) {
+        se_args = se_combine_args(
+          "implicit_cluster_var=missing",
+          modifier_args
+        )
+      } else if (length(cluster_vars) > 1) {
+        repbox_problem(
+          paste0(
+            se_type,
+            " was parsed with multiple possible cluster variables: ",
+            paste0(cluster_vars, collapse=", ")
+          ),
+          "hc_cluster_args",
+          fail_action="msg"
+        )
+      }
+
+    } else if (length(se_args) == 0) {
+      se = tibble(
+        se_category = "robust",
+        se_type = se_type,
+        se_args = ""
+      )
+      return(se)
+
+    } else {
+      repbox_problem(
+        paste0(
+          "Problem in parsing se: se_type is ", se_type,
+          " but there are se_args: ",
+          paste0(se_args, collapse=", ")
+        ),
+        "se_args",
+        fail_action="msg"
+      )
+    }
+  }
+
+  # Ordinary one-way or multiway cluster-robust VCE.
+  if (se_type == "cluster") {
+    clustervar = as.character(se_args)
+    clustervar = clustervar[
+      !is.na(clustervar) & nzchar(clustervar)
+    ]
+
+    num_clustervar = length(clustervar)
+
+    if (num_clustervar == 0) {
+      repbox_problem(
+        paste0(
+          "We have clustered se of type ", se_type,
+          " but no cluster variables can be found in option."
+        ),
+        "se_cluster_args",
+        fail_action="msg"
+      )
+
+    } else {
+      # Several variables in vce(cluster ...) request multiway clustering,
+      # not clustering on the interaction of those variables.
+      if (num_clustervar == 1) {
+        out_type = "cluster"
+      } else if (num_clustervar == 2) {
+        out_type = "twoway"
+      } else {
+        out_type = "multiway"
+      }
+
+      cluster_args = paste0(
+        "cluster",
+        seq_along(clustervar),
+        "=",
+        clustervar
+      )
+
+      se = tibble(
+        se_category = "cluster",
+        se_type = out_type,
+        se_args = se_combine_args(
+          cluster_args,
+          small_arg
+        )
+      )
+      return(se)
+    }
+  }
+
+  # HAC estimators allow heteroskedasticity and serial correlation.
+  # Preserve the kernel, lag, and bandwidth specification as raw arguments.
+  if (se_type %in% c("hac", "dkraay")) {
+    hacspec = se_collapse_words(se_args)
+
+    if (nzchar(hacspec)) {
+      se = tibble(
+        se_category = "robust",
+        se_type = se_type,
+        se_args = paste0("hacspec=", hacspec)
+      )
+      return(se)
+    }
+  }
+
+  # Ensure that unknown arguments produce one tibble row.
+  se_args = se_collapse_words(se_args)
+
+  repbox_problem(paste0("We have not yet implemented parsing of Stata standard error of type ", se_type,". Set to unknown category."), "unkown_se_type","msg")
+  se = tibble(
+    se_category = "unknown",
+    se_type = se_type,
+    se_args = se_args
+  )
+  return(se)
 }
 ```
-!END_MODIFICATION mrb_code_reg_stata in mrb_stata.R
+!END_MODIFICATION se_stata_to_repdb mrb_se.R

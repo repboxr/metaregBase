@@ -16,14 +16,59 @@ example = function() {
 }
 
 
-mrb_run_stata_script = function(mrb, do_file = mrb$stata_do_file, nostop=TRUE) {
+mrb_run_stata_script = function(mrb, do_file = mrb$stata_do_file, nostop=TRUE, timeout=mrb$stata_timeout) {
   restore.point("mrb_run_stata_script")
   if (is.null(do_file) | !file.exists(do_file)) {
     stop("No existing do file specified.")
   }
+
+  if (is.null(timeout)) timeout = 60*60*2
+
+  # Clear previous timeout problems before the run
+  try(mrb_remove_problems(mrb$project_dir, "mrb_stata_timeout"), silent = TRUE)
+
   library(repboxStata)
-  run_stata_do(do_file, nostop = nostop)
-  #run_stata_do(do_file, nostop = TRUE)
+  res = run_stata_do(do_file, nostop = nostop, timeout = timeout)
+
+  if (isTRUE(res$timeout)) {
+    msg = paste0("Timeout (", timeout, "s) during mrb_run_stata_script for ", basename(do_file), ".")
+
+    last_runid = NA_integer_
+    outdir = file.path(mrb$mrb_dir, "stata_reg_out")
+    if (dir.exists(outdir)) {
+      files = list.files(outdir, pattern="reg_[0-9]+__sb\\.dta")
+      if (length(files) > 0) {
+        runids = as.integer(stringi::stri_match_first_regex(files, "reg_([0-9]+)__sb\\.dta")[,2])
+        last_runid = max(runids, na.rm=TRUE)
+      }
+    }
+
+    cache_dir = file.path(mrb$project_dir, "drf/cached_dta")
+    last_cache = NA_integer_
+    if (dir.exists(cache_dir)) {
+      files = list.files(cache_dir, pattern="[0-9]+_cache\\.dta")
+      if (length(files) > 0) {
+        runids = as.integer(stringi::stri_match_first_regex(files, "([0-9]+)_cache\\.dta")[,2])
+        last_cache = max(runids, na.rm=TRUE)
+      }
+    }
+
+    extra = ""
+    if (!is.na(last_runid)) {
+      extra = paste0(" Last generated runid in stata_reg_out is ", last_runid, ".")
+    }
+    if (!is.na(last_cache)) {
+      extra = paste0(extra, " Last generated cache in drf/cached_dta is ", last_cache, ".")
+    }
+
+    repboxUtils::repbox_problem(
+      msg = paste0(msg, extra),
+      type = "mrb_stata_timeout",
+      project_dir = mrb$project_dir,
+      fail_action = "msg"
+    )
+  }
+
   mrb
 }
 

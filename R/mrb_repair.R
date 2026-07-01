@@ -327,5 +327,5 @@ mrb_create_cache_at_runid = function(mrb=mrb_init(project_dir), cache_runid, ove
   metaregBase:::drf_code_write(sc_df, script_file)
 
   cat("\nRunning Stata repair script to generate cache at runid", cache_runid, "...\n")
-  mrb_run_stata_script(mrb, do_file = script_file)
+  mrb_run_stata_script(mrb, do_file = script_file, timeout = mrb$stata_timeout)
 }

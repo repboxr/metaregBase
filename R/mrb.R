@@ -46,7 +46,7 @@ mrb_run_all = function(project_dir, drf=repboxDRF::drf_load(project_dir,apply_ca
   mrb
 }
 
-mrb_init = function(project_dir=drf$project_dir, drf=NULL,use_mcache=TRUE, mcache_files = use_mcache, mcache_runid=use_mcache, mcache_clear = TRUE, with_try=TRUE, custom_cache_min_score=100,custom_max_caches=20) {
+mrb_init = function(project_dir=drf$project_dir, drf=NULL,use_mcache=TRUE, mcache_files = use_mcache, mcache_runid=use_mcache, mcache_clear = TRUE, with_try=TRUE, custom_cache_min_score=100,custom_max_caches=20, stata_timeout=60*60*2) {
   restore.point("mrb_init")
   project_dir = normalizePath(project_dir)
   if (is.null(drf)) {
@@ -66,7 +66,34 @@ mrb_init = function(project_dir=drf$project_dir, drf=NULL,use_mcache=TRUE, mcach
     reg_runids = unique(drf$path_df$pid),
     with_try = with_try,
     custom_cache_min_score = custom_cache_min_score,
-    custom_max_caches = custom_max_caches
+    custom_max_caches = custom_max_caches,
+    stata_timeout = stata_timeout
   )
   mrb
+}
+
+mrb_remove_problems = function(project_dir, types) {
+  problem_dir = file.path(project_dir, "problems")
+  if (!dir.exists(problem_dir)) return(invisible(FALSE))
+
+  prob_files = list.files(problem_dir, pattern="\\.Rds$", full.names = TRUE)
+  removed = FALSE
+  for (file in prob_files) {
+    prob = try(readRDS(file), silent = TRUE)
+    if (!inherits(prob, "try-error") && is.list(prob)) {
+      ptype = if (!is.null(prob$type)) prob$type else prob$problem_type
+      if (!is.null(ptype) && ptype %in% types) {
+        file.remove(file)
+        removed = TRUE
+      }
+    }
+  }
+
+  # Also delete the aggregated repdb problem file so it regenerates cleanly
+  if (removed) {
+    repdb_prob = file.path(project_dir, "repdb", "problem.Rds")
+    if (file.exists(repdb_prob)) file.remove(repdb_prob)
+  }
+
+  invisible(TRUE)
 }

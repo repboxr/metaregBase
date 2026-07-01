@@ -16,6 +16,9 @@ expand_stata_var_patterns = function(pattern, cols, unlist=TRUE, uses_xi=FALSE) 
   # e.g. L(0/3).x1 -> x1 L1.x1 L2.x1 L3.x1
   pattern = expand_stata_ts_ranges(pattern)
 
+  # Distribute parenthesis lists like c.x1##i.(i1 i2) -> c.x1##i.i1 c.x1##i.i2
+  pattern = unlist(lapply(pattern, distribute_stata_parens), use.names=FALSE)
+
   if (uses_xi) {
     if (!is.null(pattern)) {
       pattern = stringi::stri_replace_all_fixed(pattern, "|","#")
@@ -230,6 +233,22 @@ cmdpart_expand_vars = function(cmdpart, data_cols) {
   v_df = cmdpart[v_rows, ]
   non_v_df = cmdpart[-v_rows, ]
 
+  # Reconstruct parenthetical tokens broken by spaces (e.g. c.x##i.(a b))
+  v_df = v_df %>%
+    dplyr::group_by(runid, parent, part, tag) %>%
+    dplyr::mutate(
+      open_p = stringi::stri_count_fixed(content, "("),
+      close_p = stringi::stri_count_fixed(content, ")"),
+      depth = cumsum(open_p - close_p),
+      group = cumsum(dplyr::lag(depth, default = 0) == 0)
+    ) %>%
+    dplyr::group_by(runid, parent, part, tag, group) %>%
+    dplyr::summarize(
+      content = paste(content, collapse = " "),
+      .groups = "drop"
+    ) %>%
+    dplyr::select(runid, parent, part, tag, content)
+
   expanded_list = lapply(seq_len(nrow(v_df)), function(i) {
     row_data = v_df[i, ]
     expanded_content = expand_stata_var_patterns(row_data$content, data_cols, unlist=TRUE, uses_xi=uses_xi)
@@ -253,15 +272,13 @@ cmdpart_expand_vars = function(cmdpart, data_cols) {
 
   # Re-calculate the counter correctly for each tag within the variable part
   expanded_v_df = expanded_v_df %>%
-    group_by(runid, parent, part, tag) %>%
-    mutate(counter = seq_len(n())) %>%
-    ungroup()
+    dplyr::group_by(runid, parent, part, tag) %>%
+    dplyr::mutate(counter = seq_len(dplyr::n())) %>%
+    dplyr::ungroup()
 
   # Rebind and sort safely
   res = bind_rows(non_v_df, expanded_v_df) %>%
-    arrange(runid, parent, part, counter)
-
-  # If some
+    dplyr::arrange(runid, parent, part, counter)
 
   return(res)
 }
@@ -668,5 +685,60 @@ vi_add_ia_type = function(vi) {
       )
     ) %>%
     ungroup()
+}
+
+
+#' Distribute Stata parenthetical factor and interaction lists
+#' e.g. c.x1##i.(i1 i2) -> c.x1##i.i1 c.x1##i.i2
+distribute_stata_parens = function(token) {
+  if (!has.substr(token, "(")) return(token)
+
+  # Protect time-series ranges (e.g. L(0/3).x1, F(1-4).y) from being fractured
+  if (stringi::stri_detect_regex(token, "[A-Za-z.]+\\([0-9]+[/-][0-9]+\\)\\.")) return(token)
+
+  # Mask ib(...) so its parentheses aren't distributed
+  masked = stringi::stri_replace_all_regex(
+    token,
+    "(?i)\\bib\\((first|last|freq|default|none|[0-9]+)\\)\\.",
+    "ib__OPEN__$1__CLOSE__."
+  )
+
+  dist_helper = function(tok) {
+    if (!has.substr(tok, "(")) return(tok)
+
+    seps = stringi::stri_extract_all_regex(tok, "#+")[[1]]
+    if (length(seps) == 1 && is.na(seps)) seps = character(0)
+
+    parts = stringi::stri_split_regex(tok, "#+")[[1]]
+
+    if (length(seps) == 0) {
+      mat = stringi::stri_match_first_regex(tok, "^(.*)\\(([^)]+)\\)(.*)$")
+      if (is.na(mat[1,1])) return(tok)
+
+      prefix = mat[1,2]
+      inside = mat[1,3]
+      suffix = mat[1,4]
+
+      inner_parts = strsplit(trimws(inside), "\\s+")[[1]]
+      return(paste0(prefix, inner_parts, suffix))
+    }
+
+    expanded_parts = lapply(parts, dist_helper)
+    grid = expand.grid(expanded_parts, stringsAsFactors = FALSE)
+
+    res = grid[[1]]
+    for (j in seq_along(seps)) {
+      res = paste0(res, seps[j], grid[[j+1]])
+    }
+    return(res)
+  }
+
+  res = dist_helper(masked)
+
+  # Unmask
+  res = stringi::stri_replace_all_fixed(res, "__OPEN__", "(")
+  res = stringi::stri_replace_all_fixed(res, "__CLOSE__", ")")
+
+  return(res)
 }
 
