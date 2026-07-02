@@ -288,43 +288,53 @@ se_stata_to_repdb = function(cmd, opts_df = cmdpart_to_opts_df(cmdpart), cmdpart
     } else if (cmd == "ivregress" | cmd=="ivreg") {
       subcmd = tolower(se_cmdpart_first(cmdpart, "subcmd"))
 
-      if (!is.na(subcmd) && subcmd %in% c("2sls", "liml")) {
-        # ivregress 2sls and liml default to vce(unadjusted).
+      if (cmd == "ivreg") {
         se_type = "unadjusted"
         se_source = "default"
-
-      } else if (!is.na(subcmd) && subcmd == "gmm") {
-        wmatrix_row = which(
-          se_stata_is_abbr(opts_df$opt, "wmatrix", min_chars=2L)
-        )
-
-        if (length(wmatrix_row) > 0) {
-          wmatrix_words = se_stata_words(
-            opts_df$opt_arg[wmatrix_row[1]]
-          )
-
-          if (length(wmatrix_words) == 0) {
-            se_type = "wmatrix"
-          } else {
-            # For ivregress gmm without vce(), the VCE type follows the
-            # type specified in wmatrix().
-            se_type = canonical_se_type(wmatrix_words[1])
-            se_args = wmatrix_words[-1]
-            se_source = "wmatrix"
+      } else {
+        # Sometimes the estimator is parsed as a "pre" or "v" token instead of "subcmd"
+        if (is.na(subcmd)) {
+          cand = tolower(as.character(cmdpart$content[cmdpart$part %in% c("pre", "v")]))
+          found = intersect(c("2sls", "liml", "gmm"), cand)
+          if (length(found) > 0) {
+            subcmd = found[1]
           }
-        } else {
-          # The default GMM weighting matrix and VCE are robust.
-          se_type = "robust"
-          se_source = "default"
         }
 
-      } else {
-        # The default differs between 2SLS/LIML and GMM, so the ivregress
-        # subcommand is required for a reliable classification.
-        se_type = "default"
-        se_args = "cmd=ivregress"
-      }
+        if (!is.na(subcmd) && subcmd %in% c("2sls", "liml")) {
+          # ivregress 2sls and liml default to vce(unadjusted).
+          se_type = "unadjusted"
+          se_source = "default"
 
+        } else if (!is.na(subcmd) && subcmd == "gmm") {
+          wmatrix_row = which(
+            se_stata_is_abbr(opts_df$opt, "wmatrix", min_chars=2L)
+          )
+
+          if (length(wmatrix_row) > 0) {
+            wmatrix_words = se_stata_words(
+              opts_df$opt_arg[wmatrix_row[1]]
+            )
+
+            if (length(wmatrix_words) == 0) {
+              se_type = "wmatrix"
+            } else {
+              se_type = canonical_se_type(wmatrix_words[1])
+              se_args = wmatrix_words[-1]
+              se_source = "wmatrix"
+            }
+          } else {
+            # The default GMM weighting matrix and VCE are robust.
+            se_type = "robust"
+            se_source = "default"
+          }
+
+        } else {
+          # Default to unadjusted (2SLS) if we cannot identify the subcommand cleanly
+          se_type = "unadjusted"
+          se_source = "default"
+        }
+      }
     } else {
       iid_default_cmds = c(
         "reg","regr","regre","regres",

@@ -1,640 +1,385 @@
-This looks like a great catch! The default parsing for `ivregress` commands (which require `2sls`, `liml`, or `gmm` as the first token rather than an option) and `ivreg` (which defaults to 2SLS) naturally falls back to `default` when `subcmd` cannot be reliably found by `cmdparts`.
+An excellent observation. The original Stata reproduction run naturally executes within the `mod` directory where all original (`org`) files—including custom Stata additions like `.ado`, `.mata`, or `.scheme`—have been copied, and it correctly injects `adopath` statements to detect them. 
 
-By manually interrogating the `pre` and `v` tokens for the specific `ivregress` subcommands and handling `ivreg` separately, we gracefully bypass the missing mappings and correctly assign the `unadjusted` / `wmatrix` defaults to suppress the warning without losing fidelity.
+However, during the `metaregBase` DRF replication step (`mrb_stata.do`), the execution takes place without this context, causing any regression utilizing a custom program to fail. 
 
-Here are the changes applied directly to `se_stata_to_repdb` within `metaregBase/R/mrb_se.R`:
+To fix this properly and keep the DRF fully self-contained:
+1. We will introduce `drf_copy_ado_files()` during DRF creation to systematically pull any `.ado`, `.mata`, `.mlib`, `.scheme`, `.style` (and related binaries) from `mod` into a unified `drf/ado` directory.
+2. We will add a new helper `mrb_adopath_injection_code()` that maps these custom packages alongside the standard `repboxStata` global directories.
+3. We will prepend this snippet to all downstream DRF Stata scripts: `mrb_stata.do` (base runner), `mrb_repair.do` (cache repair), and `tdp_*.do` (test data paths).
 
-!MODIFICATION se_stata_to_repdb mrb_se.R
+Here are the required modifications:
+
+!MODIFICATION drf_copy_ado_files in drf_stata_data.R
 scope = "function"
-file = "/home/rstudio/repbox/metaregBase/R/mrb_se.R"
-function_name = "se_stata_to_repdb"
-description = "Handle default SE parsing for ivregress and ivreg correctly to avoid 'default' warning"
+file = "/home/rstudio/repbox/repboxDRF/R/drf_stata_data.R"
+insert_bottom = true
+description = "Add drf_copy_ado_files to copy ado and other custom Stata files to drf/ado."
 ---
 ```r
-se_stata_to_repdb = function(cmd, opts_df = cmdpart_to_opts_df(cmdpart), cmdpart=NULL, panelvar=NA_character_) {
+drf_copy_ado_files = function(project_dir) {
+  restore.point("drf_copy_ado_files")
+  src_dir = file.path(project_dir, "mod")
+  dest_dir = file.path(project_dir, "drf", "ado")
 
-  restore.point("se_stata_to_repdb")
+  if (!dir.exists(src_dir)) return(invisible(NULL))
 
-  cmd = tolower(trimws(cmd))
+  # File extensions commonly used for Stata programs, libraries, schemes
+  exts = c("ado", "mata", "mlib", "scheme", "style", "sthlp", "hlp", "plugin", "dll", "so")
+  pattern = paste0("\\.(", paste(exts, collapse = "|"), ")$")
 
-  if (is.null(opts_df) || NROW(opts_df) == 0) {
-    opts_df = tibble(
-      opt = character(0),
-      opt_arg = character(0)
-    )
-  }
+  files = list.files(src_dir, pattern = pattern, full.names = FALSE, recursive = TRUE, ignore.case = TRUE)
 
-  if (!"opt" %in% names(opts_df)) {
-    opts_df$opt = character(NROW(opts_df))
-  }
-  if (!"opt_arg" %in% names(opts_df)) {
-    opts_df$opt_arg = rep(NA_character_, NROW(opts_df))
-  }
-
-  opts_df$opt = tolower(trimws(as.character(opts_df$opt)))
-  opts_df$opt_arg = as.character(opts_df$opt_arg)
-
-  # newey reports Newey-West HAC standard errors. lag(0) corresponds
-  # to heteroskedasticity-robust standard errors without serial lags.
-  if (cmd == "newey") {
-    lag_row = which(se_stata_is_abbr(opts_df$opt, "lag", min_chars=3L))
-
-    if (length(lag_row) == 1) {
-      lag = as_integer(opts_df$opt_arg[lag_row])
-    } else {
-      lag = NA_integer_
-    }
-
-    se = tibble(
-      se_category = "robust",
-      se_type = "nw",
-      se_args = paste0("lag=", lag)
-    )
-    return(se)
-  }
-
-  abbr.li = list(
-    robust = c("robust", "robus", "robu", "rob", "ro", "r"),
-    unadjusted = c(
-      "unadjusted", "unadjuste", "unadjust", "unadjus",
-      "unadju", "unadj", "unad", "una", "un"
-    ),
-    conventional = c(
-      "conventional", "conventiona", "convention", "conventio",
-      "conventi", "convent", "conven", "conve", "conv"
-    ),
-    iid = "iid",
-    ols = "ols",
-    oim = "oim",
-    opg = "opg",
-    cluster = c("cluster", "cluste", "clust", "clus", "clu", "cl"),
-    bootstrap = c(
-      "bootstrap", "bootstra", "bootstr", "bootst", "boots", "boot"
-    ),
-    jackknife = c("jackknife", "jackknif", "jack"),
-    hc0 = "hc0",
-    hc1 = "hc1",
-    hc2 = "hc2",
-    hc3 = "hc3",
-    hc4 = "hc4",
-    hc5 = "hc5",
-    hac = "hac",
-    dkraay = "dkraay"
-  )
-
-  canonical_se_type = function(x) {
-    if (length(x) == 0 || is.na(x[1])) {
-      return("")
-    }
-
-    x = tolower(trimws(as.character(x[1])))
-
-    matches = names(abbr.li)[vapply(
-      abbr.li,
-      function(values) x %in% values,
-      logical(1)
-    )]
-
-    if (length(matches) == 1) {
-      return(matches[1])
-    }
-
-    # Preserve unknown VCE names for the final fallback.
-    x
-  }
-
-  se_type = ""
-  se_args = character(0)
-  se_source = ""
-
-  # Survey and multiple-imputation standard errors depend on additional
-  # design or imputation information. Leave these unknown here.
-  if (se_cmdpart_has_prefix(cmdpart, "svy")) {
-    se_type = "svy"
-  } else if (se_cmdpart_has_prefix(cmdpart, "mi estimate")) {
-    se_type = "mi"
-  } else if (se_cmdpart_has_prefix(cmdpart, "bootstrap")) {
-    se_type = "bootstrap"
-  } else if (se_cmdpart_has_prefix(cmdpart, "jackknife")) {
-    se_type = "jackknife"
-  }
-
-  # First look for an explicit vce() option.
-  if (!nzchar(se_type)) {
-    vce_row = which(opts_df$opt == "vce")
-
-    if (length(vce_row) > 1) {
-      repbox_problem(
-        "Multiple vce() options were found. Use the first one.",
-        "multiple_vce_options",
-        fail_action="msg"
-      )
-      vce_row = vce_row[1]
-    }
-
-    if (length(vce_row) == 1) {
-      se_words = se_stata_words(opts_df$opt_arg[vce_row])
-
-      if (length(se_words) == 0) {
-        se_type = "vce"
-      } else {
-        se_type = canonical_se_type(se_words[1])
-        se_args = se_words[-1]
-        se_source = "vce"
-      }
+  if (length(files) > 0) {
+    for (f in files) {
+      src_file = file.path(src_dir, f)
+      dest_file = file.path(dest_dir, f)
+      dir.create(dirname(dest_file), recursive = TRUE, showWarnings = FALSE)
+      file.copy(src_file, dest_file, overwrite = TRUE)
     }
   }
-
-  # Some Stata commands allow robust or cluster as standalone options.
-  if (!nzchar(se_type)) {
-    standalone_types = c(
-      "robust", "cluster", "bootstrap", "jackknife"
-    )
-    standalone_abbr = unlist(
-      abbr.li[standalone_types],
-      use.names=FALSE
-    )
-
-    se_rows = which(opts_df$opt %in% standalone_abbr)
-
-    if (length(se_rows) > 0) {
-      candidate_types = vapply(
-        opts_df$opt[se_rows],
-        canonical_se_type,
-        character(1)
-      )
-
-      # If robust and cluster are both present, cluster determines the
-      # dependence structure of the VCE.
-      if (
-        "cluster" %in% candidate_types &&
-        all(candidate_types %in% c("robust", "cluster"))
-      ) {
-        row = se_rows[which(candidate_types == "cluster")[1]]
-        se_type = "cluster"
-        se_args = se_stata_words(opts_df$opt_arg[row])
-        se_source = "standalone"
-
-      } else if (length(unique(candidate_types)) == 1) {
-        row = se_rows[1]
-        se_type = candidate_types[1]
-        se_args = se_stata_words(opts_df$opt_arg[row])
-        se_source = "standalone"
-
-      } else {
-        se_type = paste0(unique(candidate_types), collapse="+")
-        se_args = opts_df$opt_arg[se_rows]
-
-        repbox_problem(
-          paste0(
-            "Regression options match multiple standard error types: ",
-            se_collapse_words(unique(candidate_types))
-          ),
-          "multiple_se_options",
-          fail_action="msg"
-        )
-      }
-    }
-  }
-
-  # Determine command-specific defaults when no VCE was specified.
-  if (!nzchar(se_type)) {
-    weight_type = tolower(se_cmdpart_first(cmdpart, "weight_type"))
-    has_pweight = !is.na(weight_type) &&
-      weight_type %in% c("pweight", "pw")
-
-    if (has_pweight) {
-      # For standard estimation commands, probability weights imply a
-      # sandwich VCE. Keep the generic robust label because this is not
-      # necessarily identical to unweighted OLS HC1.
-      se_type = "robust"
-      se_source = "pweight"
-
-    } else if (cmd == "ivregress" | cmd=="ivreg") {
-      subcmd = tolower(se_cmdpart_first(cmdpart, "subcmd"))
-
-      if (cmd == "ivreg") {
-        se_type = "unadjusted"
-        se_source = "default"
-      } else {
-        # Sometimes the estimator is parsed as a "pre" or "v" token instead of "subcmd"
-        if (is.na(subcmd)) {
-          cand = tolower(as.character(cmdpart$content[cmdpart$part %in% c("pre", "v")]))
-          found = intersect(c("2sls", "liml", "gmm"), cand)
-          if (length(found) > 0) {
-            subcmd = found[1]
-          }
-        }
-        
-        if (!is.na(subcmd) && subcmd %in% c("2sls", "liml")) {
-          # ivregress 2sls and liml default to vce(unadjusted).
-          se_type = "unadjusted"
-          se_source = "default"
-
-        } else if (!is.na(subcmd) && subcmd == "gmm") {
-          wmatrix_row = which(
-            se_stata_is_abbr(opts_df$opt, "wmatrix", min_chars=2L)
-          )
-
-          if (length(wmatrix_row) > 0) {
-            wmatrix_words = se_stata_words(
-              opts_df$opt_arg[wmatrix_row[1]]
-            )
-
-            if (length(wmatrix_words) == 0) {
-              se_type = "wmatrix"
-            } else {
-              se_type = canonical_se_type(wmatrix_words[1])
-              se_args = wmatrix_words[-1]
-              se_source = "wmatrix"
-            }
-          } else {
-            # The default GMM weighting matrix and VCE are robust.
-            se_type = "robust"
-            se_source = "default"
-          }
-
-        } else {
-          # Default to unadjusted (2SLS) if we cannot identify the subcommand cleanly
-          se_type = "unadjusted"
-          se_source = "default"
-        }
-      }
-    } else {
-      iid_default_cmds = c(
-        "reg","regr","regre","regres",
-        "regress",
-        "areg",
-        "xtreg",
-        "xtivreg",
-        "reghdfe",
-        "ivreghdfe",
-        "ivreg2",
-        "xtivreg2"
-      )
-
-      oim_default_cmds = c(
-        "logit",
-        "logistic",
-        "probit",
-        "clogit",
-        "cloglog",
-        "poisson",
-        "nbreg",
-        "mlogit",
-        "ologit",
-        "oprobit",
-        "tobit",
-        "intreg",
-        "truncreg",
-        "heckman",
-        "glm",
-        "xtlogit",
-        "xtprobit",
-        "xtpoisson",
-        "xtnbreg"
-      )
-
-      if (cmd %in% iid_default_cmds) {
-        # "iid" is used here as the RepDB category for conventional or
-        # model-based VCEs. For panel estimators this need not mean that
-        # all observation-level errors are literally IID.
-        se_type = "iid"
-        se_source = "default"
-
-      } else if (cmd %in% oim_default_cmds) {
-        # Most maximum-likelihood commands default to the inverse observed
-        # information matrix rather than a sandwich VCE.
-        se_type = "oim"
-        se_source = "default"
-
-      } else {
-        # Stata defaults differ across commands. Do not silently assume
-        # conventional standard errors for an unimplemented command.
-        se_type = "default"
-        se_args = paste0("cmd=", cmd)
-      }
-    }
-  }
-
-  has_small = (cmd == "ivregress" | cmd=="ivreg") && any(opts_df$opt == "small")
-  small_arg = if (has_small) "small=true" else character(0)
-
-  # Conventional or model-based VCEs.
-  if (se_type %in% c(
-    "iid", "unadjusted", "conventional", "ols", "oim", "opg"
-  )) {
-    if (length(se_args) == 0) {
-      out_type = se_type
-
-      if (se_type %in% c(
-        "iid", "unadjusted", "conventional", "ols"
-      )) {
-        out_type = "iid"
-      }
-
-      se = tibble(
-        se_category = "iid",
-        se_type = out_type,
-        se_args = se_combine_args(small_arg)
-      )
-      return(se)
-    }
-
-    repbox_problem(
-      paste0(
-        "Problem in parsing se: se_type is ", se_type,
-        " but there are se_args: ",
-        paste0(se_args, collapse=", ")
-      ),
-      "se_args",
-      fail_action="msg"
-    )
-  }
-
-  # Plain heteroskedasticity-robust VCE.
-  if (se_type == "robust") {
-    if (length(se_args) == 0) {
-      xt_robust_cluster_cmds = c(
-        "xtreg",
-        "xtivreg",
-        "xtlogit",
-        "xtprobit",
-        "xtpoisson",
-        "xtnbreg",
-        "xttobit",
-        "xtcloglog",
-        "xtgee"
-      )
-
-      if (cmd %in% xt_robust_cluster_cmds) {
-        # For these xt commands, vce(robust) clusters on the panel
-        # identifier; it is not an observation-level HC estimator.
-        if (!is.na(panelvar) && nzchar(panelvar)) {
-          se = tibble(
-            se_category = "cluster",
-            se_type = "cluster",
-            se_args = se_combine_args(
-              paste0("cluster1=", panelvar),
-              small_arg
-            )
-          )
-          return(se)
-        }
-
-        se_args = "implicit_cluster_var=missing"
-
-      } else if (cmd == "clogit") {
-        group_row = which(
-          se_stata_is_abbr(opts_df$opt, "group", min_chars=2L) |
-            se_stata_is_abbr(opts_df$opt, "strata", min_chars=3L)
-        )
-
-        if (length(group_row) > 0) {
-          groupvar = trimws(opts_df$opt_arg[group_row[1]])
-        } else {
-          groupvar = NA_character_
-        }
-
-        # clogit, vce(robust) clusters on the variable in group().
-        if (!is.na(groupvar) && nzchar(groupvar)) {
-          se = tibble(
-            se_category = "cluster",
-            se_type = "cluster",
-            se_args = se_combine_args(
-              paste0("cluster1=", groupvar),
-              small_arg
-            )
-          )
-          return(se)
-        }
-
-        se_args = "implicit_group_var=missing"
-
-      } else {
-        out_type = "robust"
-
-        # Explicit vce(robust) for regress and areg is the usual HC1
-        # covariance estimator with Stata's finite-sample correction.
-        # A pweight-induced VCE is kept as generic robust.
-        if (
-          cmd %in% c("regress", "areg") &&
-          se_source %in% c("vce", "standalone")
-        ) {
-          out_type = "hc1"
-        }
-
-        se = tibble(
-          se_category = "robust",
-          se_type = out_type,
-          se_args = se_combine_args(small_arg)
-        )
-        return(se)
-      }
-
-    } else {
-      repbox_problem(
-        paste0(
-          "Problem in parsing se: se_type is robust",
-          " but there are se_args: ",
-          paste0(se_args, collapse=", ")
-        ),
-        "se_args",
-        fail_action="msg"
-      )
-    }
-  }
-
-  # Explicit HC estimators.
-  if (se_type %in% c("hc0", "hc1", "hc2", "hc3", "hc4", "hc5")) {
-    arg_lower = tolower(as.character(se_args))
-
-    is_dfadjust = se_stata_is_abbr(
-      arg_lower,
-      "dfadjust",
-      min_chars=3L
-    )
-    is_hansen = se_stata_is_abbr(
-      arg_lower,
-      "hansen",
-      min_chars=3L
-    )
-
-    modifier_args = character(0)
-
-    if (any(is_dfadjust)) {
-      modifier_args = c(modifier_args, "dfadjust=true")
-    }
-    if (any(is_hansen)) {
-      # Stata's Hansen adjustment also incorporates the degrees-of-freedom
-      # adjustment.
-      modifier_args = c(
-        modifier_args,
-        "hansen=true",
-        "dfadjust=true"
-      )
-    }
-
-    modifier_args = unique(modifier_args)
-    cluster_vars = se_args[!(is_dfadjust | is_hansen)]
-    cluster_vars = cluster_vars[
-      !is.na(cluster_vars) & nzchar(cluster_vars)
-    ]
-
-    if (se_type %in% c("hc2", "hc3")) {
-      # xtreg, vce(hc2) and vce(hc3) implicitly use the panel variable
-      # as the clustering variable.
-      if (
-        cmd == "xtreg" &&
-        length(cluster_vars) == 0 &&
-        !is.na(panelvar) &&
-        nzchar(panelvar)
-      ) {
-        cluster_vars = panelvar
-      }
-
-      if (length(cluster_vars) == 1) {
-        # vce(hc2 clustvar) is essentially a CR2 cluster-robust VCE with
-        # a leverage adjustment. vce(hc3 clustvar) is the corresponding
-        # more conservative CR3-style estimator.
-        se = tibble(
-          se_category = "cluster",
-          se_type = se_type,
-          se_args = se_combine_args(
-            paste0("cluster1=", cluster_vars),
-            modifier_args
-          )
-        )
-        return(se)
-      }
-
-      if (length(cluster_vars) == 0 && cmd != "xtreg") {
-        # Without a clustering variable, HC2 and HC3 are ordinary
-        # leverage-adjusted heteroskedasticity-robust estimators.
-        se = tibble(
-          se_category = "robust",
-          se_type = se_type,
-          se_args = se_combine_args(modifier_args)
-        )
-        return(se)
-      }
-
-      if (
-        cmd == "xtreg" &&
-        length(cluster_vars) == 0 &&
-        (is.na(panelvar) || !nzchar(panelvar))
-      ) {
-        se_args = se_combine_args(
-          "implicit_cluster_var=missing",
-          modifier_args
-        )
-      } else if (length(cluster_vars) > 1) {
-        repbox_problem(
-          paste0(
-            se_type,
-            " was parsed with multiple possible cluster variables: ",
-            paste0(cluster_vars, collapse=", ")
-          ),
-          "hc_cluster_args",
-          fail_action="msg"
-        )
-      }
-
-    } else if (length(se_args) == 0) {
-      se = tibble(
-        se_category = "robust",
-        se_type = se_type,
-        se_args = ""
-      )
-      return(se)
-
-    } else {
-      repbox_problem(
-        paste0(
-          "Problem in parsing se: se_type is ", se_type,
-          " but there are se_args: ",
-          paste0(se_args, collapse=", ")
-        ),
-        "se_args",
-        fail_action="msg"
-      )
-    }
-  }
-
-  # Ordinary one-way or multiway cluster-robust VCE.
-  if (se_type == "cluster") {
-    clustervar = as.character(se_args)
-    clustervar = clustervar[
-      !is.na(clustervar) & nzchar(clustervar)
-    ]
-
-    num_clustervar = length(clustervar)
-
-    if (num_clustervar == 0) {
-      repbox_problem(
-        paste0(
-          "We have clustered se of type ", se_type,
-          " but no cluster variables can be found in option."
-        ),
-        "se_cluster_args",
-        fail_action="msg"
-      )
-
-    } else {
-      # Several variables in vce(cluster ...) request multiway clustering,
-      # not clustering on the interaction of those variables.
-      if (num_clustervar == 1) {
-        out_type = "cluster"
-      } else if (num_clustervar == 2) {
-        out_type = "twoway"
-      } else {
-        out_type = "multiway"
-      }
-
-      cluster_args = paste0(
-        "cluster",
-        seq_along(clustervar),
-        "=",
-        clustervar
-      )
-
-      se = tibble(
-        se_category = "cluster",
-        se_type = out_type,
-        se_args = se_combine_args(
-          cluster_args,
-          small_arg
-        )
-      )
-      return(se)
-    }
-  }
-
-  # HAC estimators allow heteroskedasticity and serial correlation.
-  # Preserve the kernel, lag, and bandwidth specification as raw arguments.
-  if (se_type %in% c("hac", "dkraay")) {
-    hacspec = se_collapse_words(se_args)
-
-    if (nzchar(hacspec)) {
-      se = tibble(
-        se_category = "robust",
-        se_type = se_type,
-        se_args = paste0("hacspec=", hacspec)
-      )
-      return(se)
-    }
-  }
-
-  # Ensure that unknown arguments produce one tibble row.
-  se_args = se_collapse_words(se_args)
-
-  repbox_problem(paste0("We have not yet implemented parsing of Stata standard error of type ", se_type,". Set to unknown category."), "unkown_se_type","msg")
-  se = tibble(
-    se_category = "unknown",
-    se_type = se_type,
-    se_args = se_args
-  )
-  return(se)
+  invisible(NULL)
 }
 ```
-!END_MODIFICATION se_stata_to_repdb mrb_se.R
+!END_MODIFICATION drf_copy_ado_files in drf_stata_data.R
+
+!MODIFICATION drf_create in drf_create.R
+scope = "function"
+file = "/home/rstudio/repbox/repboxDRF/R/drf_create.R"
+function_name = "drf_create"
+description = "Update drf_create to trigger the copying of ado files to drf/ado."
+---
+```r
+drf_create = function(project_dir, parcels=list(), acmds = drf_acmds(), overwrite=FALSE, move_from_mod=TRUE) {
+  restore.point("drf_create")
+
+  if (!overwrite & has_drf(project_dir)) {
+    return(NULL)
+  }
+  project_dir = normalizePath(project_dir)
+
+  drf = list(project_dir = project_dir, drf_dir = file.path(project_dir, "drf"), parcels = parcels, acmds=acmds)
+  drf$parcels = repboxDB::repdb_load_parcels(project_dir, "stata_run_cmd", parcels=parcels)
+
+
+  run_df = drf_make_run_df(drf=drf,add_rcode = FALSE)
+  if (is.null(run_df)) {
+    cat(("\nNo stata_run_cmd parcel exists, cannot create drf.\n"))
+    return(NULL)
+  }
+
+  drf$run_df = run_df
+
+  drf = drf_add_scalar_map(drf)
+  drf = drf_add_dep_df(drf)
+
+  drf$pids = drf_find_pid(drf$run_df, drf$acmds)
+
+  drf$path_df = drf_make_paths(drf)
+  drf$runids = drf_runids(drf)
+
+  drf_copy_org_data(drf=drf, move_from_mod=move_from_mod)
+  drf_copy_ado_files(project_dir = project_dir)
+
+  drf = drf_add_loop_ignore(drf)
+
+  # Incorporate Caches cleanly
+  drf = drf_import_stata_caches(drf, move = move_from_mod)
+  drf = drf_apply_caches(drf)
+
+  # Save path_df index AFTER caches have definitively resolved the shortest paths
+  drf$index_df = drf_save_path_df(drf=drf)
+
+
+  drf = drf_make_r_trans_parcel(drf)
+
+  invisible(drf)
+}
+```
+!END_MODIFICATION drf_create in drf_create.R
+
+
+!MODIFICATION drf_code_write in mrb_stata.R
+scope = "function"
+file = "/home/rstudio/repbox/metaregBase/R/mrb_stata.R"
+function_name = "drf_code_write"
+description = "Update drf_code_write to accept header_code."
+---
+```r
+drf_code_write = function(code_df, file, header_code = "") {
+  restore.point("drf_code_write")
+  dir = dirname(file)
+  if (!dir.exists(dir)) dir.create(dir, recursive = TRUE)
+  if (has_col(code_df,"scalar_stata_code")) {
+    code_df$pre = paste0(na.val(code_df$scalar_stata_code,""),code_df$pre)
+  }
+  txt = paste0(code_df$pre, code_df$code, code_df$post, collapse="\n")
+  if (nzchar(header_code)) {
+    txt = paste0(header_code, "\n", txt)
+  }
+  tryCatch(write_utf8(txt, file), error = function(e) writeLines(enc2utf8(txt), file))
+  invisible(txt)
+}
+```
+!END_MODIFICATION drf_code_write in mrb_stata.R
+
+
+!MODIFICATION mrb_adopath_injection_code in mrb_stata.R
+scope = "function"
+file = "/home/rstudio/repbox/metaregBase/R/mrb_stata.R"
+insert_before_fun = "mrb_full_stata_script"
+description = "Add function to generate adopath injection code for DRF Stata scripts."
+---
+```r
+mrb_adopath_injection_code = function(project_dir) {
+  restore.point("mrb_adopath_injection_code")
+  drf_ado_dir = file.path(project_dir, "drf", "ado")
+  
+  if (dir.exists(drf_ado_dir)) {
+    ado_files = list.files(drf_ado_dir, glob2rx("*.ado"), full.names = TRUE, recursive = TRUE)
+  } else {
+    ado_files = character(0)
+  }
+
+  extra_ado_dirs = repboxStata::get_ado_dirs()
+  ado_dirs = unique(c(dirname(ado_files), extra_ado_dirs))
+
+  if (length(ado_dirs) == 0) return("")
+
+  plus.dir = extra_ado_dirs["plus"]
+  personal.dir = extra_ado_dirs["personal"]
+
+  code = ""
+  if (!is.na(plus.dir)) {
+    ado_dirs = setdiff(ado_dirs, plus.dir)
+    code = paste0(code, 'sysdir set PLUS "', plus.dir,'"\n')
+  }
+  if (!is.na(personal.dir)) {
+    ado_dirs = setdiff(ado_dirs, personal.dir)
+    code = paste0(code, 'sysdir set PERSONAL "', personal.dir,'"\n')
+  }
+
+  if (length(ado_dirs) > 0) {
+    ado_dirs = gsub("\\\\", "/", ado_dirs)
+    code = paste0(code, paste0('adopath + "', rev(ado_dirs), '"', collapse = "\n"))
+  }
+  code
+}
+```
+!END_MODIFICATION mrb_adopath_injection_code in mrb_stata.R
+
+
+!MODIFICATION mrb_full_stata_script in mrb_stata.R
+scope = "function"
+file = "/home/rstudio/repbox/metaregBase/R/mrb_stata.R"
+function_name = "mrb_full_stata_script"
+description = "Update mrb_full_stata_script to prepend adopath injection code."
+---
+```r
+mrb_full_stata_script = function(mrb, capture=TRUE) {
+  restore.point("mrb_full_stata_script")
+  run_df = mrb$drf$run_df
+
+  path_merge = c("load_natural")
+  outdir = file.path(mrb$mrb_dir, "stata_reg_out")
+
+  if (dir.exists(outdir)) {
+    old_files = list.files(outdir, full.names = TRUE)
+    if (length(old_files) > 0) file.remove(old_files)
+  } else {
+    dir.create(outdir, recursive = TRUE)
+  }
+
+  # We want to inject caches after some commands that cannot be effectively translated
+  # to R.
+  # Currently that is xi as it is hard to find the same ordering of generated
+  # dummy variables as Stata
+  cache_cmds = mrb_stata_always_cache_commands() # "xi"
+  cache_runids = mrb_find_custom_cache_runids(mrb, cache_cmds)
+
+  code_df = repboxDRF::drf_stata_code_df(drf=mrb$drf,cache_after_cmd = cache_cmds,cache_after_runids = cache_runids)
+
+  code_df = code_df %>%
+    drf_code_adapt(mrb_code_reg_stata, just_path_pos="end", run_df=run_df, outdir=outdir, capture=capture) %>%
+    drf_code_stata_path_header()
+
+  script_file = file.path(mrb$mrb_dir, "stata_code/mrb_stata.do")
+  header_code = mrb_adopath_injection_code(mrb$project_dir)
+  drf_code_write(code_df, script_file, header_code = header_code)
+  
+  mrb$stata_code_df = code_df
+  mrb$stata_do_file = script_file
+  mrb
+}
+```
+!END_MODIFICATION mrb_full_stata_script in mrb_stata.R
+
+
+!MODIFICATION mrb_tdp_make_do in mrb_test_data_path.R
+scope = "function"
+file = "/home/rstudio/repbox/metaregBase/R/mrb_test_data_path.R"
+function_name = "mrb_tdp_make_do"
+description = "Update mrb_tdp_make_do to inject adopath."
+---
+```r
+mrb_tdp_make_do = function(project_dir, pid, max_dta_files=10, include_runids=NULL, exclude_runids=NULL, include_cmds=NULL, exclude_cmds=NULL, overwrite=FALSE, drf=NULL, parcels=list()) {
+  restore.point("mrb_tdp_make_do")
+
+  if (is.null(drf)) drf = repboxDRF::drf_load(project_dir, parcels=parcels)
+
+  outdir = paste0(project_dir, "/run/pid_", pid)
+  if (!dir.exists(outdir)) dir.create(outdir, recursive=TRUE)
+  outfile = file.path(outdir, paste0("tdp_", pid, ".do"))
+
+  dta_dir = file.path(outdir, "dta")
+  if (!dir.exists(dta_dir)) dir.create(dta_dir, recursive=TRUE)
+
+  # Get the path for this pid
+  path_df = drf$path_df %>% dplyr::filter(pid == !!pid, runid <= !!pid) %>% dplyr::arrange(runid)
+  if (NROW(path_df) == 0) return(invisible(NULL))
+
+  # Get the Stata code for this path
+  # keep_non_mod_reg=FALSE normally drops the regression itself so we end at the last prep command
+  sc_df = repboxDRF::drf_stata_code_df(drf, runids=pid, path_merge="none", keep_non_mod_reg=FALSE)
+  if (NROW(sc_df) == 0) return(invisible(NULL))
+
+  # Candidate runids are the ones in sc_df
+  cands = sc_df$runid
+  run_df_cands = drf$run_df %>% dplyr::filter(runid %in% cands)
+
+  existing_files = list.files(dta_dir, pattern="\\.dta$")
+  existing_runids = as.integer(tools::file_path_sans_ext(existing_files))
+
+  to_save = integer(0)
+
+  # Mandatory includes
+  if (!is.null(include_runids)) to_save = union(to_save, intersect(cands, include_runids))
+  if (!is.null(include_cmds)) {
+    cmd_match = run_df_cands$runid[run_df_cands$cmd %in% include_cmds]
+    to_save = union(to_save, cmd_match)
+  }
+
+  # Always include the last data generation command
+  last_runid = max(cands)
+  to_save = union(to_save, last_runid)
+
+  # Exclusions
+  if (!is.null(exclude_runids)) cands = setdiff(cands, exclude_runids)
+  if (!is.null(exclude_cmds)) {
+    cmd_match = run_df_cands$runid[run_df_cands$cmd %in% exclude_cmds]
+    cands = setdiff(cands, cmd_match)
+  }
+
+  # Add existing runids to to_save if we don't overwrite, so they count towards max_dta_files limit
+  if (!overwrite) {
+    to_save = union(to_save, intersect(cands, existing_runids))
+  } else {
+    existing_runids = integer(0)
+  }
+
+  # Fill up remaining slots evenly
+  num_to_select = max_dta_files - length(to_save)
+  if (num_to_select > 0) {
+    avail = setdiff(cands, to_save)
+    if (length(avail) > 0) {
+      if (length(avail) <= num_to_select) {
+        to_save = union(to_save, avail)
+      } else {
+        idx = round(seq(1, length(avail), length.out=num_to_select))
+        to_save = union(to_save, avail[idx])
+      }
+    }
+  }
+
+  # We only need to append Stata save code for runids we actively need to generate
+  runids_to_generate = setdiff(to_save, existing_runids)
+
+  if (length(runids_to_generate) > 0) {
+    rows = match(runids_to_generate, sc_df$runid)
+    # Forward slashes work cleanly in Stata across all OS
+    save_cmds = paste0('\ncapture noisily save "', dta_dir, '/', runids_to_generate, '.dta", replace\n')
+    sc_df$post[rows] = paste0(sc_df$post[rows], save_cmds)
+  }
+
+  # Write do file
+  header_code = mrb_adopath_injection_code(project_dir)
+  drf_code_write(sc_df, outfile, header_code = header_code)
+
+  invisible(list(do_file=outfile, runids_to_test=to_save, runids_to_generate=runids_to_generate))
+}
+```
+!END_MODIFICATION mrb_tdp_make_do in mrb_test_data_path.R
+
+
+!MODIFICATION mrb_create_cache_at_runid in mrb_repair.R
+scope = "function"
+file = "/home/rstudio/repbox/metaregBase/R/mrb_repair.R"
+function_name = "mrb_create_cache_at_runid"
+description = "Update to include adopath injection in repair cache Stata script."
+---
+```r
+mrb_create_cache_at_runid = function(mrb=mrb_init(project_dir), cache_runid, overwrite = FALSE, project_dir=NULL, pid=NULL) {
+  restore.point("mrb_create_cache_at_runid")
+  project_dir = mrb$project_dir
+  cache_dir = file.path(project_dir, "drf/cached_dta")
+
+  cache_file = file.path(cache_dir, paste0(cache_runid, "_cache.dta"))
+  if (file.exists(cache_file)) {
+    if (!overwrite) {
+      return(invisible(cache_runid))
+    } else {
+      file.remove(cache_file)
+    }
+  }
+
+  if (!dir.exists(cache_dir)) dir.create(cache_dir, recursive = TRUE)
+
+  if (is.null(pid)) {
+    path_df = mrb$drf$path_df
+    row = which(path_df$runid==cache_runid)
+    pid = first(path_df$pid[row])
+  }
+
+  # Get the Stata code path for this pid
+  sc_df = repboxDRF::drf_stata_code_df(mrb$drf, runids = pid, path_merge = "none", write_e_r = FALSE, cache_after_runids = cache_runid,keep_non_mod_reg = TRUE)
+
+  # Subset up to cache_runid
+  rows = which(sc_df$runid <= cache_runid)
+  if (length(rows) == 0) return(invisible(cache_runid))
+  sc_df = sc_df[rows, , drop = FALSE]
+
+  script_file = file.path(mrb$project_dir, "metareg/base/stata_code/mrb_repair.do")
+  header_code = mrb_adopath_injection_code(mrb$project_dir)
+  metaregBase:::drf_code_write(sc_df, script_file, header_code = header_code)
+
+  cat("\nRunning Stata repair script to generate cache at runid", cache_runid, "...\n")
+  mrb_run_stata_script(mrb, do_file = script_file, timeout = mrb$stata_timeout)
+}
+```
+!END_MODIFICATION mrb_create_cache_at_runid in mrb_repair.R
+
+
+!MODIFICATION mrb_test_stata_code in mrb_test_code_path.R
+scope = "function"
+file = "/home/rstudio/repbox/metaregBase/R/mrb_test_code_path.R"
+function_name = "mrb_test_stata_code"
+description = "Include adopath injection code in mrb_test_stata_code."
+---
+```r
+mrb_test_stata_code = function(drf, pid) {
+  restore.point("mrb_test_stata_code")
+  sc = drf_stata_code_df(drf, runids=pid)
+  
+  header_code = mrb_adopath_injection_code(drf$project_dir)
+  
+  if (has_col(sc, "scalar_stata_code")) {
+    sc$pre = paste0(na.val(sc$scalar_stata_code,""), sc$pre)
+  }
+  
+  txt = paste0(sc$pre, sc$code, sc$post, collapse="\n")
+  if (nzchar(header_code)) {
+    txt = paste0(header_code, "\n", txt)
+  }
+  txt
+}
+```
+!END_MODIFICATION mrb_test_stata_code in mrb_test_code_path.R

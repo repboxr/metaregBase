@@ -103,6 +103,42 @@ mrb_find_custom_cache_runids = function(mrb, cache_cmds = mrb_stata_always_cache
   cache_runids
 }
 
+mrb_adopath_injection_code = function(project_dir) {
+  restore.point("mrb_adopath_injection_code")
+  drf_ado_dir = file.path(project_dir, "drf", "ado")
+
+  if (dir.exists(drf_ado_dir)) {
+    ado_files = list.files(drf_ado_dir, glob2rx("*.ado"), full.names = TRUE, recursive = TRUE)
+  } else {
+    ado_files = character(0)
+  }
+
+  extra_ado_dirs = repboxStata::get_ado_dirs()
+  ado_dirs = unique(c(dirname(ado_files), extra_ado_dirs))
+
+  if (length(ado_dirs) == 0) return("")
+
+  plus.dir = extra_ado_dirs["plus"]
+  personal.dir = extra_ado_dirs["personal"]
+
+  code = ""
+  if (!is.na(plus.dir)) {
+    ado_dirs = setdiff(ado_dirs, plus.dir)
+    code = paste0(code, 'sysdir set PLUS "', plus.dir,'"\n')
+  }
+  if (!is.na(personal.dir)) {
+    ado_dirs = setdiff(ado_dirs, personal.dir)
+    code = paste0(code, 'sysdir set PERSONAL "', personal.dir,'"\n')
+  }
+
+  if (length(ado_dirs) > 0) {
+    ado_dirs = gsub("\\\\", "/", ado_dirs)
+    code = paste0(code, paste0('adopath + "', rev(ado_dirs), '"', collapse = "\n"))
+  }
+  code
+}
+
+
 mrb_full_stata_script = function(mrb, capture=TRUE) {
   restore.point("mrb_full_stata_script")
   run_df = mrb$drf$run_df
@@ -131,13 +167,15 @@ mrb_full_stata_script = function(mrb, capture=TRUE) {
     drf_code_stata_path_header()
 
   script_file = file.path(mrb$mrb_dir, "stata_code/mrb_stata.do")
-  drf_code_write(code_df, script_file)
+  header_code = mrb_adopath_injection_code(mrb$project_dir)
+  drf_code_write(code_df, script_file, header_code = header_code)
+
   mrb$stata_code_df = code_df
   mrb$stata_do_file = script_file
   mrb
 }
 
-drf_code_write = function(code_df, file) {
+drf_code_write = function(code_df, file, header_code = "") {
   restore.point("drf_code_write")
   dir = dirname(file)
   if (!dir.exists(dir)) dir.create(dir, recursive = TRUE)
@@ -145,7 +183,10 @@ drf_code_write = function(code_df, file) {
     code_df$pre = paste0(na.val(code_df$scalar_stata_code,""),code_df$pre)
   }
   txt = paste0(code_df$pre, code_df$code, code_df$post, collapse="\n")
-  write_utf8(txt, file)
+  if (nzchar(header_code)) {
+    txt = paste0(header_code, "\n", txt)
+  }
+  tryCatch(write_utf8(txt, file), error = function(e) writeLines(enc2utf8(txt), file))
   invisible(txt)
 }
 

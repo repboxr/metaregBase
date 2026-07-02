@@ -144,9 +144,20 @@ mrb_test_code_path = function(project_dir, pid, parcels, drf=drf_load(project_di
 }
 
 mrb_test_stata_code = function(drf, pid) {
-  restore.point("mrb_test_code_path")
-  sc = drf_stata_code_df(drf, runids=pid)$code
+  restore.point("mrb_test_stata_code")
+  sc = drf_stata_code_df(drf, runids=pid)
 
+  header_code = mrb_adopath_injection_code(drf$project_dir)
+
+  if (has_col(sc, "scalar_stata_code")) {
+    sc$pre = paste0(na.val(sc$scalar_stata_code,""), sc$pre)
+  }
+
+  txt = paste0(sc$pre, sc$code, sc$post, collapse="\n")
+  if (nzchar(header_code)) {
+    txt = paste0(header_code, "\n", txt)
+  }
+  txt
 }
 
 

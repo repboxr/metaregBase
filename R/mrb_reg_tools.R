@@ -706,30 +706,47 @@ distribute_stata_parens = function(token) {
   dist_helper = function(tok) {
     if (!has.substr(tok, "(")) return(tok)
 
-    seps = stringi::stri_extract_all_regex(tok, "#+")[[1]]
-    if (length(seps) == 1 && is.na(seps)) seps = character(0)
+    mat = stringi::stri_match_first_regex(tok, "^(.*)\\(([^)]+)\\)(.*)$")
+    if (is.na(mat[1,1])) return(tok)
 
-    parts = stringi::stri_split_regex(tok, "#+")[[1]]
+    prefix = mat[1,2]
+    inside = mat[1,3]
+    suffix = mat[1,4]
 
-    if (length(seps) == 0) {
-      mat = stringi::stri_match_first_regex(tok, "^(.*)\\(([^)]+)\\)(.*)$")
-      if (is.na(mat[1,1])) return(tok)
-
-      prefix = mat[1,2]
-      inside = mat[1,3]
-      suffix = mat[1,4]
-
-      inner_parts = strsplit(trimws(inside), "\\s+")[[1]]
-      return(paste0(prefix, inner_parts, suffix))
+    # Split prefix into base_prefix and dist_prefix (e.g. i., c., L2.)
+    mat_pref = stringi::stri_match_first_regex(prefix, "^(.*[# ]|^)([A-Za-z0-9]+\\.)$")
+    if (!is.na(mat_pref[1,1])) {
+      base_prefix = mat_pref[1,2]
+      dist_prefix = mat_pref[1,3]
+    } else {
+      base_prefix = prefix
+      dist_prefix = ""
     }
 
-    expanded_parts = lapply(parts, dist_helper)
-    grid = expand.grid(expanded_parts, stringsAsFactors = FALSE)
+    inner_parts = strsplit(trimws(inside), "\\s+")[[1]]
+    if (length(inner_parts) == 0) return(tok)
 
-    res = grid[[1]]
-    for (j in seq_along(seps)) {
-      res = paste0(res, seps[j], grid[[j+1]])
-    }
+    expanded_inner = vapply(inner_parts, function(p) {
+      if (dist_prefix != "" && has.substr(p, "#")) {
+        seps = stringi::stri_extract_all_regex(p, "#+")[[1]]
+        comps = stringi::stri_split_regex(p, "#+")[[1]]
+
+        comps = paste0(dist_prefix, comps)
+
+        res = comps[1]
+        for (i in seq_along(seps)) {
+          res = paste0(res, seps[i], comps[i+1])
+        }
+        return(res)
+      } else {
+        return(paste0(dist_prefix, p))
+      }
+    }, character(1))
+
+    res = paste0(base_prefix, expanded_inner, suffix)
+
+    # Recursively resolve any remaining parentheses
+    res = unlist(lapply(res, dist_helper), use.names=FALSE)
     return(res)
   }
 

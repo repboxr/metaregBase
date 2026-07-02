@@ -102,7 +102,14 @@ mrb_repair_paths_with_imports_via_cache = function(project_dir = mrb$project_dir
 }
 
 mrb_repair_paths_with_r_fail_cmds_via_cache = function(project_dir = mrb$project_dir, mrb = NULL, max_cache=10, max_reg = Inf) {
-  mrb_repair_via_cache(project_dir, mrb,max_cache=max_cache, max_reg=max_reg, only_paths_with_cmds=repboxDRF::drf_cmds_to_cache_if_r_reg_fails())
+  mrb_repair_via_cache(
+    project_dir,
+    mrb,
+    max_cache=max_cache,
+    max_reg=max_reg,
+    only_paths_with_cmds=repboxDRF::drf_cmds_to_cache_if_r_reg_fails(),
+    only_paths_with_cmdline_pattern=repboxDRF::drf_cmdline_patterns_to_cache_if_r_reg_fails()
+  )
 }
 
 
@@ -110,7 +117,7 @@ mrb_repair_paths_with_r_fail_cmds_via_cache = function(project_dir = mrb$project
 #'
 #' For each failed pid that still needs repair after the ignore pass,
 #' determine the best cache position, generate it in Stata, and re-run.
-mrb_repair_via_cache = function(project_dir = mrb$project_dir, mrb = NULL,max_cache=20, max_reg = Inf, only_paths_with_import = FALSE, only_paths_with_predict = FALSE, only_paths_with_cmds = NULL) {
+mrb_repair_via_cache = function(project_dir = mrb$project_dir, mrb = NULL,max_cache=20, max_reg = Inf, only_paths_with_import = FALSE, only_paths_with_predict = FALSE, only_paths_with_cmds = NULL, only_paths_with_cmdline_pattern = NULL) {
   restore.point("mrb_repair_via_cache")
 
   if (is.null(mrb)) {
@@ -119,7 +126,7 @@ mrb_repair_via_cache = function(project_dir = mrb$project_dir, mrb = NULL,max_ca
   }
 
   drf_clear_mcache()
-  failed_pids = mrb_get_to_repair_runids(mrb = mrb, only_paths_with_import = only_paths_with_import, only_paths_with_predict = only_paths_with_predict, only_paths_with_cmds = only_paths_with_cmds)
+  failed_pids = mrb_get_to_repair_runids(mrb = mrb, only_paths_with_import = only_paths_with_import, only_paths_with_predict = only_paths_with_predict, only_paths_with_cmds = only_paths_with_cmds, only_paths_with_cmdline_pattern = only_paths_with_cmdline_pattern)
 
   if (max_reg < length(failed_pids)) {
       failed_pids = head(failed_pids, max_reg)
@@ -215,7 +222,7 @@ mrb_determine_repair_cache_runid = function(mrb, failed_pids, drf = mrb$drf) {
 }
 
 
-mrb_get_to_repair_runids = function(mrb, parcels = mrb$parcels,  only_paths_with_import = FALSE, only_paths_with_predict = FALSE, only_paths_with_cmds=NULL) {
+mrb_get_to_repair_runids = function(mrb, parcels = mrb$parcels,  only_paths_with_import = FALSE, only_paths_with_predict = FALSE, only_paths_with_cmds=NULL, only_paths_with_cmdline_pattern=NULL) {
   restore.point("mrb_get_to_repair_runids")
   parcels = repboxDB::repdb_load_parcels(mrb$project_dir, c("regcheck", "reg", "regrepair"), parcels)
 
@@ -260,34 +267,36 @@ mrb_get_to_repair_runids = function(mrb, parcels = mrb$parcels,  only_paths_with
     failed_pids = first_runids$pid[first_runids$first_runid %in% import_first_runids]
   }
 
-
-
-  if (!is.null(only_paths_with_cmds) && length(failed_pids) > 0 && !is.null(mrb$drf$path_df)) {
+  if ((!is.null(only_paths_with_cmds) || !is.null(only_paths_with_cmdline_pattern)) && length(failed_pids) > 0 && !is.null(mrb$drf$path_df)) {
     path_cmds = mrb$drf$path_df %>%
       filter(pid %in% failed_pids) %>%
-      left_join(mrb$drf$run_df %>% select(runid, cmd), by = "runid")
+      left_join(mrb$drf$run_df %>% select(runid, cmd, cmdline), by = "runid")
 
-    has_cmd = path_cmds %>%
-      group_by(pid) %>%
-      summarize(has_cmd = any(cmd %in% only_paths_with_cmds), .groups = "drop") %>%
-      filter(has_cmd)
+    has_cmd_pid = integer(0)
+    if (!is.null(only_paths_with_cmds)) {
+      has_cmd_pid = path_cmds %>%
+        group_by(pid) %>%
+        summarize(has_cond = any(cmd %in% only_paths_with_cmds), .groups = "drop") %>%
+        filter(has_cond) %>%
+        pull(pid)
+    }
 
-    failed_pids = intersect(failed_pids, has_cmd$pid)
+    has_pat_pid = integer(0)
+    if (!is.null(only_paths_with_cmdline_pattern)) {
+      # Escape patterns safely using \Q...\E (ICU/PCRE standard for literal strings)
+      pattern_regex = paste0("\\Q", only_paths_with_cmdline_pattern, "\\E", collapse = "|")
+      has_pat_pid = path_cmds %>%
+        group_by(pid) %>%
+        summarize(
+          has_cond = any(stringi::stri_detect_regex(cmdline, pattern_regex), na.rm = TRUE),
+          .groups = "drop"
+        ) %>%
+        filter(has_cond) %>%
+        pull(pid)
+    }
+
+    failed_pids = intersect(failed_pids, union(has_cmd_pid, has_pat_pid))
   }
-
-
-  # if (only_paths_with_predict && length(failed_pids) > 0 && !is.null(mrb$drf$path_df)) {
-  #   path_cmds = mrb$drf$path_df %>%
-  #     filter(pid %in% failed_pids) %>%
-  #     left_join(mrb$drf$run_df %>% select(runid, cmd), by = "runid")
-  #
-  #   has_pred = path_cmds %>%
-  #     group_by(pid) %>%
-  #     summarize(has_predict = any(cmd %in% c("predict", "predictnl")), .groups = "drop") %>%
-  #     filter(has_predict)
-  #
-  #   failed_pids = intersect(failed_pids, has_pred$pid)
-  # }
 
   failed_pids
 }
@@ -324,7 +333,8 @@ mrb_create_cache_at_runid = function(mrb=mrb_init(project_dir), cache_runid, ove
   sc_df = sc_df[rows, , drop = FALSE]
 
   script_file = file.path(mrb$project_dir, "metareg/base/stata_code/mrb_repair.do")
-  metaregBase:::drf_code_write(sc_df, script_file)
+  header_code = mrb_adopath_injection_code(mrb$project_dir)
+  metaregBase:::drf_code_write(sc_df, script_file, header_code = header_code)
 
   cat("\nRunning Stata repair script to generate cache at runid", cache_runid, "...\n")
   mrb_run_stata_script(mrb, do_file = script_file, timeout = mrb$stata_timeout)

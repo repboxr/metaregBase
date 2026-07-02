@@ -96,7 +96,8 @@ mrb_tdp_make_do = function(project_dir, pid, max_dta_files=10, include_runids=NU
   }
 
   # Write do file
-  drf_code_write(sc_df, outfile)
+  header_code = mrb_adopath_injection_code(project_dir)
+  drf_code_write(sc_df, outfile, header_code = header_code)
 
   invisible(list(do_file=outfile, runids_to_test=to_save, runids_to_generate=runids_to_generate))
 }
