@@ -533,7 +533,10 @@ mrb_copy_cached_runid_to_test_project = function(project_dir, runid) {
   parcels = repdb_load_parcels(project_dir, "stata_run_cmd")
   run_df = parcels$stata_run_cmd
 
+  header_code = mrb_adopath_injection_code(project_dir)
+
   code = c(
+    header_code,
     paste0('use "', basename(dest_data_file),'", clear'),
     run_df$cmdline[run_df$runid==runid]
   )

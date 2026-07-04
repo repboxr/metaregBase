@@ -101,14 +101,46 @@ mrb_repair_paths_with_imports_via_cache = function(project_dir = mrb$project_dir
   mrb_repair_via_cache(project_dir, mrb,max_cache=max_cache, max_reg=max_reg, only_paths_with_import = TRUE)
 }
 
-mrb_repair_paths_with_r_fail_cmds_via_cache = function(project_dir = mrb$project_dir, mrb = NULL, max_cache=10, max_reg = Inf) {
+mrb_repair_paths_with_r_fail_cmds_via_cache = function(project_dir = mrb$project_dir, mrb = NULL, max_cache=10, max_reg = Inf, paths_with_custom_ado = TRUE) {
+  cmds = repboxDRF::drf_cmds_to_cache_if_r_reg_fails()
+  patterns = repboxDRF::drf_cmdline_patterns_to_cache_if_r_reg_fails()
+
+  if (paths_with_custom_ado) {
+    drf_ado_dir = file.path(project_dir, "drf", "ado")
+    if (dir.exists(drf_ado_dir)) {
+      ado_files = list.files(drf_ado_dir, pattern = "\\.ado$", ignore.case = TRUE, recursive = TRUE)
+      ado_basenames = basename(ado_files)
+
+      # Check general ado folders
+      extra_ado_dirs = tryCatch(repboxStata::get_ado_dirs(), error = function(e) character(0))
+      general_ados = character(0)
+      for (d in extra_ado_dirs) {
+        if (!is.na(d) && nzchar(d) && dir.exists(d)) {
+          general_ados = c(general_ados, list.files(d, pattern = "\\.ado$", ignore.case = TRUE))
+        }
+      }
+
+      custom_ados = ado_basenames[!ado_basenames %in% general_ados]
+      custom_names = tools::file_path_sans_ext(custom_ados)
+
+      is_egen = startsWith(custom_names, "_g")
+      if (any(is_egen)) {
+        egen_funcs = substring(custom_names[is_egen], 3)
+        patterns = c(patterns, paste0(egen_funcs, "\\("))
+      }
+      if (any(!is_egen)) {
+        cmds = c(cmds, custom_names[!is_egen])
+      }
+    }
+  }
+
   mrb_repair_via_cache(
     project_dir,
     mrb,
     max_cache=max_cache,
     max_reg=max_reg,
-    only_paths_with_cmds=repboxDRF::drf_cmds_to_cache_if_r_reg_fails(),
-    only_paths_with_cmdline_pattern=repboxDRF::drf_cmdline_patterns_to_cache_if_r_reg_fails()
+    only_paths_with_cmds=cmds,
+    only_paths_with_cmdline_pattern=patterns
   )
 }
 
