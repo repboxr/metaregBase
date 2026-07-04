@@ -84,7 +84,11 @@ make_regxvar_ia2 = function(rv, level_li) {
   grid = expand.grid(var1=vars1, var2=vars2,stringsAsFactors = FALSE) %>%
     mutate(var12 = sort2_chr(var1, var2, sep="#"))
 
-  unique(c(vars1,vars2, grid$var12))
+  if (is.null(rv$add_main_effects) || isTRUE(rv$add_main_effects[1])) {
+    return(unique(c(vars1,vars2, grid$var12)))
+  } else {
+    return(unique(grid$var12))
+  }
 }
 
 
@@ -118,7 +122,11 @@ make_regxvar_ia3 = function(rv, level_li) {
   v123 = expand.grid(a=v1, b=v2, c=v3, stringsAsFactors=FALSE) %>%
     mutate(res = split_and_sort(paste0(a, "#", b, "#", c), split = "#", k = 3L)) %>% pull(res)
 
-  unique(c(v1, v2, v3, v12, v13, v23, v123))
+  if (is.null(rv$add_main_effects) || isTRUE(rv$add_main_effects[1])) {
+    return(unique(c(v1, v2, v3, v12, v13, v23, v123)))
+  } else {
+    return(unique(v123))
+  }
 }
 
 
