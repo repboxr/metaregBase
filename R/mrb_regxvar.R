@@ -133,8 +133,6 @@ make_regxvar_ia3 = function(rv, level_li) {
 
 # Add the expanded columns specified in regxvar to dat
 # if a column already exists, we won't overwrite it.
-# Add the expanded columns specified in regxvar to dat
-# if a column already exists, we won't overwrite it.
 make_regxvar_cols = function(dat, regxvar) {
   restore.point("make_regxvar_cols")
   # Don't overwrite existing columns
@@ -142,21 +140,40 @@ make_regxvar_cols = function(dat, regxvar) {
   # is either a factor or an interaction term
   all_cterms = setdiff(regxvar$cterm, names(dat))
 
+  if (length(all_cterms) == 0) return(dat)
+
+  # First ensure all single components of interaction terms are generated if missing
+  all_parts = unique(unlist(strsplit(all_cterms, "#", fixed = TRUE)))
+  missing_parts = setdiff(all_parts, names(dat))
+
+  # Base terms with "=" are dummy variables we must construct.
+  missing_dummies = missing_parts[has.substr(missing_parts, "=")]
+
+  if (length(missing_dummies) > 0) {
+    vars = str.left.of(missing_dummies, "=")
+    vals = str.right.of(missing_dummies, "=")
+    for (i in seq_along(missing_dummies)) {
+      if (!has.col(dat, vars[i])) next
+      col_val = as.vector(dat[[ vars[i] ]])
+      dat[[ missing_dummies[i] ]] = suppressWarnings(1L*(col_val == as(vals[i], atomic_class(col_val))))
+    }
+  }
+
   num_ia = stringi::stri_count_fixed(all_cterms,"#")+1
 
   # Cols without interaction effect
   cterms = all_cterms[num_ia==1]
-  vars = str.left.of(cterms, "=")
-  vals = str.right.of(cterms, "=")
   for (i in seq_along(cterms)) {
-    # E.g. cols with o@ prefix can be missings
-    if (!has.col(dat,vars[i])) next
-    col_val = as.vector(dat[[ vars[i] ]])
-    dat[[ cterms[i] ]] = suppressWarnings(1L*(col_val == as(vals[i], atomic_class(col_val))))
+    if (has.col(dat, cterms[i])) next
+    vars = str.left.of(cterms[i], "=")
+    vals = str.right.of(cterms[i], "=")
+    if (!has.col(dat, vars)) next
+    col_val = as.vector(dat[[ vars ]])
+    dat[[ cterms[i] ]] = suppressWarnings(1L*(col_val == as(vals, atomic_class(col_val))))
   }
 
   # Cols with pair interaction effect
-  # We assume that the single terms are in dat (e.g. from previous loop)
+  # We assume that the single terms are in dat (e.g. from previous loops)
   cterms = all_cterms[num_ia==2]
   if (length(cterms)>0) {
     vars1 = str.left.of(cterms, "#")
@@ -164,6 +181,7 @@ make_regxvar_cols = function(dat, regxvar) {
     for (i in seq_along(cterms)) {
       v1 = dat[[vars1[i]]]
       v2 = dat[[vars2[i]]]
+      if (is.null(v1) || is.null(v2)) next
       if (inherits(v1, c("Date", "POSIXt", "difftime"))) v1 = as.numeric(v1)
       if (inherits(v2, c("Date", "POSIXt", "difftime"))) v2 = as.numeric(v2)
       dat[[ cterms[i] ]] = v1 * v2
@@ -182,6 +200,7 @@ make_regxvar_cols = function(dat, regxvar) {
       v1 = dat[[vars1[i]]]
       v2 = dat[[vars2[i]]]
       v3 = dat[[vars3[i]]]
+      if (is.null(v1) || is.null(v2) || is.null(v3)) next
       if (inherits(v1, c("Date", "POSIXt", "difftime"))) v1 = as.numeric(v1)
       if (inherits(v2, c("Date", "POSIXt", "difftime"))) v2 = as.numeric(v2)
       if (inherits(v3, c("Date", "POSIXt", "difftime"))) v3 = as.numeric(v3)
