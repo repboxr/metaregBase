@@ -15410,6 +15410,12 @@ make_stata_prog_run_parcel = function(project_dir, parcels = list(), overwrite =
   is_prog_start = (stata_cmd$cmd %in% c("program", "prog", "pr", "progr")) &
                   (!repboxUtils::is.true(stata_cmd$cmd2 %in% c("drop", "dir", "list")))
 
+  if (sum(is_prog_start)==0) {
+    parcels$stata_prog_run = tibble::tibble(runid = integer(0), progid = character(0), progrunid = integer(0))
+    repboxDB::repdb_save_parcels(parcels["stata_prog_run"], file.path(project_dir, "repdb"))
+    return(parcels)
+  }
+
   stata_cmd = left_join(stata_cmd, parcels$stata_file %>% select(file_path, script_num=script_num), by="file_path")
 
 
@@ -15996,6 +16002,55 @@ repa.set.delimit = function(s) {
   return(s)
 }
 
+# Repair commands that are no longer supported in newer Stata versions
+# For example, from Stata 15 onwards, tobit no longer supports standalone robust or cluster()
+tab.repair.stata.version = function(tab) {
+  restore.point("tab.repair.stata.version")
+
+  # Currently only target tobit, but easily extensible
+  check_cmds = c("tobit")
+
+  rows = which(tab$cmd %in% check_cmds)
+  if (length(rows) == 0) return(tab)
+
+  # Strip valid vce(...) options from the options string to avoid false positives
+  opts_clean = stringi::stri_replace_all_regex(tab$opts[rows], "\\bvce\\s*\\([^)]+\\)", "")
+
+  # Detect standalone robust or cluster()
+  # robust can be abbreviated: rob, robu, robus, robust
+  # cluster can be abbreviated: cl, clu, clus, clust, cluste, cluster
+  has_old_opt = stringi::stri_detect_regex(
+    opts_clean,
+    "\\b(rob|robu|robus|robust)\\b|\\b(cl|clu|clus|clust|cluste|cluster)\\s*\\("
+  )
+  has_old_opt[is.na(has_old_opt)] = FALSE
+
+  update_rows = rows[has_old_opt]
+
+  if (length(update_rows) > 0) {
+    # Skip if there's already a version prefix
+    already_version = stringi::stri_detect_regex(tab$colon1[update_rows], "(?i)^version\\s+[0-9.]+")
+    already_version[is.na(already_version)] = FALSE
+    update_rows = update_rows[!already_version]
+  }
+
+  if (length(update_rows) > 0) {
+    # Prefix with version 14:
+    tab$txt[update_rows] = paste0("version 14: ", tab$txt[update_rows])
+
+    # Also update colon1 to maintain parsing consistency
+    tab$colon1[update_rows] = ifelse(
+      is.na(tab$colon1[update_rows]) | tab$colon1[update_rows] == "",
+      "version 14",
+      paste0("version 14: ", tab$colon1[update_rows])
+    )
+  }
+
+  tab
+}
+
+
+
 repbox.do.table = function(s=NULL,txt=s$newtxt, ph.df = s$ph.df) {
   restore.point("repa.do.table")
 
@@ -16243,6 +16298,7 @@ repbox.do.table = function(s=NULL,txt=s$newtxt, ph.df = s$ph.df) {
   tab = tab.repair.input.cmds(tab)
   tab = tab.replace.texdoc.do(tab)
   tab = tab.add.block.end(tab)
+  tab = tab.repair.stata.version(tab)
 
   tab$line = seq_len(NROW(tab))
   if (any(is.na(tab$orgline))) {
@@ -21170,303 +21226,13 @@ is_negative = function(n) {
 # Your Task
 ##################################
 
-Look at the Stata do log below:
+Currently, I have regression commands like reg3 that I classify as quasi_reg because either cmdpart parsing does not work or I just don't want to apply the metaregbase pipeline on them (e.g. because too time consuming). But for quasi_reg also no original reproduction outcome in form of parmest coefficients is stored and for some of those "quasi_reg" regressions such storage would work perfectly well. 
+
+I think of introducing a new category "no_mrb_reg" for regressions where we can store systematic info from the first reproduction run but not perform any further mrb analysis and neither build drf paths. In repboxDRF I would simply like to add a function no_mrb_reg_cmds.
+
+cmds noted there shall have the cmd_type to no_mrb_reg
+
+Can you check whether that could be well implemented? Describe first your plan of changes and then propose the changes. Check that no subsequent bugs will be introduced e.g. when creating the regcheck parcel. 
 
 
-```
- 
-. use ../data/data.dta, clear
 
-. 
-. tobit i1 x1, ll cluster(i2)
-option cluster() not allowed
-r(198);
-
-. version 14: tobit i1 x1, ll cluster(i2)
-
-Tobit regression                                    Number of obs     
-> =    100
-                                                           Uncensored 
-> =     74
-Limits: Lower =    1                                    Left-censored 
-> =     26
-        Upper = +inf                                   Right-censored 
-> =      0
-
-                                                    F(1, 99)          
-> =   0.55
-                                                    Prob > F          
-> = 0.4614
-Log pseudolikelihood = -158.35169                   Pseudo R2         
-> = 0.0028
-
-                                     (Std. err. adjusted for 4 cluster
-> s in i2)
-----------------------------------------------------------------------
-> --------
-             |               Robust
-          i1 | Coefficient  std. err.      t    P>|t|     [95% conf. i
-> nterval]
--------------+--------------------------------------------------------
-> --------
-          x1 |   .1447565   .1957855     0.74   0.461    -.2437244    
-> .5332375
-       _cons |   2.202828    .264649     8.32   0.000     1.677707    
-> 2.727949
--------------+--------------------------------------------------------
-> --------
-      /sigma |   1.439084   .0882328                      1.264011    
-> 1.614157
-----------------------------------------------------------------------
-> --------
-
-. version 14: tobit i1 x1, ll vce(cluster i2)
-
-Tobit regression                                    Number of obs     
-> =    100
-                                                           Uncensored 
-> =     74
-Limits: Lower =    1                                    Left-censored 
-> =     26
-        Upper = +inf                                   Right-censored 
-> =      0
-
-                                                    F(1, 99)          
-> =   0.55
-                                                    Prob > F          
-> = 0.4614
-Log pseudolikelihood = -158.35169                   Pseudo R2         
-> = 0.0028
-
-                                     (Std. err. adjusted for 4 cluster
-> s in i2)
-----------------------------------------------------------------------
-> --------
-             |               Robust
-          i1 | Coefficient  std. err.      t    P>|t|     [95% conf. i
-> nterval]
--------------+--------------------------------------------------------
-> --------
-          x1 |   .1447565   .1957855     0.74   0.461    -.2437244    
-> .5332375
-       _cons |   2.202828    .264649     8.32   0.000     1.677707    
-> 2.727949
--------------+--------------------------------------------------------
-> --------
-      /sigma |   1.439084   .0882328                      1.264011    
-> 1.614157
-----------------------------------------------------------------------
-> --------
-
-. 
-. tobit i1 x1, ll vce(robust)
-
-Refining starting values:
-
-Grid node 0:   log likelihood = -164.22269
-
-Fitting full model:
-
-Iteration 0:   log pseudolikelihood = -164.22269  
-Iteration 1:   log pseudolikelihood = -158.57102  
-Iteration 2:   log pseudolikelihood = -158.35267  
-Iteration 3:   log pseudolikelihood = -158.35169  
-Iteration 4:   log pseudolikelihood = -158.35169  
-
-Tobit regression                                    Number of obs     
-> =    100
-                                                           Uncensored 
-> =     74
-Limits: Lower =    1                                    Left-censored 
-> =     26
-        Upper = +inf                                   Right-censored 
-> =      0
-
-                                                    F(1, 99)          
-> =   1.03
-                                                    Prob > F          
-> = 0.3137
-Log pseudolikelihood = -158.35169                   Pseudo R2         
-> = 0.0028
-
-----------------------------------------------------------------------
-> --------
-             |               Robust
-          i1 | Coefficient  std. err.      t    P>|t|     [95% conf. i
-> nterval]
--------------+--------------------------------------------------------
-> --------
-          x1 |   .1447565   .1429428     1.01   0.314     -.138873    
-> .4283861
-       _cons |   2.202828   .1654962    13.31   0.000     1.874448    
-> 2.531208
--------------+--------------------------------------------------------
-> --------
-    var(e.i1)|   2.070963   .3211951                      1.522377    
-> 2.817233
-----------------------------------------------------------------------
-> --------
-
-. tobit i1 x1, ll robust
-option robust not allowed
-r(198);
-
-. version 14: tobit i1 x1, ll robust
-
-Tobit regression                                    Number of obs     
-> =    100
-                                                           Uncensored 
-> =     74
-Limits: Lower =    1                                    Left-censored 
-> =     26
-        Upper = +inf                                   Right-censored 
-> =      0
-
-                                                    F(1, 99)          
-> =   1.03
-                                                    Prob > F          
-> = 0.3137
-Log pseudolikelihood = -158.35169                   Pseudo R2         
-> = 0.0028
-
-----------------------------------------------------------------------
-> --------
-             |               Robust
-          i1 | Coefficient  std. err.      t    P>|t|     [95% conf. i
-> nterval]
--------------+--------------------------------------------------------
-> --------
-          x1 |   .1447565   .1429428     1.01   0.314     -.138873    
-> .4283861
-       _cons |   2.202828   .1654961    13.31   0.000     1.874448    
-> 2.531208
--------------+--------------------------------------------------------
-> --------
-      /sigma |   1.439084    .111597                      1.217651    
-> 1.660517
-----------------------------------------------------------------------
-> --------
-
-. 
-. 
-. tobit i1 x1, ll vce(cluster i2)
-
-Refining starting values:
-
-Grid node 0:   log likelihood = -164.22269
-
-Fitting full model:
-
-Iteration 0:   log pseudolikelihood = -164.22269  
-Iteration 1:   log pseudolikelihood = -158.57102  
-Iteration 2:   log pseudolikelihood = -158.35267  
-Iteration 3:   log pseudolikelihood = -158.35169  
-Iteration 4:   log pseudolikelihood = -158.35169  
-
-Tobit regression                                    Number of obs     
-> =    100
-                                                           Uncensored 
-> =     74
-Limits: Lower =    1                                    Left-censored 
-> =     26
-        Upper = +inf                                   Right-censored 
-> =      0
-
-                                                    F(1, 99)          
-> =   0.55
-                                                    Prob > F          
-> = 0.4614
-Log pseudolikelihood = -158.35169                   Pseudo R2         
-> = 0.0028
-
-                                     (Std. err. adjusted for 4 cluster
-> s in i2)
-----------------------------------------------------------------------
-> --------
-             |               Robust
-          i1 | Coefficient  std. err.      t    P>|t|     [95% conf. i
-> nterval]
--------------+--------------------------------------------------------
-> --------
-          x1 |   .1447565   .1957855     0.74   0.461    -.2437245    
-> .5332375
-       _cons |   2.202828   .2646491     8.32   0.000     1.677707    
-> 2.727949
--------------+--------------------------------------------------------
-> --------
-    var(e.i1)|   2.070963    .253949                      1.623691    
-> 2.641444
-----------------------------------------------------------------------
-> --------
-
-. tobit i1 x1, ll vce(robust)
-
-Refining starting values:
-
-Grid node 0:   log likelihood = -164.22269
-
-Fitting full model:
-
-Iteration 0:   log pseudolikelihood = -164.22269  
-Iteration 1:   log pseudolikelihood = -158.57102  
-Iteration 2:   log pseudolikelihood = -158.35267  
-Iteration 3:   log pseudolikelihood = -158.35169  
-Iteration 4:   log pseudolikelihood = -158.35169  
-
-Tobit regression                                    Number of obs     
-> =    100
-                                                           Uncensored 
-> =     74
-Limits: Lower =    1                                    Left-censored 
-> =     26
-        Upper = +inf                                   Right-censored 
-> =      0
-
-                                                    F(1, 99)          
-> =   1.03
-                                                    Prob > F          
-> = 0.3137
-Log pseudolikelihood = -158.35169                   Pseudo R2         
-> = 0.0028
-
-----------------------------------------------------------------------
-> --------
-             |               Robust
-          i1 | Coefficient  std. err.      t    P>|t|     [95% conf. i
-> nterval]
--------------+--------------------------------------------------------
-> --------
-          x1 |   .1447565   .1429428     1.01   0.314     -.138873    
-> .4283861
-       _cons |   2.202828   .1654962    13.31   0.000     1.874448    
-> 2.531208
--------------+--------------------------------------------------------
-> --------
-    var(e.i1)|   2.070963   .3211951                      1.522377    
-> 2.817233
-----------------------------------------------------------------------
-> --------
-```
-
-
-The command
-
-```
-. tobit i1 x1, ll cluster(i2)
-option cluster() not allowed
-r(198);
-```
-
-Does not run with Stata from version 15 onwards but works with older Stata. Can you discuss the following plan:
-
-In repboxStata create a new function that detects cmdlines in an older format and stores the older Stata version we need to run it in.
-
-Currently the function shall just detect the old tobit uses (and set version 14 there), but possibly we will add more later. Detection may use stringi regex heuristics but should be fast, e.g. first screen for candidate commands based on cmd == "tobit" condition.
-
-The corresponding cmdlines shall be modified depending on the detected Stata version e.g. to
-
-version 14: tobit ...
-
-This modification shall sustain for later repboxDRF, metaregbase analysis etc, i.e. directly change the cmdline in the relevant parcels.
-
-Does this look sensible? Discuss and if sensible directly also propose the concrete code changes. If there are open issues, ask first.
